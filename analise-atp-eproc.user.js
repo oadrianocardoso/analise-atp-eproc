@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      2.8.4
-// @description  Analisa regras do eProc e detecta: COLISÃO TOTAL, COLISÃO PARCIAL, SOBREPOSIÇÃO e PERDA DE OBJETO (direcionada: alerta só na regra posterior). Adiciona colunas, filtro e otimizações de performance.
+// @version      2.9.0
+// @description  Analisa regras do eProc e detecta: COLISÃO TOTAL, COLISÃO PARCIAL, SOBREPOSIÇÃO e PERDA DE OBJETO (direcionada). Adiciona colunas, filtro e otimizações de performance. Mostra os números separados por ponto e vírgula (;). Botão "Comparar" preenche #txtNumeroRegra e dispara a pesquisa.
 // @author       ADRIANO
 // @run-at       document-end
 // @noframes
@@ -17,16 +17,18 @@
 (function () {
   "use strict";
 
+  /* ===== Estado/UI ===== */
   let filterOnlyConflicts = false;
 
-  const tipoRank = { "Colisão Total": 3, "Colisão Parcial": 3, "Sobreposição": 2, "Perda de Objeto": 2 };
+  /* ===== Utils ===== */
+  const tipoRank    = { "Colisão Total": 3, "Colisão Parcial": 3, "Sobreposição": 2, "Perda de Objeto": 2 };
   const impactoRank = { "Alto": 3, "Médio": 2, "Baixo": 1 };
 
-  const lower = s => (s ?? "").toString().replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
-  const norm  = s => (s ?? "").toString().replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim();
+  const lower = s => (s ?? "").toString().replace(/\u00A0/g," ").replace(/\s+/g," ").trim().toLowerCase();
+  const norm  = s => (s ?? "").toString().replace(/\u00A0/g," ").replace(/\s+/g," ").trim();
   const esc   = s => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 
-  // Debounce + idle
+  // Debounce + idle para não travar
   let idleHandle = null, debounceTimer = null, pendingRecalc = false;
   function scheduleIdle(fn, wait=120){
     if (debounceTimer) clearTimeout(debounceTimer);
@@ -36,11 +38,12 @@
         if (idleHandle) cancelIdleCallback(idleHandle);
         idleHandle = requestIdleCallback(() => { pendingRecalc = false; fn(); }, { timeout: 1000 });
       } else {
-        setTimeout(() => { if (pendingRecalc){ pendingRecalc=false; fn(); } }, 0);
+        setTimeout(() => { if (pendingRecalc) { pendingRecalc = false; fn(); } }, 0);
       }
     }, wait);
   }
 
+  /* ===== Cabeçalho -> índices de coluna ===== */
   function mapColumns(table){
     const thead = table.tHead || table.querySelector("thead");
     if (!thead) return null;
@@ -53,7 +56,7 @@
       return idx >= 0 ? idx : null;
     };
     return {
-      colNumPrior: find(["nº", "no", "n°", "prioridade"]) ?? 1,
+      colNumPrior: find(["nº","no","n°","prioridade"]) ?? 1,
       colRemover : find(["localizador remover","remover"]) ?? 3,
       colTipo    : find(["tipo de controle","tipo / critério","tipo / criterio","tipo"]) ?? 4,
       colIncluir : find(["localizador incluir","ação","acao","incluir"]) ?? 5,
@@ -61,11 +64,12 @@
     };
   }
 
+  /* ===== Extratores ===== */
   function textWithoutImages(td){
     if (!td) return "";
     let out = "";
     td.childNodes.forEach(n => {
-      if (n.nodeType === 3) { out += n.nodeValue; }
+      if (n.nodeType === 3) out += n.nodeValue;
       else if (n.nodeType === 1 && n.tagName !== "IMG") {
         if (n.tagName === "BR") out += " ";
         else out += " " + (n.textContent || "");
@@ -79,10 +83,7 @@
     let el = td.querySelector('span[style*="text-decoration"]');
     if (el && el.textContent) return (el.textContent.match(/\d{1,6}/)||[])[0] || norm(el.textContent);
     el = td.querySelector('u, b, strong');
-    if (el && el.textContent) {
-      const m = el.textContent.match(/\d{1,6}/);
-      if (m) return m[0];
-    }
+    if (el && el.textContent) { const m = el.textContent.match(/\d{1,6}/); if (m) return m[0]; }
     const txt = norm(td.textContent || "");
     let m = txt.match(/^\s*(\d{1,6})\b/);
     if (m) return m[1];
@@ -90,10 +91,10 @@
     return m ? m[1] : "";
   }
 
-  function getPrioridadeTexto(td) {
+  function getPrioridadeTexto(td){
     if (!td) return "";
     const sel = td.querySelector("select");
-    if (sel) {
+    if (sel){
       const opt = sel.selectedOptions?.[0] || sel.querySelector("option[selected]") || sel.options?.[sel.selectedIndex];
       if (opt) return norm(String(opt.textContent || "").replace(/^Executar\s*/i, ""));
     }
@@ -108,26 +109,21 @@
     return m ? { raw: p, num: Number(m[0]), text: String(p).trim() } : { raw: p, num: null, text: "[*]" };
   }
 
-  // Captura robusta do comportamento REMOVER (tooltip + titles + texto)
-  function getRemoverBehaviorText(td) {
+  // Tooltip/title/texto visível do REMOVER
+  function getRemoverBehaviorText(td){
     if (!td) return "";
     let parts = [];
-
     const img = td.querySelector('img[onmouseover*="infraTooltipMostrar"]');
-    if (img) {
+    if (img){
       const js = img.getAttribute("onmouseover") || "";
       const m = js.match(/infraTooltipMostrar\('([^']*)'/);
       if (m) parts.push(norm(m[1]));
-      const t = img.getAttribute("title");
-      if (t) parts.push(norm(t));
-      const alt = img.getAttribute("alt");
-      if (alt) parts.push(norm(alt));
+      const t = img.getAttribute("title"); if (t) parts.push(norm(t));
+      const alt = img.getAttribute("alt");   if (alt) parts.push(norm(alt));
     }
-
     const tdTitle = td.getAttribute && td.getAttribute("title");
     if (tdTitle) parts.push(norm(tdTitle));
     parts.push(textWithoutImages(td));
-
     return parts.filter(Boolean).join(" | ");
   }
 
@@ -136,6 +132,7 @@
     return /remover\s+o\s+processo.*localizador(?:es)?\s+informado(?:s)?|remover\s+os\s+processos\s+de\s+todos\s+os\s+localizadores|remover\s+.*localizador/i.test(s);
   }
 
+  /* ===== Tokens e relação de “Outros Critérios” ===== */
   const tokenCache = new Map();
   function tokenBag(outros, tipo) {
     const key = `${tipo||""}||${outros||""}`;
@@ -144,7 +141,7 @@
     const base = (tipo ? `${tipo} ` : "") + (outros || "");
     cached = new Set(
       lower(base)
-        .split(/[;|,()/\-–—:+\[\]{}]|\s+e\s+|\s+ou\s+|\s+que\s+|\s+/gi)
+        .split(/[;|,()/\-–—:+\[\]{}]|\s+e\s+|\s+ou\s+|\s+/gi)
         .map(s => s.trim())
         .filter(Boolean)
     );
@@ -172,63 +169,56 @@
     return false;
   }
 
-  function parseRulesFromTable(table, cols, prevRowSig) {
+  /* ===== Parse da tabela ===== */
+  function parseRulesFromTable(table, cols) {
     const list = [];
     const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
-    const bodyRows = tbodys.flatMap(tb => Array.from(tb.rows));
-
-    for (const tr of bodyRows) {
+    const rows = tbodys.flatMap(tb => Array.from(tb.rows));
+    for (const tr of rows) {
       const tds = Array.from(tr.querySelectorAll(':scope > td'));
       if (!tds.length) continue;
 
-      const tdNumPrior   = tds[cols.colNumPrior] || tds[1];
-      const tdRemover    = tds[cols.colRemover]  || tds[3];
-      const tdTipo       = tds[cols.colTipo]     || tds[4];
-      const tdIncluir    = tds[cols.colIncluir]  || tds[5];
-      const tdOutros     = tds[cols.colOutros]   || tds[6];
+      const tdNumPrior = tds[cols.colNumPrior] || tds[1];
+      const tdRemover  = tds[cols.colRemover]  || tds[3];
+      const tdTipo     = tds[cols.colTipo]     || tds[4];
+      const tdIncluir  = tds[cols.colIncluir]  || tds[5];
+      const tdOutros   = tds[cols.colOutros]   || tds[6];
 
       const num = getNumeroRegra(tdNumPrior);
       if (!num) continue;
 
       const prioridadeTexto = getPrioridadeTexto(tdNumPrior);
-      const origem          = textWithoutImages(tdRemover);
-      const comportamento   = getRemoverBehaviorText(tdRemover);
-      const tipoCtrl        = norm(tdTipo ? tdTipo.textContent : "");
-      const destino         = norm(tdIncluir ? tdIncluir.textContent : "");
-      const outros          = norm(tdOutros ? tdOutros.textContent : "");
-
-      const sig = `${num}|${prioridadeTexto}|${origem}|${comportamento}|${tipoCtrl}|${destino}|${outros}`;
-      if (prevRowSig) prevRowSig.set(tr, sig);
-
-      list.push({
+      const regra = {
         num,
         prioridade: parsePriority(prioridadeTexto),
-        origem,
-        comportamento: comportamento || "[*]",
-        destino,
-        tipoRaw: tipoCtrl || "[*]",
-        outrosRaw: outros || "[*]",
+        origem: textWithoutImages(tdRemover),
+        comportamento: getRemoverBehaviorText(tdRemover) || "[*]",
+        destino: norm(tdIncluir?.textContent || ""),
+        tipoRaw: norm(tdTipo?.textContent || "") || "[*]",
+        outrosRaw: norm(tdOutros?.textContent || "") || "[*]",
         tr
-      });
+      };
+      list.push(regra);
     }
     return list;
   }
 
+  /* ===== Análise principal ===== */
   function analyzeConflicts(rules) {
-    const buckets = new Map(); // key: origem||tipo
+    // Bucket por (REMOVER, TIPO)
+    const buckets = new Map();
     for (const r of rules) {
       const key = `${r.origem || ""}||${r.tipoRaw}`;
       (buckets.get(key) || buckets.set(key, []).get(key)).push(r);
     }
 
-    const pairsMap = new Map(); // "i|j" -> { iNum, jNum, tipos:Set, motivos:Set, impactoMax }
+    const pairsMap = new Map(); // "i|j" ou "FORCE|..." -> rec
 
     const pairKey = (a,b) => {
       const i = String(a.num), j = String(b.num);
       return (i < j) ? `${i}|${j}` : `${j}|${i}`;
     };
 
-    // addRec: registro padrão (base = menor nº por consistência)
     const addRec = (i, j, tipo, impacto, motivo) => {
       const key = pairKey(i,j);
       const base = (String(i.num) < String(j.num)) ? i : j;
@@ -246,23 +236,12 @@
       pairsMap.set(key, rec);
     };
 
-    // NOVO: addRecDirected — força que o "alerta" apareça na regra 'baseToShow'
+    // “Direcionado”: alerta precisa aparecer na regra POSTERIOR
     const addRecDirected = (baseToShow, otherRule, tipo, impacto, motivo) => {
-      // Para que apareça na renderização da 'baseToShow', colocamos baseToShow como 'iNum'
-      // (mesmo que seu número não seja o menor). Para isso, se pairKey inverter, ajustamos ao final.
-      const keyAB = `${baseToShow.num}|${otherRule.num}`;
-      const keyBA = `${otherRule.num}|${baseToShow.num}`;
-      // Usamos a mesma estrutura, mas garantimos que na fase de render usar-se-á conflictsByRule.get(baseToShow.num)
-      // ao inserir rec, injetaremos depois no mapa base->other.
-      const rec = {
-        iNum: baseToShow.num,
-        jNum: otherRule.num,
-        tipos: new Set([tipo]),
-        motivos: new Set([motivo]),
-        impactoMax: impacto
-      };
-      // Guardamos temporariamente com uma chave sintética única
-      pairsMap.set(`FORCE|${keyAB}|${tipo}|${impacto}|${motivo}`, rec);
+      pairsMap.set(
+        `FORCE|${baseToShow.num}|${otherRule.num}|${tipo}|${impacto}`,
+        { iNum: baseToShow.num, jNum: otherRule.num, tipos: new Set([tipo]), motivos: new Set([motivo]), impactoMax: impacto }
+      );
     };
 
     for (const list of buckets.values()) {
@@ -272,40 +251,40 @@
         const A = list[x];
         for (let y=x+1; y<list.length; y++) {
           const B = list[y];
-          const rel = relationOutros(A.tipoRaw, A.outrosRaw, B.tipoRaw, B.outrosRaw);
 
-          const pA = A.prioridade.num, pB = B.prioridade.num;
-          const pKnown = (pA != null && pB != null);
+          const rel   = relationOutros(A.tipoRaw, A.outrosRaw, B.tipoRaw, B.outrosRaw);
+          const pA    = A.prioridade.num, pB = B.prioridade.num;
+          const known = (pA != null && pB != null);
 
-          // COLISÃO (idênticos)
+          // COLISÕES (Outros idênticos)
           if (rel === "identicos") {
-            if (pKnown && pA === pB) addRec(A, B, "Colisão Total", "Alto", "REMOVER, TIPO e OUTROS idênticos; mesma prioridade.");
+            if (known && pA === pB) addRec(A, B, "Colisão Total", "Alto", "REMOVER, TIPO e OUTROS idênticos; mesma prioridade.");
             else addRec(A, B, "Colisão Parcial", "Alto", "REMOVER, TIPO e OUTROS idênticos; prioridades diferentes.");
 
-            // PERDA DE OBJETO direcionada (somente se prioridade menor remove; alerta na maior)
-            if (pKnown && pA < pB && comportamentoRemove(A.comportamento))
+            // PERDA DE OBJETO direcionada (anterior remove esvazia a posterior)
+            if (known && pA < pB && comportamentoRemove(A.comportamento))
               addRecDirected(B, A, "Perda de Objeto", "Médio", "Regra anterior (prioridade menor) com 'remover' pode esvaziar esta (critérios idênticos).");
-            if (pKnown && pB < pA && comportamentoRemove(B.comportamento))
+            if (known && pB < pA && comportamentoRemove(B.comportamento))
               addRecDirected(A, B, "Perda de Objeto", "Médio", "Regra anterior (prioridade menor) com 'remover' pode esvaziar esta (critérios idênticos).");
             continue;
           }
 
-          // SOBREPOSIÇÃO (Outros diferentes + prioridade <=) — permanece
-          if (rel === "diferentes" && pKnown) {
+          // SOBREPOSIÇÃO (Outros diferentes, prioridade <=)
+          if (rel === "diferentes" && known) {
             if (pA <= pB) addRec(A, B, "Sobreposição", "Médio", "Outros critérios diferentes; prioridade da regra base é menor ou igual (pode sobrepor).");
             if (pB <= pA) addRec(B, A, "Sobreposição", "Médio", "Outros critérios diferentes; prioridade da regra base é menor ou igual (pode sobrepor).");
           }
 
-          // PERDA DE OBJETO direcionada (subconjunto)
-          if ((rel === "sub_a_em_b" || rel === "sub_b_em_a") && pKnown) {
+          // PERDA DE OBJETO (subconjunto)
+          if ((rel === "sub_a_em_b" || rel === "sub_b_em_a") && known) {
             if (pA < pB && comportamentoRemove(A.comportamento))
               addRecDirected(B, A, "Perda de Objeto", "Médio", "Regra anterior (prioridade menor) com 'remover' pode esvaziar esta (subconjunto).");
             if (pB < pA && comportamentoRemove(B.comportamento))
               addRecDirected(A, B, "Perda de Objeto", "Médio", "Regra anterior (prioridade menor) com 'remover' pode esvaziar esta (subconjunto).");
           }
 
-          // PERDA DE OBJETO direcionada (interseção textual)
-          if (pKnown && hasIntersectionTokens(A.outrosRaw, B.outrosRaw)) {
+          // PERDA DE OBJETO (interseção textual)
+          if (known && hasIntersectionTokens(A.outrosRaw, B.outrosRaw)) {
             if (pA < pB && comportamentoRemove(A.comportamento))
               addRecDirected(B, A, "Perda de Objeto", "Médio", "Regra anterior (prioridade menor) com 'remover' pode esvaziar esta (interseção textual).");
             if (pB < pA && comportamentoRemove(B.comportamento))
@@ -315,59 +294,60 @@
       }
     }
 
-    // Monta conflictsByRule combinando registros “normais” e os “direcionados”
+    // Converte pairsMap em mapa orientado: regraBase -> (outroNum -> rec)
     const conflictsByRule = new Map();
 
-    // 1) Normais (pares simétricos baseados no menor número)
+    // reg. "normais"
     for (const [k, rec] of pairsMap.entries()) {
-      if (String(k).startsWith("FORCE|")) continue; // pula os direcionados, trata já-já
+      if (String(k).startsWith("FORCE|")) continue;
       const base = rec.iNum, other = rec.jNum;
       (conflictsByRule.get(base) || conflictsByRule.set(base, new Map()).get(base)).set(other, rec);
     }
 
-    // 2) Direcionados (FORCE): garantir que apareçam NA REGRA BASE (alertada)
+    // reg. "direcionados"
     for (const [k, rec] of pairsMap.entries()) {
       if (!String(k).startsWith("FORCE|")) continue;
       const base = rec.iNum, other = rec.jNum;
-      const m = (conflictsByRule.get(base) || conflictsByRule.set(base, new Map()).get(base));
-      const already = m.get(other);
-      if (already) {
-        // mescla com um possível registro existente
-        for (const t of rec.tipos) already.tipos.add(t);
-        for (const mo of rec.motivos) already.motivos.add(mo);
-        if (impactoRank[rec.impactoMax] > impactoRank[already.impactoMax]) already.impactoMax = rec.impactoMax;
+      const bucket = (conflictsByRule.get(base) || conflictsByRule.set(base, new Map()).get(base));
+      const existing = bucket.get(other);
+      if (existing) {
+        for (const t of rec.tipos) existing.tipos.add(t);
+        for (const m of rec.motivos) existing.motivos.add(m);
+        if (impactoRank[rec.impactoMax] > impactoRank[existing.impactoMax]) existing.impactoMax = rec.impactoMax;
       } else {
-        m.set(other, rec);
+        bucket.set(other, rec);
       }
     }
 
     return conflictsByRule;
   }
 
-  function injectStyle() {
+  /* ===== UI ===== */
+  function injectStyle(){
     if (document.getElementById("atp-conf-inline-style")) return;
     const style = document.createElement("style");
     style.id = "atp-conf-inline-style";
     style.textContent = `
-      .atp-badge { display:inline-block; padding:2px 6px; border-radius:6px; font-size:11px; margin-right:6px; background:#e5e7eb; }
-      .atp-badge.collision   { background:#fecaca }
-      .atp-badge.overlap     { background:#fed7aa }
-      .atp-badge.objectloss  { background:#fde68a }
-      .atp-muted { color:#6b7280 }
-      .atp-sev-3 { background:#fff1f2 }
-      .atp-sev-2 { background:#fff7ed }
-      #btnRecalcATP { margin:8px 0; padding:6px 10px; font-weight:600; border:1px solid #065f46; background:#10b981; color:#083344; border-radius:6px; cursor:pointer; }
-      th[data-atp-col="motivo-th"] { width:200px; min-width:200px; max-width:200px; }
-      td[data-atp-col="motivo"]    { width:200px; max-width:200px; word-wrap:break-word; overflow-wrap:anywhere; }
+      .atp-badge{display:inline-block;padding:2px 6px;border-radius:6px;font-size:11px;margin-right:6px;background:#e5e7eb;}
+      .atp-badge.collision{background:#fecaca}
+      .atp-badge.overlap{background:#fed7aa}
+      .atp-badge.objectloss{background:#fde68a}
+      .atp-muted{color:#6b7280}
+      .atp-sev-3{background:#fff1f2}
+      .atp-sev-2{background:#fff7ed}
+      th[data-atp-col="motivo-th"]{width:200px;min-width:200px;max-width:200px;}
+      td[data-atp-col="motivo"]{width:200px;max-width:200px;word-wrap:break-word;overflow-wrap:anywhere;}
+      .atp-compare-btn{margin-left:8px; padding:2px 6px; border:1px solid #1f2937; border-radius:6px; font-size:11px; background:#f3f4f6; cursor:pointer;}
+      .atp-compare-btn:hover{background:#e5e7eb}
     `;
     document.head.appendChild(style);
   }
 
-  function ensureColumns(table) {
+  function ensureColumns(table){
     const thead = table.tHead || table.querySelector("thead");
     if (!thead) return;
 
-    const ths = thead.querySelectorAll("th");
+    const ths = Array.from(thead.querySelectorAll("th"));
     let hasConfl = false, hasMot = false, motivoTh = null;
 
     ths.forEach(th => {
@@ -376,40 +356,31 @@
       if (/Tipo\s*\/\s*Motivo/i.test(t)) { hasMot = true; motivoTh = th; }
     });
 
-    if (!hasConfl || !hasMot) {
-      const headerRow = thead.rows[0] || thead.querySelector("tr");
-      if (!headerRow) return;
-
-      if (!hasConfl) {
-        const th1 = document.createElement("th");
-        th1.textContent = "Conflita com (Nº)";
-        th1.style.whiteSpace = "nowrap";
-        th1.setAttribute("data-atp-col","conflita-th");
-        headerRow.appendChild(th1);
-      }
-      if (!hasMot) {
-        const th2 = document.createElement("th");
-        th2.textContent = "Tipo / Motivo";
-        th2.style.whiteSpace = "nowrap";
-        th2.setAttribute("data-atp-col","motivo-th");
-        th2.style.width = "200px";
-        th2.style.minWidth = "200px";
-        th2.style.maxWidth = "200px";
-        headerRow.appendChild(th2);
-        motivoTh = th2;
-      }
+    const headerRow = thead.rows[0] || thead.querySelector("tr");
+    if (!hasConfl) {
+      const th1 = document.createElement("th");
+      th1.textContent = "Conflita com (Nº)";
+      th1.style.whiteSpace = "nowrap";
+      th1.setAttribute("data-atp-col", "conflita-th");
+      headerRow.appendChild(th1);
     }
-
+    if (!hasMot) {
+      const th2 = document.createElement("th");
+      th2.textContent = "Tipo / Motivo";
+      th2.style.whiteSpace = "nowrap";
+      th2.setAttribute("data-atp-col", "motivo-th");
+      th2.style.width = "200px"; th2.style.minWidth = "200px"; th2.style.maxWidth = "200px";
+      headerRow.appendChild(th2);
+      motivoTh = th2;
+    }
     if (motivoTh) {
       motivoTh.setAttribute("data-atp-col","motivo-th");
-      motivoTh.style.width = "200px";
-      motivoTh.style.minWidth = "200px";
-      motivoTh.style.maxWidth = "200px";
+      motivoTh.style.width = "200px"; motivoTh.style.minWidth = "200px"; motivoTh.style.maxWidth = "200px";
     }
 
+    // garantir TDs nas linhas
     const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
     const bodyRows = tbodys.flatMap(tb => Array.from(tb.rows));
-
     bodyRows.forEach(tr => {
       let confTd = tr.querySelector('td[data-atp-col="conflita"]');
       let motTd  = tr.querySelector('td[data-atp-col="motivo"]');
@@ -434,8 +405,51 @@
 
   function severityForRec(rec) {
     let max = 0;
-    for (const t of rec.tipos) max = Math.max(max, tipoRank[t]||0);
+    for (const t of rec.tipos) max = Math.max(max, tipoRank[t] || 0);
     return max;
+  }
+
+  // ===== Helpers "Comparar" =====
+  function setNumeroRegraAndSearch(numsList){
+    try{
+      const txt = document.getElementById("txtNumeroRegra");
+      if (txt) {
+        txt.value = numsList.join("; ");
+        txt.dispatchEvent(new Event("input", { bubbles:true }));
+        txt.dispatchEvent(new Event("change", { bubbles:true }));
+      }
+      const btn = document.getElementById("sbmPesquisar");
+      if (btn) {
+        btn.click();
+      } else if (typeof window.enviarFormularioAutomatizacao === "function") {
+        window.enviarFormularioAutomatizacao();
+      }
+    } catch(e){
+      console.error("[ATP] Erro ao acionar comparação/pesquisa:", e);
+    }
+  }
+
+  function makeCompareButton(ruleNum, confTd){
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "atp-compare-btn";
+    btn.textContent = "Comparar";
+
+    btn.addEventListener("click", () => {
+      // pega os números exibidos no TD (separados por ;)
+      const raw = (confTd.textContent || "").trim();
+      const list = raw.split(";").map(s=>s.trim()).filter(Boolean);
+      // inclui a regra atual
+      list.push(String(ruleNum));
+      // normaliza/únicos
+      const uniq = Array.from(new Set(list.map(x => String(x).replace(/\D/g,"").trim()).filter(Boolean)));
+      // ordena numericamente
+      uniq.sort((a,b)=> Number(a)-Number(b));
+      // preenche input e dispara pesquisa
+      setNumeroRegraAndSearch(uniq);
+    });
+
+    return btn;
   }
 
   function renderIntoTable(table, rules, conflictsByRule, prevRendered) {
@@ -443,6 +457,7 @@
     const rows = tbodys.flatMap(tb => Array.from(tb.rows));
     const cols = mapColumns(table);
 
+    // num -> tr
     const rowMap = new Map();
     rows.forEach(tr => {
       const tds = tr.querySelectorAll(':scope > td');
@@ -464,8 +479,10 @@
 
       if (adj && adj.size) {
         hasConflict = true;
+
         const others = [...adj.keys()].sort((a,b)=> String(a).localeCompare(String(b), "pt-BR", { numeric:true, sensitivity:"base" }));
-        confStr = others.join(", ");
+        // separador por ponto e vírgula
+        confStr = others.join("; ");
 
         const tipoClass = (t) => ({
           "Colisão Total":"collision",
@@ -490,27 +507,40 @@
       if (hasConflict) tr.dataset.atpHasConflict = "1"; else delete tr.dataset.atpHasConflict;
 
       const prev = prevRendered.get(r.num) || { conf:"", html:"", sev:0 };
-      if (confStr !== prev.conf) confTd && (confTd.textContent = confStr);
-      if (motivoHTML !== prev.html) motTd && (motTd.innerHTML = motivoHTML);
+      // atualiza coluna Conflita com (Nº)
+      if (confStr !== prev.conf) {
+        if (confTd){
+          // limpar conteúdo e reescrever (texto + botão)
+          confTd.textContent = confStr;
+          // remove botão antigo se houver
+          const oldBtn = confTd.querySelector(".atp-compare-btn");
+          if (oldBtn) oldBtn.remove();
+          // adiciona o botão somente se houver números
+          if (confStr.trim().length){
+            const btn = makeCompareButton(r.num, confTd);
+            confTd.appendChild(btn);
+          }
+        }
+      } else {
+        // garantir botão presente (em caso de mutações)
+        if (confTd && confStr.trim().length && !confTd.querySelector(".atp-compare-btn")){
+          const btn = makeCompareButton(r.num, confTd);
+          confTd.appendChild(btn);
+        }
+      }
 
+      // atualiza Tipo/Motivo
+      if (motivoHTML!== prev.html) motTd  && (motTd.innerHTML = motivoHTML);
+
+      // severidade (fundo)
       if (prev.sev !== maxSev) {
-        tr.classList.remove("atp-sev-2","atp-sev-3");
+        tr.classList.remove("atp-sev-2", "atp-sev-3");
         if (maxSev >= 2) tr.classList.add(`atp-sev-${maxSev}`);
       }
       prevRendered.set(r.num, { conf: confStr, html: motivoHTML, sev: maxSev });
     }
 
     applyConflictFilter(table, filterOnlyConflicts);
-  }
-
-  function addRecalcButton(table, onClick) {
-    if (document.getElementById("btnRecalcATP")) return;
-    const btn = document.createElement("button");
-    btn.id = "btnRecalcATP";
-    btn.type = "button";
-    btn.textContent = "(Re)calcular Conflitos";
-    table.parentElement.insertBefore(btn, table);
-    btn.addEventListener("click", () => scheduleIdle(onClick, 0));
   }
 
   function addOnlyConflictsCheckbox(table, onChange) {
@@ -545,14 +575,11 @@
     const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
     const bodyRows = tbodys.flatMap(tb => Array.from(tb.rows));
     for (const tr of bodyRows) {
-      if (!only) {
-        tr.style.display = "";
-      } else {
-        tr.style.display = tr.dataset.atpHasConflict === "1" ? "" : "none";
-      }
+      tr.style.display = (!only || tr.dataset.atpHasConflict === "1") ? "" : "none";
     }
   }
 
+  /* ===== Localização da tabela ===== */
   function findTargetTable() {
     let t = document.querySelector("#tableAutomatizacaoLocalizadores");
     if (t) return t;
@@ -594,8 +621,8 @@
     });
   }
 
+  /* ===== Fluxo ===== */
   function makeRunner(table){
-    const prevRowSig = new WeakMap();
     const prevRendered = new Map();
     let lastTableHash = "";
     let cols = mapColumns(table);
@@ -604,10 +631,11 @@
       if (!document.body.contains(table)) return;
       ensureColumns(table);
       cols = mapColumns(table);
-      const rowSigCollector = new WeakMap();
-      const rules = parseRulesFromTable(table, cols, rowSigCollector);
+
+      const rules = parseRulesFromTable(table, cols);
       if (!rules.length) return;
 
+      // hashing leve do conteúdo lido
       let combined = "";
       for (const r of rules) combined += `${r.num}|${r.prioridade.text}|${r.origem}|${r.comportamento}|${r.tipoRaw}|${r.destino}|${r.outrosRaw}#`;
       if (combined === lastTableHash) {
@@ -618,8 +646,6 @@
 
       const conflictsByRule = analyzeConflicts(rules);
       renderIntoTable(table, rules, conflictsByRule, prevRendered);
-
-      for (const [tr, sig] of rowSigCollector.entries()) prevRowSig.set(tr, sig);
     };
 
     return recalc;
@@ -632,80 +658,10 @@
     });
   }
 
-  function ensureColumns(table) {
-    const thead = table.tHead || table.querySelector("thead");
-    if (!thead) return;
-
-    const ths = thead.querySelectorAll("th");
-    let hasConfl = false, hasMot = false, motivoTh = null;
-
-    ths.forEach(th => {
-      const t = th.textContent || "";
-      if (/Conflita com/i.test(t)) hasConfl = true;
-      if (/Tipo\s*\/\s*Motivo/i.test(t)) { hasMot = true; motivoTh = th; }
-    });
-
-    if (!hasConfl || !hasMot) {
-      const headerRow = thead.rows[0] || thead.querySelector("tr");
-      if (!headerRow) return;
-
-      if (!hasConfl) {
-        const th1 = document.createElement("th");
-        th1.textContent = "Conflita com (Nº)";
-        th1.style.whiteSpace = "nowrap";
-        th1.setAttribute("data-atp-col","conflita-th");
-        headerRow.appendChild(th1);
-      }
-      if (!hasMot) {
-        const th2 = document.createElement("th");
-        th2.textContent = "Tipo / Motivo";
-        th2.style.whiteSpace = "nowrap";
-        th2.setAttribute("data-atp-col","motivo-th");
-        th2.style.width = "200px";
-        th2.style.minWidth = "200px";
-        th2.style.maxWidth = "200px";
-        headerRow.appendChild(th2);
-        motivoTh = th2;
-      }
-    }
-
-    if (motivoTh) {
-      motivoTh.setAttribute("data-atp-col","motivo-th");
-      motivoTh.style.width = "200px";
-      motivoTh.style.minWidth = "200px";
-      motivoTh.style.maxWidth = "200px";
-    }
-
-    const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
-    const bodyRows = tbodys.flatMap(tb => Array.from(tb.rows));
-
-    bodyRows.forEach(tr => {
-      let confTd = tr.querySelector('td[data-atp-col="conflita"]');
-      let motTd  = tr.querySelector('td[data-atp-col="motivo"]');
-      if (!confTd) {
-        confTd = document.createElement("td");
-        confTd.dataset.atpCol = "conflita";
-        confTd.style.verticalAlign = "top";
-        tr.appendChild(confTd);
-      }
-      if (!motTd) {
-        motTd = document.createElement("td");
-        motTd.dataset.atpCol = "motivo";
-        motTd.style.verticalAlign = "top";
-        motTd.style.width = "200px";
-        motTd.style.maxWidth = "200px";
-        tr.appendChild(motTd);
-      }
-    });
-
-    injectStyle();
-  }
-
   function start(table){
     ensureColumns(table);
     const recalc = makeRunner(table);
 
-    addRecalcButton(table, recalc);
     addOnlyConflictsCheckbox(table, () => scheduleIdle(recalc, 0));
     bindPriorityChange(table, recalc);
     scheduleIdle(recalc, 0);
@@ -734,6 +690,6 @@
     start(table);
   }
 
-  try { console.log("[ATP] v2.8.4 ativo em:", location.href); } catch(e){}
+  try { console.log("[ATP] v2.9.0 ativo em:", location.href); } catch(e){}
   init();
 })();
