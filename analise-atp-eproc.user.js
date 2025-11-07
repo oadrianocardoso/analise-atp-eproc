@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      2.9.0
-// @description  Analisa regras do eProc e detecta: COLISÃO TOTAL, COLISÃO PARCIAL, SOBREPOSIÇÃO e PERDA DE OBJETO (direcionada). Adiciona colunas, filtro e otimizações de performance. Mostra os números separados por ponto e vírgula (;). Botão "Comparar" preenche #txtNumeroRegra e dispara a pesquisa.
+// @version      3.0
+// @description  Analisa regras do eProc e detecta: COLISÃO TOTAL, COLISÃO PARCIAL, SOBREPOSIÇÃO e PERDA DE OBJETO (direcionada). Adiciona colunas, filtro e otimizações de performance. Números por ponto e vírgula (;). Botão "Comparar" preenche #txtNumeroRegra e dispara a pesquisa. Perda de Objeto não dispara quando o comportamento for “NÃO remover (apenas acrescentar)”.
 // @author       ADRIANO
 // @run-at       document-end
 // @noframes
@@ -127,9 +127,19 @@
     return parts.filter(Boolean).join(" | ");
   }
 
+  /**
+   * >>> AJUSTE: Se o texto indicar "NÃO remover ... (apenas acrescentar o indicado)",
+   * a função retorna FALSE (não remove), evitando Perda de Objeto.
+   * Também ignora variações "nao remover" e "apenas acrescentar o indicado".
+   */
   function comportamentoRemove(txt){
-    const s = lower(txt);
-    return /remover\s+o\s+processo.*localizador(?:es)?\s+informado(?:s)?|remover\s+os\s+processos\s+de\s+todos\s+os\s+localizadores|remover\s+.*localizador/i.test(s);
+    const s = lower(txt || "");
+    // casos explícitos de NÃO remover
+    if (/\bna[oõ]\s*remover\b/.test(s)) return false;
+    if (/apenas\s+acrescentar\s+o\s+indicado/.test(s)) return false;
+
+    // demais casos de remoção (qualquer variação “remover ... localizador(es)/todos localizadores”)
+    return /remover\s+o\s+processo.*localizador(?:es)?\s+informado(?:s)?|remover\s+o\s+processo\s+de\s+todos\s+localizadores|remover\s+os\s+processos\s+de\s+todos\s+os\s+localizadores|remover\s+.*localizador/.test(s);
   }
 
   /* ===== Tokens e relação de “Outros Critérios” ===== */
@@ -690,6 +700,6 @@
     start(table);
   }
 
-  try { console.log("[ATP] v2.9.0 ativo em:", location.href); } catch(e){}
+  try { console.log("[ATP] v2.9.1 ativo em:", location.href); } catch(e){}
   init();
 })();
