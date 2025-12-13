@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      3.1
-// @description  Colisão Total/Parcial, Sobreposição, Perda de Objeto (direcionada) e Looping (multi-localizadores); colunas, botão Comparar, filtro e ícone REMOVER.
-// @author       ADRIANO
+// @version      3.5
+// @description  Colisão Total/Parcial, Sobreposição, Perda de Objeto (direcionada) e Looping (multi-localizadores); ignora regras desativadas; coluna única de conflitos com tooltip e botão Comparar; filtro e ícone REMOVER, usando critérios estruturados da coluna "Outros critérios".
+// @author
 // @run-at       document-end
 // @noframes
 // @match        https://eproc1g.tjsp.jus.br/eproc/*
@@ -79,7 +79,7 @@
       if (opt) return norm(String(opt.textContent||"").replace(/^Executar\s*/i, ""));
     }
     const raw = norm(td?.textContent || "");
-    const m = raw.match(/prioridade[^0-9]*([0-9]{1,4})/i);
+    const m = raw.match(/([0-9]{1,4})/);
     return m ? m[1] : raw;
   }
 
@@ -119,6 +119,39 @@
     return /remover\s+o\s+processo.*localizador(?:es)?\s+informado(?:s)?|remover\s+o\s+processo\s+de\s+todos\s+localizadores|remover\s+os\s+processos\s+de\s+todos\s+os\s+localizadores|remover\s+.*localizador/.test(s);
   }
 
+  // normaliza chave: "Juízo do Processo:" -> "juizodoprocesso"
+  function normalizarChave(label) {
+    if (!label) return null;
+    let key = label.replace(/:/g,"").trim();
+    key = key.normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+    key = key.toLowerCase().replace(/[^a-z0-9]/g,"");
+    return key || null;
+  }
+
+  // extrai mapa de critérios estruturados da coluna "Outros critérios"
+  function extrairMapaCriterios(tdOutros) {
+    const criterios = {};
+    if (!tdOutros) return criterios;
+
+    const divs = tdOutros.querySelectorAll("div.ml-0.pt-2");
+    divs.forEach(div => {
+      const span = div.querySelector("span.lblFiltro, span.font-weight-bold");
+      if (!span) return;
+      const label = span.textContent || "";
+      const key = normalizarChave(label);
+      if (!key) return;
+
+      let valor = div.textContent || "";
+      valor = valor.replace(label, "");
+      valor = valor.replace(/\u00a0/g, " ");
+      valor = valor.replace(/\s+/g," ").trim();
+
+      criterios[key] = valor;
+    });
+
+    return criterios;
+  }
+
   const OUTROS_GROUP_KEYS = [
     "classe","competencia","rito","juizo do processo","representacao processual das partes",
     "documentos evento/peticao","dado complementar da parte","classificador por conteudo","digito distribuicao"
@@ -141,7 +174,9 @@
 
   function splitValues(raw){
     if (!raw) return new Set();
-    const base = rmAcc(lower(raw)).replace(/\s*\(\s*\)\s*/g,"").replace(/[|]+/g,"|").replace(/,+/g,",").replace(/\s{2,}/g," ").replace(/[.;]\s*$/,"").trim();
+    const base = rmAcc(lower(raw)).replace(/\s*\(\s*\)\s*/g,"").replace(/[|]+/g,"|")
+               .replace(/,+/g,",").replace(/\s{2,}/g," ")
+               .replace(/[.;]\s*$/,"").trim();
     return new Set(base.split(/;|\||,|\s+ou\s+|\s+e\s+/i).map(s => s.trim()).filter(Boolean));
   }
 
@@ -166,6 +201,20 @@
     return res;
   }
 
+  function parseOutrosFromCriterios(criterios){
+    const res = { grupos: new Map(), livre: new Set() };
+    if (!criterios) return res;
+
+    for (const [key, val] of Object.entries(criterios)) {
+      if (!val) continue;
+      const vals = splitValues(val);
+      if (!res.grupos.has(key)) res.grupos.set(key, new Set());
+      const set = res.grupos.get(key);
+      vals.forEach(v => set.add(v));
+    }
+    return res;
+  }
+
   function outrosIdenticos(a, b){
     if (a.grupos.size !== b.grupos.size || a.livre.size !== b.livre.size) return false;
     for (const [k, setA] of a.grupos.entries()){
@@ -184,53 +233,30 @@
       for (const v of setA) if (!setB.has(v)) return false;
     }
     for (const v of a.livre) if (!b.livre.has(v)) return false;
+
     const hasMore = (b.grupos.size > a.grupos.size) ||
                     Array.from(b.grupos.keys()).some(k => (a.grupos.get(k)?.size ?? 0) < b.grupos.get(k).size) ||
                     (b.livre.size > a.livre.size);
     return hasMore;
   }
 
-  function relationOutros(_tA, aRaw, _tB, bRaw) {
-    const sa = parseOutros(aRaw), sb = parseOutros(bRaw);
+  function buildOutrosEstrutura(rule){
+    if (rule.criterios && Object.keys(rule.criterios).length){
+      return parseOutrosFromCriterios(rule.criterios);
+    }
+    return parseOutros(rule.outrosRaw);
+  }
+
+  function relationOutros(ruleA, ruleB) {
+    const sa = buildOutrosEstrutura(ruleA);
+    const sb = buildOutrosEstrutura(ruleB);
+
     if (outrosIdenticos(sa, sb)) return "identicos";
     if (outrosSubAemB(sa, sb))   return "sub_a_em_b";
     if (outrosSubAemB(sb, sa))   return "sub_b_em_a";
     return "diferentes";
   }
 
-  function parseRulesFromTable(table, cols) {
-    const list = [];
-    const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
-    const rows = tbodys.flatMap(tb => Array.from(tb.rows));
-    for (const tr of rows) {
-      const tds = Array.from(tr.querySelectorAll(':scope > td'));
-      if (!tds.length) continue;
-
-      const tdNumPrior = tds[cols.colNumPrior] || tds[1];
-      const tdRemover  = tds[cols.colRemover]  || tds[3];
-      const tdTipo     = tds[cols.colTipo]     || tds[4];
-      const tdIncluir  = tds[cols.colIncluir]  || tds[5];
-      const tdOutros   = tds[cols.colOutros]   || tds[6];
-
-      const num = getNumeroRegra(tdNumPrior);
-      if (!num) continue;
-
-      const prioridadeTexto = getPrioridadeTexto(tdNumPrior);
-      list.push({
-        num,
-        prioridade: parsePriority(prioridadeTexto),
-        origem: textWithoutImages(tdRemover),
-        comportamento: getRemoverBehaviorText(tdRemover) || "[*]",
-        destino: norm(tdIncluir?.textContent || ""),
-        tipoRaw: norm(tdTipo?.textContent || "") || "[*]",
-        outrosRaw: norm(tdOutros?.textContent || "") || "[*]",
-        tr
-      });
-    }
-    return list;
-  }
-
-  // Extrai TODAS as siglas “SIGLA - Descrição” de um campo; retorna Set(siglas)
   function locSiglas(cellText){
     const parts = norm(cellText).split(/\s*\|\s*/).map(s => s.trim()).filter(Boolean);
     const set = new Set();
@@ -245,11 +271,63 @@
     return set;
   }
 
+  function parseRulesFromTable(table, cols) {
+    const list = [];
+    const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
+    const rows = tbodys.flatMap(tb => Array.from(tb.rows));
+
+    for (const tr of rows) {
+      const tds = Array.from(tr.querySelectorAll(':scope > td'));
+      if (!tds.length) continue;
+
+      delete tr.dataset.atpInactive;
+      if (!filterOnlyConflicts) tr.style.display = "";
+
+      const tdNumPrior = tds[cols.colNumPrior] || tds[1];
+      const tdRemover  = tds[cols.colRemover]  || tds[3];
+      const tdTipo     = tds[cols.colTipo]     || tds[4];
+      const tdIncluir  = tds[cols.colIncluir]  || tds[5];
+      const tdOutros   = tds[cols.colOutros]   || tds[6];
+
+      const tdAcoes = tds.find(td => td.querySelector('input.custom-control-input')) || tds[tds.length - 1];
+      const chkAtiva = tdAcoes?.querySelector('input.custom-control-input');
+      const ativa = !!(chkAtiva && chkAtiva.checked);
+
+      if (!ativa) {
+        tr.dataset.atpInactive = "1";
+        tr.style.display = "none";
+        continue;
+      }
+
+      const num = getNumeroRegra(tdNumPrior);
+      if (!num) continue;
+
+      const prioridadeTexto = getPrioridadeTexto(tdNumPrior);
+      const criterios       = extrairMapaCriterios(tdOutros);
+
+      list.push({
+        num,
+        prioridade: parsePriority(prioridadeTexto),
+        origem: textWithoutImages(tdRemover),
+        comportamento: getRemoverBehaviorText(tdRemover) || "[*]",
+        destino: norm(tdIncluir?.textContent || ""),
+        tipoRaw: norm(tdTipo?.textContent || "") || "[*]",
+        outrosRaw: norm(tdOutros?.textContent || "") || "[*]",
+        criterios,
+        ativa,
+        tr
+      });
+    }
+    return list;
+  }
+
   function analyzeConflicts(rules) {
     const buckets = new Map();
     for (const r of rules) {
       const key = `${r.origem || ""}||${r.tipoRaw}`;
-      (buckets.get(key) || buckets.set(key, []).get(key)).push(r);
+      let arr = buckets.get(key);
+      if (!arr) { arr = []; buckets.set(key, arr); }
+      arr.push(r);
     }
 
     const pairKey = (a,b) => {
@@ -273,14 +351,13 @@
         { iNum: baseToShow.num, jNum: otherRule.num, tipos: new Set([tipo]), motivos: new Set([motivo]), impactoMax: impacto });
     };
 
-    // (REMOVER, TIPO) iguais
     for (const list of buckets.values()) {
       if (!list || list.length < 2) continue;
       for (let x=0; x<list.length; x++) {
         const A = list[x];
         for (let y=x+1; y<list.length; y++) {
           const B = list[y];
-          const rel = relationOutros(A.tipoRaw, A.outrosRaw, B.tipoRaw, B.outrosRaw);
+          const rel = relationOutros(A, B);
           const pA  = A.prioridade.num, pB = B.prioridade.num;
           const known = (pA != null && pB != null);
 
@@ -298,13 +375,17 @@
           }
 
           if (known) {
-            if (rel === "sub_b_em_a" && pA < pB) addRec(A, B, "Sobreposição", "Médio", "A é mais amplo (Outros de A ⊃ B) e executa antes (prioridade menor).");
-            if (rel === "sub_a_em_b" && pB < pA) addRec(B, A, "Sobreposição", "Médio", "B é mais amplo (Outros de B ⊃ A) e executa antes (prioridade menor).");
+            if (rel === "sub_a_em_b" && pA < pB)
+              addRec(A, B, "Sobreposição", "Médio", "A é mais amplo (Outros de A ⊃ B) e executa antes (prioridade menor).");
+
+            if (rel === "sub_b_em_a" && pB < pA)
+              addRec(B, A, "Sobreposição", "Médio", "B é mais amplo (Outros de B ⊃ A) e executa antes (prioridade menor).");
           }
 
-          if (known && rel === "sub_b_em_a" && pA < pB && comportamentoRemove(A.comportamento))
+          if (known && rel === "sub_a_em_b" && pA < pB && comportamentoRemove(A.comportamento))
             addRecDirected(B, A, "Perda de Objeto", "Médio", "Regra anterior com 'remover' pode esvaziar esta (A ⊃ B).");
-          if (known && rel === "sub_a_em_b" && pB < pA && comportamentoRemove(B.comportamento))
+
+          if (known && rel === "sub_b_em_a" && pB < pA && comportamentoRemove(B.comportamento))
             addRecDirected(A, B, "Perda de Objeto", "Médio", "Regra anterior com 'remover' pode esvaziar esta (B ⊃ A).");
         }
       }
@@ -316,7 +397,7 @@
       for (let j=i+1; j<rules.length; j++){
         const B = rules[j];
         if (lower(A.tipoRaw) !== lower(B.tipoRaw)) continue;
-        if (relationOutros(A.tipoRaw, A.outrosRaw, B.tipoRaw, B.outrosRaw) !== "identicos") continue;
+        if (relationOutros(A, B) !== "identicos") continue;
 
         const remA = locSiglas(A.origem), incA = locSiglas(A.destino);
         const remB = locSiglas(B.origem), incB = locSiglas(B.destino);
@@ -327,7 +408,13 @@
         if (aRemAlgumQueBInclui && bRemAlgumQueAInclui){
           const motivo = `Looping potencial: A remove ${A.origem} e inclui ${A.destino}; B remove ${B.origem} e inclui ${B.destino}; Outros idênticos.`;
           const key = pairKey(A,B);
-          pairsMap.set(key, { iNum: Math.min(+A.num,+B.num).toString(), jNum: Math.max(+A.num,+B.num).toString(), tipos: new Set(["Looping"]), motivos: new Set([motivo]), impactoMax: "Alto" });
+          pairsMap.set(key, {
+            iNum: Math.min(+A.num,+B.num).toString(),
+            jNum: Math.max(+A.num,+B.num).toString(),
+            tipos: new Set(["Looping"]),
+            motivos: new Set([motivo]),
+            impactoMax: "Alto"
+          });
         }
       }
     }
@@ -336,19 +423,24 @@
     for (const [k, rec] of pairsMap.entries()) {
       if (String(k).startsWith("FORCE|")) continue;
       const base = rec.iNum, other = rec.jNum;
-      (conflictsByRule.get(base) || conflictsByRule.set(base, new Map()).get(base)).set(other, rec);
+      let bucket = conflictsByRule.get(base);
+      if (!bucket) { bucket = new Map(); conflictsByRule.set(base, bucket); }
+      bucket.set(other, rec);
     }
+
     for (const [k, rec] of pairsMap.entries()) {
       if (!String(k).startsWith("FORCE|")) continue;
       const base = rec.iNum, other = rec.jNum;
-      if (!conflictsByRule.has(base)) conflictsByRule.set(base, new Map());
-      const bucket = conflictsByRule.get(base);
+      let bucket = conflictsByRule.get(base);
+      if (!bucket) { bucket = new Map(); conflictsByRule.set(base, bucket); }
       const ex = bucket.get(other);
       if (ex){
         rec.tipos.forEach(t => ex.tipos.add(t));
         rec.motivos.forEach(m => ex.motivos.add(m));
         if (impactoRank[rec.impactoMax] > impactoRank[ex.impactoMax]) ex.impactoMax = rec.impactoMax;
-      } else bucket.set(other, rec);
+      } else {
+        bucket.set(other, rec);
+      }
     }
     return conflictsByRule;
   }
@@ -366,11 +458,19 @@
       .atp-muted{color:#6b7280}
       .atp-sev-3{background:#fff1f2}
       .atp-sev-2{background:#fff7ed}
-      th[data-atp-col="motivo-th"]{width:200px;min-width:200px;max-width:200px;}
-      td[data-atp-col="motivo"]{width:200px;max-width:200px;word-wrap:break-word;overflow-wrap:anywhere;}
-      .atp-compare-btn{margin-left:8px;padding:2px 6px;border:1px solid #1f2937;border-radius:6px;font-size:11px;background:#f3f4f6;cursor:pointer;}
+      th[data-atp-col="motivo-th"],
+      td[data-atp-col="motivo"]{display:none !important;}
+      th[data-atp-col="conflita-th"]{width:260px;min-width:260px;max-width:260px;}
+      td[data-atp-col="conflita"]{width:260px;max-width:260px;word-wrap:break-word;overflow-wrap:anywhere;}
+      .atp-compare-btn{margin-top:4px;padding:2px 6px;border:1px solid #1f2937;border-radius:6px;font-size:11px;background:#f3f4f6;cursor:pointer;}
       .atp-compare-btn:hover{background:#e5e7eb}
       img.atp-behavior-icon{vertical-align:middle;margin-left:6px}
+      .atp-conf-num{font-weight:bold;margin-right:3px;}
+      .atp-conf-tipo{font-weight:bold;padding:1px 4px;border-radius:4px;}
+      .atp-conf-tipo.collision{background:#fecaca;}
+      .atp-conf-tipo.overlap{background:#fed7aa;}
+      .atp-conf-tipo.objectloss{background:#fde68a;}
+      .atp-conf-tipo.loop{background:#fee2e2;}
     `;
     document.head.appendChild(style);
   }
@@ -390,23 +490,24 @@
     const headerRow = thead.rows[0] || thead.querySelector("tr");
     if (!hasConfl) {
       const th1 = document.createElement("th");
-      th1.textContent = "Conflita com (Nº)";
+      th1.textContent = "Conflita com / Tipo";
       th1.style.whiteSpace = "nowrap";
       th1.setAttribute("data-atp-col", "conflita-th");
       headerRow.appendChild(th1);
+    } else {
+      const thConf = ths.find(th => /Conflita com/i.test(th.textContent||""));
+      if (thConf) thConf.setAttribute("data-atp-col","conflita-th");
     }
+
     if (!hasMot) {
       const th2 = document.createElement("th");
       th2.textContent = "Tipo / Motivo";
       th2.style.whiteSpace = "nowrap";
       th2.setAttribute("data-atp-col", "motivo-th");
-      th2.style.width = "200px"; th2.style.minWidth = "200px"; th2.style.maxWidth = "200px";
       headerRow.appendChild(th2);
       motivoTh = th2;
-    }
-    if (motivoTh) {
+    } else if (motivoTh) {
       motivoTh.setAttribute("data-atp-col","motivo-th");
-      motivoTh.style.width = "200px"; motivoTh.style.minWidth = "200px"; motivoTh.style.maxWidth = "200px";
     }
 
     const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
@@ -415,7 +516,7 @@
       let confTd = tr.querySelector('td[data-atp-col="conflita"]');
       let motTd  = tr.querySelector('td[data-atp-col="motivo"]');
       if (!confTd) { confTd = document.createElement("td"); confTd.dataset.atpCol = "conflita"; confTd.style.verticalAlign = "top"; tr.appendChild(confTd); }
-      if (!motTd)  { motTd  = document.createElement("td"); motTd.dataset.atpCol  = "motivo";  motTd.style.verticalAlign  = "top"; motTd.style.width="200px"; motTd.style.maxWidth="200px"; tr.appendChild(motTd); }
+      if (!motTd)  { motTd  = document.createElement("td"); motTd.dataset.atpCol  = "motivo";  motTd.style.verticalAlign  = "top"; tr.appendChild(motTd); }
     });
 
     injectStyle();
@@ -439,18 +540,24 @@
     }catch{}
   }
 
+  // == botão Comparar lendo números do dataset ==
   function makeCompareButton(ruleNum, confTd){
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "atp-compare-btn";
     btn.textContent = "Comparar";
     btn.addEventListener("click", () => {
-      const raw = (confTd.textContent || "").trim();
-      const uniq = Array.from(new Set(
-        raw.split(";").map(s=>s.trim()).filter(Boolean)
-           .concat(String(ruleNum))
-           .map(x => String(x).replace(/\D/g,"").trim()).filter(Boolean)
-      )).sort((a,b)=> Number(a)-Number(b));
+      const rawNums = (confTd.dataset.atpConfNums || "")
+        .split(",")
+        .map(s => s.trim())
+        .filter(Boolean);
+
+      const all = rawNums.concat(String(ruleNum));
+      const uniq = Array.from(new Set(all))
+        .map(x => x.trim())
+        .filter(Boolean)
+        .sort((a,b)=> Number(a)-Number(b));
+
       setNumeroRegraAndSearch(uniq);
     });
     return btn;
@@ -504,6 +611,14 @@
       if (num) rowMap.set(num, tr);
     });
 
+    const tipoClass = (t) => ({
+      "Colisão Total":"collision",
+      "Colisão Parcial":"collision",
+      "Sobreposição":"overlap",
+      "Perda de Objeto":"objectloss",
+      "Looping":"loop"
+    }[t] || "");
+
     for (const r of rules) {
       const adj = conflictsByRule.get(r.num);
       const tr  = rowMap.get(r.num);
@@ -511,45 +626,63 @@
 
       const confTd = tr.querySelector('td[data-atp-col="conflita"]');
       const motTd  = tr.querySelector('td[data-atp-col="motivo"]');
+      if (motTd) motTd.textContent = "";
 
-      let confStr = "", motivoHTML = "", maxSev = 0;
+      let confStr = "", maxSev = 0;
+      let htmlParts = [];
 
       if (adj && adj.size) {
         const others = [...adj.keys()].sort((a,b)=> Number(a)-Number(b));
         confStr = others.join("; ");
-        const tipoClass = (t) => ({ "Colisão Total":"collision","Colisão Parcial":"collision","Sobreposição":"overlap","Perda de Objeto":"objectloss","Looping":"loop" }[t] || "");
-        const htmlParts = [];
+
+        // grava lista de conflitos estruturada para o botão Comparar
+        if (confTd) confTd.dataset.atpConfNums = others.join(",");
+
         for (const n of others) {
           const rec = adj.get(n);
           const tiposOrd = [...rec.tipos].sort((a,b)=> (tipoRank[b]-tipoRank[a]));
           if (!tiposOrd.length) continue;
-          const badges = tiposOrd.map(t=> `<span class="atp-badge ${tipoClass(t)}">${t}</span>`).join(" ");
+          const tipoPrincipal = tiposOrd[0];
+          const cls = tipoClass(tipoPrincipal);
+          const impacto = rec.impactoMax;
           const motivoTxt = [...rec.motivos].join(" | ");
-          htmlParts.push(`<div>${badges} <span class="atp-muted">(${esc(rec.impactoMax)})</span> — ${esc(motivoTxt)}</div>`);
+          const tooltip = `${tipoPrincipal} (${impacto}) — ${motivoTxt}`;
+
+          htmlParts.push(
+            `<div>` +
+              `<span class="atp-conf-num">${esc(n)}:</span> ` +
+              `<span class="atp-conf-tipo ${cls}" title="${esc(tooltip)}">${esc(tipoPrincipal)}</span>` +
+            `</div>`
+          );
+
           maxSev = Math.max(maxSev, severityForRec(rec));
         }
-        motivoHTML = htmlParts.join("");
         tr.dataset.atpHasConflict = "1";
       } else {
         delete tr.dataset.atpHasConflict;
+        if (confTd) delete confTd.dataset.atpConfNums;
       }
 
       const prev = prevRendered.get(r.num) || { conf:"", html:"", sev:0 };
-      if (confStr !== prev.conf && confTd){
-        confTd.textContent = confStr;
-        confTd.querySelector(".atp-compare-btn")?.remove();
-        if (confStr.trim().length) confTd.appendChild(makeCompareButton(r.num, confTd));
-      } else if (confTd && confStr.trim().length && !confTd.querySelector(".atp-compare-btn")){
-        confTd.appendChild(makeCompareButton(r.num, confTd));
-      }
 
-      if (motivoHTML !== prev.html && motTd){ motTd.innerHTML = motivoHTML; motTd.title = motTd.textContent.trim(); }
+      if (confTd){
+        if (htmlParts.length) confTd.innerHTML = htmlParts.join("");
+        else confTd.innerHTML = "";
+
+        confTd.querySelector(".atp-compare-btn")?.remove();
+        if (confStr.trim().length) {
+          const btnWrap = document.createElement("div");
+          btnWrap.appendChild(makeCompareButton(r.num, confTd));
+          confTd.appendChild(btnWrap);
+        }
+      }
 
       if (prev.sev !== maxSev) {
         tr.classList.remove("atp-sev-2","atp-sev-3");
         if (maxSev >= 2) tr.classList.add(`atp-sev-${maxSev}`);
       }
-      prevRendered.set(r.num, { conf: confStr, html: motivoHTML, sev: maxSev });
+
+      prevRendered.set(r.num, { conf: confStr, html: htmlParts.join(""), sev: maxSev });
     }
     applyConflictFilter(table, filterOnlyConflicts);
   }
@@ -572,14 +705,31 @@
   function applyConflictFilter(table, only) {
     const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
     const rows = tbodys.flatMap(tb => Array.from(tb.rows));
-    rows.forEach(tr => tr.style.display = (!only || tr.dataset.atpHasConflict === "1") ? "" : "none");
+
+    rows.forEach(tr => {
+      if (tr.dataset.atpInactive === "1") {
+        tr.style.display = "none";
+        return;
+      }
+      if (!only) {
+        tr.style.display = "";
+      } else {
+        tr.style.display = (tr.dataset.atpHasConflict === "1") ? "" : "none";
+      }
+    });
   }
 
   function findTargetTable() {
     let t = document.querySelector("#tableAutomatizacaoLocalizadores");
     if (t) return t;
     const candidates = Array.from(document.querySelectorAll("table"));
-    const wanted = [/n[ºo]\s*\/?\s*prioridade/i,/localizador.*remover/i,/tipo.*(controle|crit[ée]rio)/i,/localizador.*(incluir|a[cç][aã]o)/i,/outros\s*crit[ée]rios/i];
+    const wanted = [
+      /n[ºo]\s*\/?\s*prioridade/i,
+      /localizador.*remover/i,
+      /tipo.*(controle|crit[ée]rio)/i,
+      /localizador.*(incluir|a[cç][aã]o)/i,
+      /outros\s*crit[ée]rios/i
+    ];
     let best = null, bestScore = 0;
     for (const c of candidates) {
       const ths = Array.from((c.tHead || c).querySelectorAll("th"));
@@ -595,7 +745,10 @@
     const direct = findTargetTable();
     if (direct) return Promise.resolve(direct);
     return new Promise(resolve => {
-      const mo = new MutationObserver(() => { const tb = findTargetTable(); if (tb) { mo.disconnect(); resolve(tb); } });
+      const mo = new MutationObserver(() => {
+        const tb = findTargetTable();
+        if (tb) { mo.disconnect(); resolve(tb); }
+      });
       mo.observe(document.body, { childList:true, subtree:true });
       setTimeout(()=>{ mo.disconnect(); resolve(null); }, timeoutMs);
     });
@@ -625,7 +778,14 @@
   }
 
   function bindPriorityChange(table, recalc) {
-    table.addEventListener("change", (e) => { if (e.target?.tagName === "SELECT") scheduleIdle(recalc, 160); });
+    table.addEventListener("change", (e) => {
+      if (
+        e.target?.tagName === "SELECT" ||
+        e.target?.matches('input.custom-control-input')
+      ) {
+        scheduleIdle(recalc, 160);
+      }
+    });
   }
 
   function start(table){
@@ -655,3 +815,4 @@
 
   init();
 })();
+
