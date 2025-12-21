@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      3.5
-// @description  Colisão Total/Parcial, Sobreposição, Perda de Objeto (direcionada) e Looping (multi-localizadores); ignora regras desativadas; coluna única de conflitos com tooltip e botão Comparar; filtro e ícone REMOVER, usando critérios estruturados da coluna "Outros critérios".
+// @version      2.18.1
+// @description  Colisão Total/Parcial, Sobreposição, Perda de Objeto (direcionada) e Looping (multi-localizadores); ignora regras desativadas (quando checkbox existe); coluna única de conflitos com tooltip e botão Comparar; filtro; REMOVER com dropdown custom (emoji por option + observação) e troca do ícone/“lupa” do tooltip REMOVER conforme texto do tooltip e/ou opção selecionada.
 // @author
 // @run-at       document-end
 // @noframes
@@ -18,11 +18,32 @@
 
   let filterOnlyConflicts = false;
 
-  const tipoRank    = { "Colisão Total": 3, "Colisão Parcial": 3, "Sobreposição": 2, "Perda de Objeto": 2, "Looping": 3 };
+  const tipoRank    = { "Colisão Total": 5, "Colisão Parcial": 4, "Perda de Objeto": 3, "Looping": 5, "Sobreposição": 2 };
   const impactoRank = { "Alto": 3, "Médio": 2, "Baixo": 1 };
 
-  const lower = s => (s ?? "").toString().replace(/\u00A0/g," ").replace(/\s+/g," ").trim().toLowerCase();
-  const norm  = s => (s ?? "").toString().replace(/\u00A0/g," ").replace(/[ \t]+/g," ").replace(/\s*\n+\s*/g," | ").trim();
+  // ==========================================================
+  // LIMPEZA igual ao exportador
+  // ==========================================================
+  function limparTexto(elOrStr){
+    if (!elOrStr) return "";
+    const s = (typeof elOrStr === "string") ? elOrStr : (elOrStr.textContent || "");
+    return s.replace(/\u00A0/g," ").replace(/\s+/g," ").trim();
+  }
+
+  function limparTextoRemoverBase(td){
+    // Para "origem" (Localizador REMOVER), ignora o sufixo dinâmico inserido pelo script (emoji/nota),
+    // pois ele muda conforme a opção (Remover todos / marcados) e não deve quebrar o agrupamento.
+    try{
+      if(!td) return '';
+      const clone = td.cloneNode(true);
+      const extra = clone.querySelector('.atp-remover-emoji');
+      if(extra) extra.remove();
+      return limparTexto(clone.textContent || '');
+    }catch(e){
+      return limparTexto((td && (td.textContent||td.innerText)) || '');
+    }
+  }
+  const lower = s => limparTexto(s).toLowerCase();
   const esc   = s => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
   const rmAcc = s => s?.normalize?.("NFD").replace(/[\u0300-\u036f]/g,"") ?? s;
 
@@ -62,13 +83,17 @@
     let out = "";
     td.childNodes.forEach(n => {
       if (n.nodeType === 3) out += n.nodeValue;
-      else if (n.nodeType === 1 && n.tagName !== "IMG") out += " " + (n.tagName==="BR" ? " " : (n.textContent||""));
+      else if (n.nodeType === 1) {
+        if (n.tagName === "IMG") return;
+        if (n.tagName === "BR") out += " ";
+        else out += " " + (n.textContent || "");
+      }
     });
-    return norm(out);
+    return limparTexto(out);
   }
 
   function getNumeroRegra(td) {
-    const m = norm(td?.textContent||"").match(/^\s*(\d{1,6})\b/);
+    const m = limparTexto(td?.textContent||"").match(/^\s*(\d{1,6})\b/);
     return m ? m[1] : "";
   }
 
@@ -76,9 +101,9 @@
     const sel = td?.querySelector("select");
     if (sel){
       const opt = sel.selectedOptions?.[0] || sel.querySelector("option[selected]") || sel.options?.[sel.selectedIndex];
-      if (opt) return norm(String(opt.textContent||"").replace(/^Executar\s*/i, ""));
+      if (opt) return limparTexto(opt.textContent || "");
     }
-    const raw = norm(td?.textContent || "");
+    const raw = limparTexto(td?.textContent || "");
     const m = raw.match(/([0-9]{1,4})/);
     return m ? m[1] : raw;
   }
@@ -99,27 +124,49 @@
 
   function getRemoverBehaviorText(td){
     let parts = [];
+
+    // (1) tenta capturar tooltip infraTooltipMostrar a partir de QUALQUER elemento (img ou span) que carregue o tooltip
+    const tipEl = td?.querySelector('[onmouseover*="Comportamento do Localizador REMOVER"]');
+    if (tipEl){
+      const onm = tipEl.getAttribute("onmouseover") || "";
+      // tenta o parser padrão (usa o mesmo padrão do script)
+      const msg = parseTooltipMsgFromOnmouseover(onm);
+      if (msg) parts.push(limparTexto(msg));
+
+      // se o elemento já foi trocado por emoji, pode ter dataset
+      const dv = tipEl.dataset?.atpRemoverVal;
+      const dm = tipEl.dataset?.atpRemoverMsg;
+      if (dm) parts.push(limparTexto(dm));
+      if (dv != null && dv !== "") parts.push("VAL=" + String(dv));
+    }
+
+    // (2) fallback antigo (img)
     const img = td?.querySelector('img[onmouseover*="infraTooltipMostrar"]');
     if (img){
       const js = img.getAttribute("onmouseover") || "";
       const m = js.match(/infraTooltipMostrar\('([^']*)'/);
-      if (m) parts.push(norm(m[1]));
-      const t = img.getAttribute("title"); if (t) parts.push(norm(t));
-      const a = img.getAttribute("alt");   if (a) parts.push(norm(a));
+      if (m) parts.push(limparTexto(m[1]));
+      const t = img.getAttribute("title"); if (t) parts.push(limparTexto(t));
+      const a = img.getAttribute("alt");   if (a) parts.push(limparTexto(a));
     }
-    const tt = td?.getAttribute?.("title"); if (tt) parts.push(norm(tt));
+
+    const tt = td?.getAttribute?.("title"); if (tt) parts.push(limparTexto(tt));
     parts.push(textWithoutImages(td));
     return parts.filter(Boolean).join(" | ");
   }
 
   function comportamentoRemove(txt){
     const s = lower(txt || "");
-    if (/\bna[oõ]\s*remover\b/.test(s)) return false;
+
+    // Se o tooltip/emoji guardou um VAL=, usamos isso como fonte de verdade
+    const mv = (s.match(/\bval\s*=\s*([0-9]+)\b/) || [])[1];
+    if (mv === "3") return false; // não remover
+    if (mv === "0" || mv === "1" || mv === "2" || mv === "4") return true;
+    if (/na[oõ]\s*remover\b/.test(s)) return false;
     if (/apenas\s+acrescentar\s+o\s+indicado/.test(s)) return false;
     return /remover\s+o\s+processo.*localizador(?:es)?\s+informado(?:s)?|remover\s+o\s+processo\s+de\s+todos\s+localizadores|remover\s+os\s+processos\s+de\s+todos\s+os\s+localizadores|remover\s+.*localizador/.test(s);
   }
 
-  // normaliza chave: "Juízo do Processo:" -> "juizodoprocesso"
   function normalizarChave(label) {
     if (!label) return null;
     let key = label.replace(/:/g,"").trim();
@@ -128,7 +175,6 @@
     return key || null;
   }
 
-  // extrai mapa de critérios estruturados da coluna "Outros critérios"
   function extrairMapaCriterios(tdOutros) {
     const criterios = {};
     if (!tdOutros) return criterios;
@@ -137,68 +183,29 @@
     divs.forEach(div => {
       const span = div.querySelector("span.lblFiltro, span.font-weight-bold");
       if (!span) return;
-      const label = span.textContent || "";
+      const label = (span.textContent || "").trim();
       const key = normalizarChave(label);
       if (!key) return;
 
-      let valor = div.textContent || "";
-      valor = valor.replace(label, "");
+      let valor = (div.textContent || "").replace(label, "");
       valor = valor.replace(/\u00a0/g, " ");
       valor = valor.replace(/\s+/g," ").trim();
-
       criterios[key] = valor;
     });
 
     return criterios;
   }
 
-  const OUTROS_GROUP_KEYS = [
-    "classe","competencia","rito","juizo do processo","representacao processual das partes",
-    "documentos evento/peticao","dado complementar da parte","classificador por conteudo","digito distribuicao"
-  ];
-
-  function normalizeGroupLabel(label){
-    const t = lower(rmAcc(label)).replace(/[:.\-–—\s]+$/,"").trim();
-    if (/^classificador\s+(de\s+)?conteudo/.test(t))   return "classificador por conteudo";
-    if (/^digito\s+(de\s+)?distribuicao/.test(t))      return "digito distribuicao";
-    if (/^juizo\s+(do|da)\s+processo/.test(t))         return "juizo do processo";
-    if (/^representacao\s+processual/.test(t))         return "representacao processual das partes";
-    if (/^(documentos|evento|peticao)/.test(t))        return "documentos evento/peticao";
-    if (/^dado\s+complementar/.test(t))                return "dado complementar da parte";
-    if (/^classe\b/.test(t))                           return "classe";
-    if (/^compet(ê|e)ncia\b/.test(t))                  return "competencia";
-    if (/^rito\b/.test(t))                             return "rito";
-    for (const k of OUTROS_GROUP_KEYS) if (t.includes(k)) return k;
-    return null;
-  }
-
   function splitValues(raw){
     if (!raw) return new Set();
-    const base = rmAcc(lower(raw)).replace(/\s*\(\s*\)\s*/g,"").replace(/[|]+/g,"|")
-               .replace(/,+/g,",").replace(/\s{2,}/g," ")
-               .replace(/[.;]\s*$/,"").trim();
+    const base = rmAcc(lower(raw))
+      .replace(/\s*\(\s*\)\s*/g,"")
+      .replace(/[|]+/g,"|")
+      .replace(/,+/g,",")
+      .replace(/\s{2,}/g," ")
+      .replace(/[.;]\s*$/,"")
+      .trim();
     return new Set(base.split(/;|\||,|\s+ou\s+|\s+e\s+/i).map(s => s.trim()).filter(Boolean));
-  }
-
-  function parseOutros(outrosRaw){
-    const res = { grupos: new Map(), livre: new Set() };
-    if (!outrosRaw || outrosRaw === "[*]") return res;
-    const chunks = norm(outrosRaw).split(/\s*\|\s*/).map(s => s.trim()).filter(Boolean);
-    for (const ch of chunks){
-      const m = ch.match(/^([^:]+):\s*(.+)$/);
-      if (m){
-        const g = normalizeGroupLabel(m[1]);
-        if (g){
-          const vals = splitValues(m[2]);
-          if (!res.grupos.has(g)) res.grupos.set(g, new Set());
-          const tgt = res.grupos.get(g);
-          vals.forEach(v => tgt.add(v));
-          continue;
-        }
-      }
-      res.livre.add(rmAcc(lower(ch)));
-    }
-    return res;
   }
 
   function parseOutrosFromCriterios(criterios){
@@ -226,6 +233,8 @@
     return true;
   }
 
+  // Retorna true quando B contém TODOS os critérios de A e possui MAIS critérios/valores.
+  // Logo: A é MAIS AMPLA (menos restritiva) e B é MAIS RESTRITA (filtra mais).
   function outrosSubAemB(a, b){
     for (const [k, setA] of a.grupos.entries()){
       const setB = b.grupos.get(k);
@@ -244,7 +253,7 @@
     if (rule.criterios && Object.keys(rule.criterios).length){
       return parseOutrosFromCriterios(rule.criterios);
     }
-    return parseOutros(rule.outrosRaw);
+    return { grupos: new Map(), livre: new Set() };
   }
 
   function relationOutros(ruleA, ruleB) {
@@ -252,13 +261,13 @@
     const sb = buildOutrosEstrutura(ruleB);
 
     if (outrosIdenticos(sa, sb)) return "identicos";
-    if (outrosSubAemB(sa, sb))   return "sub_a_em_b";
-    if (outrosSubAemB(sb, sa))   return "sub_b_em_a";
+    if (outrosSubAemB(sa, sb))   return "sub_a_em_b"; // A mais ampla, B mais restrita
+    if (outrosSubAemB(sb, sa))   return "sub_b_em_a"; // B mais ampla, A mais restrita
     return "diferentes";
   }
 
   function locSiglas(cellText){
-    const parts = norm(cellText).split(/\s*\|\s*/).map(s => s.trim()).filter(Boolean);
+    const parts = limparTexto(cellText).split(/\s*\|\s*/).map(s => s.trim()).filter(Boolean);
     const set = new Set();
     for (const p of parts){
       if (p === "E" || p === "OU") continue;
@@ -271,6 +280,20 @@
     return set;
   }
 
+  function getCondicaoExecucao(tdCond){
+    if (!tdCond) return "[*]";
+    const divComp = tdCond.querySelector('div[id^="dadosCompletos_"]');
+    const divRes  = tdCond.querySelector('div[id^="dadosResumidos_"]');
+
+    if (divComp && limparTexto(divComp)) return limparTexto(divComp);
+    if (divRes && limparTexto(divRes))   return limparTexto(divRes);
+    return limparTexto(tdCond);
+  }
+
+  // ==========================================================
+  // EXTRAÇÃO DE REGRAS
+  // ✅ FIX: se NÃO existir checkbox na linha, considera ATIVA
+  // ==========================================================
   function parseRulesFromTable(table, cols) {
     const list = [];
     const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
@@ -289,11 +312,13 @@
       const tdIncluir  = tds[cols.colIncluir]  || tds[5];
       const tdOutros   = tds[cols.colOutros]   || tds[6];
 
-      const tdAcoes = tds.find(td => td.querySelector('input.custom-control-input')) || tds[tds.length - 1];
-      const chkAtiva = tdAcoes?.querySelector('input.custom-control-input');
-      const ativa = !!(chkAtiva && chkAtiva.checked);
+      const tdAcoes = tds.find(td => td.querySelector('input.custom-control-input')) || null;
+      const chkAtiva = tdAcoes?.querySelector('input.custom-control-input') || null;
 
-      if (!ativa) {
+      // ✅ se não achou checkbox, assume ativa; se achou, respeita checked
+      const ativa = chkAtiva ? !!chkAtiva.checked : true;
+
+      if (chkAtiva && !ativa) {
         tr.dataset.atpInactive = "1";
         tr.style.display = "none";
         continue;
@@ -308,11 +333,11 @@
       list.push({
         num,
         prioridade: parsePriority(prioridadeTexto),
-        origem: textWithoutImages(tdRemover),
+        origem: limparTextoRemoverBase(tdRemover),
         comportamento: getRemoverBehaviorText(tdRemover) || "[*]",
-        destino: norm(tdIncluir?.textContent || ""),
-        tipoRaw: norm(tdTipo?.textContent || "") || "[*]",
-        outrosRaw: norm(tdOutros?.textContent || "") || "[*]",
+        destino: limparTexto(tdIncluir),
+        tipoRaw: limparTexto(tdTipo) || "[*]",
+        outrosRaw: getCondicaoExecucao(tdOutros) || "[*]",
         criterios,
         ativa,
         tr
@@ -321,7 +346,34 @@
     return list;
   }
 
+  // ==========================================================
+  // ANÁLISE (alerta sempre na regra que SOFRE)
+  // ==========================================================
   function analyzeConflicts(rules) {
+    const conflictsByRule = new Map();
+
+    function ensureBucket(baseNum){
+      let bucket = conflictsByRule.get(baseNum);
+      if (!bucket) { bucket = new Map(); conflictsByRule.set(baseNum, bucket); }
+      return bucket;
+    }
+
+    function upsert(baseNum, otherNum, tipo, impacto, motivo){
+      const bucket = ensureBucket(baseNum);
+      const ex = bucket.get(otherNum) || { iNum: baseNum, jNum: otherNum, tipos: new Set(), motivosByTipo: new Map(), impactoMax: "Baixo" };
+      ex.tipos.add(tipo);
+      if (!ex.motivosByTipo.has(tipo)) ex.motivosByTipo.set(tipo, new Set());
+      ex.motivosByTipo.get(tipo).add(motivo);
+      if (impactoRank[impacto] > impactoRank[ex.impactoMax]) ex.impactoMax = impacto;
+      bucket.set(otherNum, ex);
+    }
+
+    function addOnBoth(aNum, bNum, tipo, impacto, motivo){
+      upsert(aNum, bNum, tipo, impacto, motivo);
+      upsert(bNum, aNum, tipo, impacto, motivo);
+    }
+
+    // Agrupa por (REMOVER + TIPO) pra reduzir comparações
     const buckets = new Map();
     for (const r of rules) {
       const key = `${r.origem || ""}||${r.tipoRaw}`;
@@ -330,68 +382,67 @@
       arr.push(r);
     }
 
-    const pairKey = (a,b) => {
-      const ai = Number(a.num), bi = Number(b.num);
-      return ai < bi ? `${ai}|${bi}` : `${bi}|${ai}`;
-    };
-
-    const pairsMap = new Map();
-    const addRec = (i, j, tipo, impacto, motivo) => {
-      const key = pairKey(i,j);
-      const ai = Number(i.num), bi = Number(j.num);
-      const base  = ai <= bi ? i : j;
-      const other = base === i ? j : i;
-      const rec = pairsMap.get(key) || { iNum: base.num, jNum: other.num, tipos: new Set(), motivos: new Set(), impactoMax: "Baixo" };
-      rec.tipos.add(tipo); rec.motivos.add(motivo);
-      if (impactoRank[impacto] > impactoRank[rec.impactoMax]) rec.impactoMax = impacto;
-      pairsMap.set(key, rec);
-    };
-    const addRecDirected = (baseToShow, otherRule, tipo, impacto, motivo) => {
-      pairsMap.set(`FORCE|${baseToShow.num}|${otherRule.num}|${tipo}|${impacto}`,
-        { iNum: baseToShow.num, jNum: otherRule.num, tipos: new Set([tipo]), motivos: new Set([motivo]), impactoMax: impacto });
-    };
-
     for (const list of buckets.values()) {
       if (!list || list.length < 2) continue;
+
       for (let x=0; x<list.length; x++) {
         const A = list[x];
         for (let y=x+1; y<list.length; y++) {
           const B = list[y];
+
           const rel = relationOutros(A, B);
           const pA  = A.prioridade.num, pB = B.prioridade.num;
           const known = (pA != null && pB != null);
 
+          // 1) Idênticos -> colisões
           if (rel === "identicos") {
-            if ((known && pA === pB) || (!known && prioritiesEqual(A.prioridade, B.prioridade)))
-              addRec(A, B, "Colisão Total", "Alto", "Prioridade, REMOVER, TIPO e OUTROS idênticos.");
-            else
-              addRec(A, B, "Colisão Parcial", "Alto", "REMOVER, TIPO e OUTROS idênticos; prioridades diferentes.");
+            if ((known && pA === pB) || (!known && prioritiesEqual(A.prioridade, B.prioridade))) {
+              addOnBoth(A.num, B.num, "Colisão Total", "Alto", "Prioridade, REMOVER, TIPO e CRITÉRIOS idênticos.");
+            } else {
+              addOnBoth(A.num, B.num, "Colisão Parcial", "Alto", "REMOVER, TIPO e CRITÉRIOS idênticos; prioridades diferentes.");
+            }
 
-            if (known && pA < pB && comportamentoRemove(A.comportamento))
-              addRecDirected(B, A, "Perda de Objeto", "Médio", "Regra anterior com 'remover' pode esvaziar esta (critérios idênticos).");
-            if (known && pB < pA && comportamentoRemove(B.comportamento))
-              addRecDirected(A, B, "Perda de Objeto", "Médio", "Regra anterior com 'remover' pode esvaziar esta (critérios idênticos).");
+            // Perda de objeto: se anterior remove, o posterior pode ser esvaziado (critérios idênticos)
+            if (known) {
+              const anterior  = (pA < pB) ? A : (pB < pA ? B : null);
+              const posterior = (pA < pB) ? B : (pB < pA ? A : null);
+              if (anterior && posterior && comportamentoRemove(anterior.comportamento)) {
+                upsert(posterior.num, anterior.num, "Perda de Objeto", "Médio", "Regra anterior com 'remover' pode esvaziar esta (critérios idênticos).");
+              }
+            }
             continue;
           }
 
-          if (known) {
-            if (rel === "sub_a_em_b" && pA < pB)
-              addRec(A, B, "Sobreposição", "Médio", "A é mais amplo (Outros de A ⊃ B) e executa antes (prioridade menor).");
+          // Sem prioridade numérica não dá pra decidir execução
+          if (!known) continue;
 
-            if (rel === "sub_b_em_a" && pB < pA)
-              addRec(B, A, "Sobreposição", "Médio", "B é mais amplo (Outros de B ⊃ A) e executa antes (prioridade menor).");
+          // 2) Inclusão/Subset (mais critérios = mais restrita)
+          // rel === "sub_a_em_b" => A é mais ampla, B é mais restrita
+          if (rel === "sub_a_em_b") {
+            // Se A executa antes (pA < pB), então B (mais restrita) "sofre"
+            if (pA < pB) {
+              upsert(B.num, A.num, "Sobreposição", "Médio", "Regra mais ampla executa antes; esta (mais restrita) fica sobreposta.");
+              if (comportamentoRemove(A.comportamento)) {
+                upsert(B.num, A.num, "Perda de Objeto", "Médio", "Regra anterior (mais ampla) com 'remover' pode esvaziar esta.");
+              }
+            }
           }
 
-          if (known && rel === "sub_a_em_b" && pA < pB && comportamentoRemove(A.comportamento))
-            addRecDirected(B, A, "Perda de Objeto", "Médio", "Regra anterior com 'remover' pode esvaziar esta (A ⊃ B).");
-
-          if (known && rel === "sub_b_em_a" && pB < pA && comportamentoRemove(B.comportamento))
-            addRecDirected(A, B, "Perda de Objeto", "Médio", "Regra anterior com 'remover' pode esvaziar esta (B ⊃ A).");
+          // rel === "sub_b_em_a" => B é mais ampla, A é mais restrita
+          if (rel === "sub_b_em_a") {
+            // Se B executa antes (pB < pA), então A (mais restrita) "sofre"
+            if (pB < pA) {
+              upsert(A.num, B.num, "Sobreposição", "Médio", "Regra mais ampla executa antes; esta (mais restrita) fica sobreposta.");
+              if (comportamentoRemove(B.comportamento)) {
+                upsert(A.num, B.num, "Perda de Objeto", "Médio", "Regra anterior (mais ampla) com 'remover' pode esvaziar esta.");
+              }
+            }
+          }
         }
       }
     }
 
-    // LOOPING (múltiplos localizadores)
+    // 3) Looping (multi-localizadores) — requer TIPO igual e critérios idênticos
     for (let i=0; i<rules.length; i++){
       const A = rules[i];
       for (let j=i+1; j<rules.length; j++){
@@ -406,42 +457,12 @@
         const aRemAlgumQueBInclui = [...remA].some(x => incB.has(x));
         const bRemAlgumQueAInclui = [...remB].some(x => incA.has(x));
         if (aRemAlgumQueBInclui && bRemAlgumQueAInclui){
-          const motivo = `Looping potencial: A remove ${A.origem} e inclui ${A.destino}; B remove ${B.origem} e inclui ${B.destino}; Outros idênticos.`;
-          const key = pairKey(A,B);
-          pairsMap.set(key, {
-            iNum: Math.min(+A.num,+B.num).toString(),
-            jNum: Math.max(+A.num,+B.num).toString(),
-            tipos: new Set(["Looping"]),
-            motivos: new Set([motivo]),
-            impactoMax: "Alto"
-          });
+          const motivo = `Looping potencial: A remove ${A.origem} e inclui ${A.destino}; B remove ${B.origem} e inclui ${B.destino}; Critérios idênticos.`;
+          addOnBoth(A.num, B.num, "Looping", "Alto", motivo);
         }
       }
     }
 
-    const conflictsByRule = new Map();
-    for (const [k, rec] of pairsMap.entries()) {
-      if (String(k).startsWith("FORCE|")) continue;
-      const base = rec.iNum, other = rec.jNum;
-      let bucket = conflictsByRule.get(base);
-      if (!bucket) { bucket = new Map(); conflictsByRule.set(base, bucket); }
-      bucket.set(other, rec);
-    }
-
-    for (const [k, rec] of pairsMap.entries()) {
-      if (!String(k).startsWith("FORCE|")) continue;
-      const base = rec.iNum, other = rec.jNum;
-      let bucket = conflictsByRule.get(base);
-      if (!bucket) { bucket = new Map(); conflictsByRule.set(base, bucket); }
-      const ex = bucket.get(other);
-      if (ex){
-        rec.tipos.forEach(t => ex.tipos.add(t));
-        rec.motivos.forEach(m => ex.motivos.add(m));
-        if (impactoRank[rec.impactoMax] > impactoRank[ex.impactoMax]) ex.impactoMax = rec.impactoMax;
-      } else {
-        bucket.set(other, rec);
-      }
-    }
     return conflictsByRule;
   }
 
@@ -458,19 +479,78 @@
       .atp-muted{color:#6b7280}
       .atp-sev-3{background:#fff1f2}
       .atp-sev-2{background:#fff7ed}
+      .atp-sev-4{background:#ffe4e6}
+      .atp-sev-5{background:#fecdd3}
+
       th[data-atp-col="motivo-th"],
       td[data-atp-col="motivo"]{display:none !important;}
+
       th[data-atp-col="conflita-th"]{width:260px;min-width:260px;max-width:260px;}
       td[data-atp-col="conflita"]{width:260px;max-width:260px;word-wrap:break-word;overflow-wrap:anywhere;}
+
       .atp-compare-btn{margin-top:4px;padding:2px 6px;border:1px solid #1f2937;border-radius:6px;font-size:11px;background:#f3f4f6;cursor:pointer;}
       .atp-compare-btn:hover{background:#e5e7eb}
-      img.atp-behavior-icon{vertical-align:middle;margin-left:6px}
+
       .atp-conf-num{font-weight:bold;margin-right:3px;}
       .atp-conf-tipo{font-weight:bold;padding:1px 4px;border-radius:4px;}
       .atp-conf-tipo.collision{background:#fecaca;}
       .atp-conf-tipo.overlap{background:#fed7aa;}
       .atp-conf-tipo.objectloss{background:#fde68a;}
       .atp-conf-tipo.loop{background:#fee2e2;}
+
+      .atp-remover-emoji{display:inline-flex;align-items:center;gap:6px;vertical-align:middle;white-space:nowrap}
+      .atp-remover-emoji .atp-remover-glyph{font-size:14px;line-height:1}
+      .atp-remover-emoji .atp-remover-note{font-size:12px;opacity:.9}
+      .atp-remover-emoji.atp-in-table{margin-left:6px}
+
+  /* Emoji do tooltip "REMOVER" (substitui lupa.gif) */
+  .atp-remover-emoji-tooltip{
+    display:block;
+    margin-top:2px;
+    font-size:12px;
+    line-height:1.2;
+    width:fit-content;
+    max-width:100%;
+    white-space:nowrap;
+    padding:1px 6px;
+    border-radius:6px;
+    background:#f3f4f6;
+    border:1px solid #e5e7eb;
+    user-select:none;
+  }
+
+      .atp-remover-wrap{display:inline-flex;align-items:center;gap:6px;position:relative}
+      .atp-remover-fake{
+        display:inline-flex;align-items:center;gap:8px;
+        border:1px solid #cbd5e1;border-radius:6px;
+        padding:2px 8px;background:#fff;cursor:pointer;
+        user-select:none;min-height:24px;
+      }
+      .atp-remover-caret{margin-left:6px;font-size:10px;opacity:.7}
+      .atp-remover-menu{
+        position:absolute;left:0;top:calc(100% + 4px);
+        background:#fff;border:1px solid #cbd5e1;border-radius:8px;
+        box-shadow:0 10px 25px rgba(0,0,0,.12);
+        padding:4px;z-index:999999;
+        min-width:420px;display:none;
+        max-height:260px;overflow:auto;
+      }
+      .atp-remover-menu.open{display:block}
+      .atp-remover-item{
+        display:flex;align-items:center;gap:10px;
+        padding:6px 8px;border-radius:6px;cursor:pointer;
+        font-size:12px;
+      }
+      .atp-remover-item:hover{background:#f1f5f9}
+      .atp-remover-item.active{background:#e2e8f0}
+      .atp-remover-item .atp-remover-glyph{font-size:14px}
+      select.atp-remover-hidden{
+        position:absolute !important;
+        opacity:0 !important;
+        pointer-events:none !important;
+        width:1px !important;
+        height:1px !important;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -480,11 +560,11 @@
     if (!thead) return;
 
     const ths = Array.from(thead.querySelectorAll("th"));
-    let hasConfl = false, hasMot = false, motivoTh = null;
+    let hasConfl = false, hasMot = false;
     ths.forEach(th => {
       const t = th.textContent || "";
       if (/Conflita com/i.test(t)) hasConfl = true;
-      if (/Tipo\s*\/\s*Motivo/i.test(t)) { hasMot = true; motivoTh = th; }
+      if (/Tipo\s*\/\s*Motivo/i.test(t)) hasMot = true;
     });
 
     const headerRow = thead.rows[0] || thead.querySelector("tr");
@@ -505,9 +585,9 @@
       th2.style.whiteSpace = "nowrap";
       th2.setAttribute("data-atp-col", "motivo-th");
       headerRow.appendChild(th2);
-      motivoTh = th2;
-    } else if (motivoTh) {
-      motivoTh.setAttribute("data-atp-col","motivo-th");
+    } else {
+      const thMot = ths.find(th => /Tipo\s*\/\s*Motivo/i.test(th.textContent||""));
+      if (thMot) thMot.setAttribute("data-atp-col","motivo-th");
     }
 
     const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
@@ -523,24 +603,41 @@
   }
 
   function severityForRec(rec) {
-    let max = 0; for (const t of rec.tipos) max = Math.max(max, tipoRank[t] || 0); return max;
+    if (!rec || !rec.tipos || !rec.tipos.size) return 0;
+    const imp = rec.impacto || "Médio";
+    const impScore = impactoRank[imp] || 1;
+    let maxScore = 0;
+    for (const t of rec.tipos) {
+      const trk = tipoRank[t] || 0;
+      maxScore = Math.max(maxScore, trk * impScore);
+    }
+
+    // score (1..15) => severidade visual 2..5
+    if (maxScore <= 3)  return 2;
+    if (maxScore <= 6)  return 3;
+    if (maxScore <= 10) return 4;
+    return 5;
   }
 
   function setNumeroRegraAndSearch(numsList){
     try{
       const txt = document.getElementById("txtNumeroRegra");
+      const btn = document.getElementById("sbmPesquisar");
+
       if (txt) {
-        txt.value = numsList.join("; ");
+        txt.value = numsList.join(";");
         txt.dispatchEvent(new Event("input", { bubbles:true }));
         txt.dispatchEvent(new Event("change", { bubbles:true }));
+        txt.dispatchEvent(new KeyboardEvent("keyup", { bubbles:true, key:"Enter" }));
       }
-      const btn = document.getElementById("sbmPesquisar");
-      if (btn) btn.click();
-      else if (typeof window.enviarFormularioAutomatizacao === "function") window.enviarFormularioAutomatizacao();
+
+      setTimeout(() => {
+        if (btn) btn.click();
+        else if (typeof window.enviarFormularioAutomatizacao === "function") window.enviarFormularioAutomatizacao();
+      }, 120);
     }catch{}
   }
 
-  // == botão Comparar lendo números do dataset ==
   function makeCompareButton(ruleNum, confTd){
     const btn = document.createElement("button");
     btn.type = "button";
@@ -563,46 +660,278 @@
     return btn;
   }
 
-  function svgIcon(color, label){
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><circle cx="8" cy="8" r="7" fill="${color}" /><text x="8" y="11" text-anchor="middle" font-size="9" font-family="Arial, Helvetica, sans-serif" fill="#fff">${label}</text></svg>`;
-    return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
-  }
-
-  const BEHAVIOR_ICON = {
-    "0": { color:"#f59e0b", label:"R" }, "4": { color:"#f59e0b", label:"S" },
-    "1": { color:"#ef4444", label:"T" }, "2": { color:"#fb923c", label:"E" },
-    "3": { color:"#10b981", label:"+" }, "null": { color:"#9ca3af", label:"?" }
+  const REMOVER_EMOJI = {
+    "null": { glyph:"❔",   note:"" },
+    "0":    { glyph:"❌📌", note:"(Remover marcados)" },
+    "1":    { glyph:"❌❌", note:"(Remover todos)" },
+    "2":    { glyph:"❌⚙️", note:"(Remover todos, exceto de sistema)" },
+    "3":    { glyph:"➕➕", note:"(Não remover, apenas adicionar)" },
+    "4":    { glyph:"❌🤖", note:"(Remover apenas de sistema)" }
   };
 
-  function ensureBehaviorIconHost(){
-    const sel = document.getElementById("selOpcaoLocalizadorDesativacao");
-    if (!sel || sel._atpIconHost) return;
-    const img = document.createElement("img");
-    img.className = "atp-behavior-icon"; img.width = 16; img.height = 16; img.alt = "Comportamento do Localizador REMOVER";
-    sel.insertAdjacentElement("afterend", img);
-    sel._atpIconHost = img;
+  function removerEmojiInfo(val){
+    val = (val == null || val === "" || val === "null") ? "null" : String(val);
+    return REMOVER_EMOJI[val] || REMOVER_EMOJI["null"];
   }
 
-  function updateBehaviorIconFromSelect(){
-    ensureBehaviorIconHost();
-    const sel = document.getElementById("selOpcaoLocalizadorDesativacao");
-    const img = sel? sel._atpIconHost : null; if (!img) return;
-    let val = "null", text = "Selecione o Localizador REMOVER";
-    if (sel) { val = (sel.value || "null").toString(); const opt = sel.options[sel.selectedIndex]; if (opt) text = opt.textContent.trim(); }
-    const meta = BEHAVIOR_ICON[val] || BEHAVIOR_ICON["null"];
-    img.src = svgIcon(meta.color, meta.label); img.title = text;
+  function mkEmojiSpan(val, extraClass){
+    const info = removerEmojiInfo(val);
+    const wrap = document.createElement("span");
+    wrap.className = "atp-remover-emoji" + (extraClass ? " " + extraClass : "");
+    const glyph = document.createElement("span");
+    glyph.className = "atp-remover-glyph";
+    glyph.textContent = info.glyph;
+    wrap.appendChild(glyph);
+
+    if (info.note) {
+      const note = document.createElement("span");
+      note.className = "atp-remover-note";
+      note.textContent = info.note;
+      wrap.appendChild(note);
+    }
+    return wrap;
   }
 
-  function bindBehaviorIcon(){
+  function parseTooltipMsgFromOnmouseover(onm){
+    if (!onm) return "";
+    const m = onm.match(/infraTooltipMostrar\(\s*'([^']*)'\s*,\s*'Comportamento do Localizador REMOVER'/);
+    return m ? limparTexto(m[1]) : "";
+  }
+
+  function tooltipMsgToValue(msg){
+    const s = rmAcc(lower(msg || "")).replace(/\.+$/,"").trim();
+
+    if (!s) return "null";
+
+    // Normaliza padrões comuns do tooltip do eProc (variações com/sem "os", plural etc.)
+    const reTodosLoc    = /todos\s+(os\s+)?localizadores/;
+    const reTodosExceto = /todos\s+(os\s+)?localizadores[\s\S]*exceto/;
+
+    if (s.includes("apenas os de sistema")) return "4";
+    if (s.includes("nao remover") || s.includes("não remover") || s.includes("apenas acrescentar")) return "3";
+    if (reTodosExceto.test(s) || (s.includes("exceto") && (s.includes("todos") && s.includes("localizador")))) return "2";
+    if (reTodosLoc.test(s) || s.includes("remover todos")) return "1";
+    if (s.includes("localizador") && s.includes("informado")) return "0";
+
+    return "null";
+  }
+
+
+
+  // Troca a lupa (tooltip do REMOVER) por um span com emoji, MAS sem remover o <img>:
+  // - escondemos o img (para não quebrar re-render/updates do eProc)
+  // - inserimos/atualizamos um span logo depois
+  // - reaplicável quando o tooltip/VAL mudar
+  function replaceLupaImgWithEmoji(img, val){
+    if (!img || img.nodeType !== 1) return;
+
+    // somente lupa do tooltip correto
+    const onm0 = img.getAttribute('onmouseover') || '';
+    if (onm0.indexOf('Comportamento do Localizador REMOVER') === -1) return;
+
+    // mensagem atual do tooltip (1º argumento)
+    let msg0 = '';
+    try { msg0 = parseTooltipMsgFromOnmouseover(onm0) || ''; } catch(e) {}
+
+    // span existente?
+    let span = null;
+    const next = img.nextElementSibling;
+    if (next && next.classList && next.classList.contains('atp-remover-emoji-tooltip')) {
+      span = next;
+    }
+
+    // se já existe e já está no mesmo estado, só garante display do img e sai
+    const currentVal = span?.dataset?.atpRemoverVal;
+    const currentMsg = span?.dataset?.atpRemoverMsg;
+    if (span && String(currentVal) === String(val ?? 'null') && String(currentMsg || '') === String(msg0 || '')) {
+      // mantém o img escondido
+      img.style.display = 'none';
+      return;
+    }
+
+    // cria ou atualiza o span
+    const fresh = mkEmojiSpan(val, "atp-tooltip");
+    fresh.classList.add('atp-remover-emoji-tooltip');
+
+    // guarda fonte de verdade para análises posteriores (se necessário)
+    try { fresh.dataset.atpRemoverVal = String(val ?? 'null'); } catch(e) {}
+    try { if (msg0) fresh.dataset.atpRemoverMsg = msg0; } catch(e) {}
+
+    // mantém o tooltip funcionando (usa infraTooltipMostrar/Ocultar)
+    fresh.style.cursor = "default";
+    fresh.addEventListener("mouseenter", () => {
+      try {
+        if (typeof window.infraTooltipMostrar === "function") {
+          window.infraTooltipMostrar(msg0, "Comportamento do Localizador REMOVER", 600);
+        }
+      } catch (_) {}
+    });
+    fresh.addEventListener("mouseleave", () => {
+      try { if (typeof window.infraTooltipOcultar === "function") window.infraTooltipOcultar(); } catch (_) {}
+    });
+
+    // esconde a lupa original sem removê-la
+    img.style.display = 'none';
+
+    if (span) {
+      span.replaceWith(fresh);
+    } else {
+      img.insertAdjacentElement("afterend", fresh);
+    }
+
+    // marca aplicada (no img, para debug)
+    try { img.dataset.atpEmojiApplied = "1"; } catch(e) {}
+  }
+
+
+  function updateAllRemoverLupasByTooltipText(root){
+    const scope = root || document;
+    const imgs = Array.from(scope.querySelectorAll('img[src*="lupa.gif"][onmouseover*="Comportamento do Localizador REMOVER"]'));
+    for (const img of imgs) {
+      const msg = parseTooltipMsgFromOnmouseover(img.getAttribute("onmouseover") || "");
+      const val = tooltipMsgToValue(msg);
+      replaceLupaImgWithEmoji(img, val);
+    }
+  }
+
+  function updateMainRemoverIconBySelect(){
     const sel = document.getElementById("selOpcaoLocalizadorDesativacao");
-    if (sel && !sel._atpIconBound){ sel.addEventListener("change", updateBehaviorIconFromSelect); sel._atpIconBound = true; }
-    updateBehaviorIconFromSelect();
+    if (!sel) return;
+
+    let anchor = sel.parentElement;
+    if (!anchor) return;
+
+    let img = anchor.querySelector('img[src*="lupa.gif"][onmouseover*="Comportamento do Localizador REMOVER"]');
+    if (img) {
+      replaceLupaImgWithEmoji(img, (sel.value || "null"));
+      return;
+    }
+
+    const spans = Array.from(anchor.querySelectorAll("span.atp-remover-emoji"));
+    if (spans.length) {
+      const old = spans[0];
+      const novo = mkEmojiSpan((sel.value || "null"), old.classList.contains("atp-in-table") ? "atp-in-table" : "");
+      const onm = old.getAttribute("onmouseover"); if (onm) novo.setAttribute("onmouseover", onm);
+      const ono = old.getAttribute("onmouseout");  if (ono) novo.setAttribute("onmouseout", ono);
+      old.replaceWith(novo);
+    }
+  }
+
+  function enhanceRemoverSelectWithIcons(){
+    const sel = document.getElementById("selOpcaoLocalizadorDesativacao");
+    if (!sel) return;
+    if (sel._atpEnhancedEmoji) return;
+
+    injectStyle();
+
+    const wrap = document.createElement("span");
+    wrap.className = "atp-remover-wrap";
+
+    const btn = document.createElement("span");
+    btn.className = "atp-remover-fake";
+    btn.innerHTML = `<span class="atp-remover-glyph"></span><span class="atp-remover-note"></span><span class="atp-remover-caret">▼</span>`;
+
+    const menu = document.createElement("div");
+    menu.className = "atp-remover-menu";
+
+    sel.classList.add("atp-remover-hidden");
+    sel.parentNode.insertBefore(wrap, sel);
+    wrap.appendChild(sel);
+    wrap.appendChild(btn);
+    wrap.appendChild(menu);
+
+    function rebuildMenu(){
+      menu.innerHTML = "";
+      const cur = (sel.value || "null").toString();
+
+      Array.from(sel.options).forEach(opt => {
+        const val = (opt.value || "null").toString();
+        const item = document.createElement("div");
+        item.className = "atp-remover-item" + (val === cur ? " active" : "");
+
+        const info = removerEmojiInfo(val);
+
+        const glyph = document.createElement("span");
+        glyph.className = "atp-remover-glyph";
+        glyph.textContent = info.glyph;
+
+        const note = document.createElement("span");
+        note.className = "atp-remover-note";
+        note.textContent = info.note || "(sem observação)";
+
+        const txt = document.createElement("span");
+        txt.textContent = (opt.textContent || "").trim() || "(vazio)";
+
+        const right = document.createElement("div");
+        right.style.display = "flex";
+        right.style.flexDirection = "column";
+        right.style.gap = "2px";
+        right.appendChild(note);
+        right.appendChild(txt);
+
+        item.appendChild(glyph);
+        item.appendChild(right);
+
+        item.addEventListener("click", () => {
+          sel.value = val;
+          sel.dispatchEvent(new Event("change", { bubbles:true }));
+          menu.classList.remove("open");
+        });
+
+        menu.appendChild(item);
+      });
+    }
+
+    function syncButton(){
+      const val = (sel.value || "null").toString();
+      const info = removerEmojiInfo(val);
+      btn.querySelector(".atp-remover-glyph").textContent = info.glyph;
+      btn.querySelector(".atp-remover-note").textContent  = info.note || "";
+      btn.title = (sel.options?.[sel.selectedIndex]?.textContent || "").trim();
+    }
+
+    function closeOnOutside(e){
+      if (!wrap.contains(e.target)) menu.classList.remove("open");
+    }
+
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      rebuildMenu();
+      menu.classList.toggle("open");
+    });
+
+    document.addEventListener("click", closeOnOutside, true);
+
+    sel.addEventListener("change", () => {
+      syncButton();
+      updateMainRemoverIconBySelect();
+      if (menu.classList.contains("open")) rebuildMenu();
+    });
+
+    syncButton();
+    sel._atpEnhancedEmoji = { wrap, btn, menu };
+  }
+
+  function watchRemoverEnhancer(){
+    if (document._atpRemoverEnhWatch) return;
+    document._atpRemoverEnhWatch = true;
+
+    const mo = new MutationObserver(() => {
+      if (watchRemoverEnhancer._t) cancelAnimationFrame(watchRemoverEnhancer._t);
+      watchRemoverEnhancer._t = requestAnimationFrame(() => {
+        enhanceRemoverSelectWithIcons();
+        updateAllRemoverLupasByTooltipText(document);
+        updateMainRemoverIconBySelect();
+      });
+    });
+    mo.observe(document.body, { childList:true, subtree:true });
   }
 
   function renderIntoTable(table, rules, conflictsByRule, prevRendered) {
+    const cols = mapColumns(table);
     const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
     const rows = tbodys.flatMap(tb => Array.from(tb.rows));
-    const cols = mapColumns(table);
 
     const rowMap = new Map();
     rows.forEach(tr => {
@@ -634,24 +963,28 @@
       if (adj && adj.size) {
         const others = [...adj.keys()].sort((a,b)=> Number(a)-Number(b));
         confStr = others.join("; ");
-
-        // grava lista de conflitos estruturada para o botão Comparar
         if (confTd) confTd.dataset.atpConfNums = others.join(",");
 
         for (const n of others) {
           const rec = adj.get(n);
-          const tiposOrd = [...rec.tipos].sort((a,b)=> (tipoRank[b]-tipoRank[a]));
+          const tiposOrd = [...(rec.tipos || [])].sort((a,b)=> (tipoRank[b]-tipoRank[a]));
           if (!tiposOrd.length) continue;
-          const tipoPrincipal = tiposOrd[0];
-          const cls = tipoClass(tipoPrincipal);
-          const impacto = rec.impactoMax;
-          const motivoTxt = [...rec.motivos].join(" | ");
-          const tooltip = `${tipoPrincipal} (${impacto}) — ${motivoTxt}`;
+
+          const impacto = rec.impactoMax || "Médio";
+          const motivosByTipo = rec.motivosByTipo || {};
+
+          // Um span por tipo de conflito (ex.: "Perda de Objeto" e "Colisão Parcial" no mesmo par)
+          const tipoSpans = tiposOrd.map((tipo) => {
+            const cls = tipoClass(tipo);
+            const motivo = motivosByTipo[tipo] || rec.motivo || "";
+            const tooltip = motivo ? `${tipo} (${impacto}) — ${motivo}` : `${tipo} (${impacto})`;
+            return `<span class="atp-conf-tipo ${cls}" title="${esc(tooltip)}">${esc(tipo)}</span>`;
+          }).join(' ');
 
           htmlParts.push(
             `<div>` +
               `<span class="atp-conf-num">${esc(n)}:</span> ` +
-              `<span class="atp-conf-tipo ${cls}" title="${esc(tooltip)}">${esc(tipoPrincipal)}</span>` +
+              tipoSpans +
             `</div>`
           );
 
@@ -663,12 +996,8 @@
         if (confTd) delete confTd.dataset.atpConfNums;
       }
 
-      const prev = prevRendered.get(r.num) || { conf:"", html:"", sev:0 };
-
       if (confTd){
-        if (htmlParts.length) confTd.innerHTML = htmlParts.join("");
-        else confTd.innerHTML = "";
-
+        confTd.innerHTML = htmlParts.join("") || "";
         confTd.querySelector(".atp-compare-btn")?.remove();
         if (confStr.trim().length) {
           const btnWrap = document.createElement("div");
@@ -677,12 +1006,8 @@
         }
       }
 
-      if (prev.sev !== maxSev) {
-        tr.classList.remove("atp-sev-2","atp-sev-3");
-        if (maxSev >= 2) tr.classList.add(`atp-sev-${maxSev}`);
-      }
-
-      prevRendered.set(r.num, { conf: confStr, html: htmlParts.join(""), sev: maxSev });
+      tr.classList.remove("atp-sev-2","atp-sev-3","atp-sev-4","atp-sev-5");
+      if (maxSev >= 2) tr.classList.add(`atp-sev-${maxSev}`);
     }
     applyConflictFilter(table, filterOnlyConflicts);
   }
@@ -707,15 +1032,9 @@
     const rows = tbodys.flatMap(tb => Array.from(tb.rows));
 
     rows.forEach(tr => {
-      if (tr.dataset.atpInactive === "1") {
-        tr.style.display = "none";
-        return;
-      }
-      if (!only) {
-        tr.style.display = "";
-      } else {
-        tr.style.display = (tr.dataset.atpHasConflict === "1") ? "" : "none";
-      }
+      if (tr.dataset.atpInactive === "1") { tr.style.display = "none"; return; }
+      if (!only) tr.style.display = "";
+      else tr.style.display = (tr.dataset.atpHasConflict === "1") ? "" : "none";
     });
   }
 
@@ -734,7 +1053,7 @@
     for (const c of candidates) {
       const ths = Array.from((c.tHead || c).querySelectorAll("th"));
       if (!ths.length) continue;
-      const text = ths.map(th => norm(th.textContent)).join(" | ");
+      const text = ths.map(th => limparTexto(th.textContent)).join(" | ");
       let s = 0; for (const re of wanted) if (re.test(text)) s++;
       if (s > bestScore) { best = c; bestScore = s; }
     }
@@ -764,10 +1083,13 @@
       ensureColumns(table);
       cols = mapColumns(table);
 
+      updateAllRemoverLupasByTooltipText(table);
+      updateMainRemoverIconBySelect();
+
       const rules = parseRulesFromTable(table, cols);
       if (!rules.length) return;
 
-      const combined = rules.map(r => `${r.num}|${r.prioridade.text}|${r.origem}|${r.comportamento}|${r.tipoRaw}|${r.destino}|${r.outrosRaw}`).join("#");
+      const combined = rules.map(r => `${r.num}|${r.prioridade.text}|${r.origem}|${r.comportamento}|${r.tipoRaw}|${r.destino}|${JSON.stringify(r.criterios||{})}`).join("#");
       if (combined === lastTableHash) { applyConflictFilter(table, filterOnlyConflicts); return; }
       lastTableHash = combined;
 
@@ -779,10 +1101,7 @@
 
   function bindPriorityChange(table, recalc) {
     table.addEventListener("change", (e) => {
-      if (
-        e.target?.tagName === "SELECT" ||
-        e.target?.matches('input.custom-control-input')
-      ) {
+      if (e.target?.tagName === "SELECT" || e.target?.matches('input.custom-control-input')) {
         scheduleIdle(recalc, 160);
       }
     });
@@ -793,26 +1112,42 @@
     const recalc = makeRunner(table);
     addOnlyConflictsCheckbox(table, () => scheduleIdle(recalc, 0));
     bindPriorityChange(table, recalc);
+
+    enhanceRemoverSelectWithIcons();
+    updateAllRemoverLupasByTooltipText(document);
+    updateMainRemoverIconBySelect();
+    watchRemoverEnhancer();
+
     scheduleIdle(recalc, 0);
 
-    bindBehaviorIcon();
-
     const scopedRoot = table.parentElement || document.body;
-    const mo = new MutationObserver(() => { scheduleIdle(recalc, 240); bindBehaviorIcon(); });
+    const mo = new MutationObserver(() => {
+      scheduleIdle(recalc, 240);
+      enhanceRemoverSelectWithIcons();
+      updateAllRemoverLupasByTooltipText(document);
+      updateMainRemoverIconBySelect();
+    });
     mo.observe(scopedRoot, { childList: true, subtree: true });
 
     const rootMo = new MutationObserver(() => {
       if (!document.body.contains(table)) { rootMo.disconnect(); init(); }
-      bindBehaviorIcon();
+      enhanceRemoverSelectWithIcons();
+      updateAllRemoverLupasByTooltipText(document);
+      updateMainRemoverIconBySelect();
     });
     rootMo.observe(document.body, { childList:true, subtree:true });
   }
 
   async function init() {
+    injectStyle();
+    enhanceRemoverSelectWithIcons();
+    updateAllRemoverLupasByTooltipText(document);
+    updateMainRemoverIconBySelect();
+    watchRemoverEnhancer();
+
     const table = await waitTable();
-    if (table) start(table); else bindBehaviorIcon();
+    if (table) start(table);
   }
 
   init();
 })();
-
