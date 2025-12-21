@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      3
+// @version      2.18.6
 // @description  Colisão Total/Parcial, Sobreposição, Perda de Objeto (direcionada) e Looping (multi-localizadores); ignora regras desativadas (quando checkbox existe); coluna única de conflitos com tooltip e botão Comparar; filtro; REMOVER com dropdown custom (emoji por option + observação) e troca do ícone/“lupa” do tooltip REMOVER conforme texto do tooltip e/ou opção selecionada.
 // @author
 // @run-at       document-end
@@ -18,7 +18,7 @@
 
   let filterOnlyConflicts = false;
 
-  const tipoRank    = { "Colisão Total": 3, "Colisão Parcial": 2, "Perda de Objeto": 5, "Looping": 1, "Sobreposição": 4 };
+  const tipoRank    = { "Colisão Total": 5, "Colisão Parcial": 4, "Perda de Objeto": 3, "Looping": 5, "Sobreposição": 2 };
   const impactoRank = { "Alto": 3, "Médio": 2, "Baixo": 1 };
 
   // ==========================================================
@@ -122,38 +122,44 @@
     return !/\d/.test(ta) && !/\d/.test(tb);
   }
 
-  function getRemoverBehaviorText(td){
-    let parts = [];
 
-    // (1) tenta capturar tooltip infraTooltipMostrar a partir de QUALQUER elemento (img ou span) que carregue o tooltip
-    const tipEl = td?.querySelector('[onmouseover*="Comportamento do Localizador REMOVER"]');
-    if (tipEl){
-      const onm = tipEl.getAttribute("onmouseover") || "";
-      // tenta o parser padrão (usa o mesmo padrão do script)
-      const msg = parseTooltipMsgFromOnmouseover(onm);
-      if (msg) parts.push(limparTexto(msg));
+function getRemoverBehaviorText(td){
+  let parts = [];
 
-      // se o elemento já foi trocado por emoji, pode ter dataset
-      const dv = tipEl.dataset?.atpRemoverVal;
-      const dm = tipEl.dataset?.atpRemoverMsg;
-      if (dm) parts.push(limparTexto(dm));
-      if (dv != null && dv !== "") parts.push("VAL=" + String(dv));
-    }
+  // (0) dataset direto no TD (casos "Nenhum", "Todos os localizadores", etc.)
+  const tdVal = td?.dataset?.atpRemoverVal;
+  const tdMsg = td?.dataset?.atpRemoverMsg;
+  if (tdMsg) parts.push(limparTexto(tdMsg));
+  if (tdVal != null && tdVal !== "") parts.push("VAL=" + String(tdVal));
 
-    // (2) fallback antigo (img)
-    const img = td?.querySelector('img[onmouseover*="infraTooltipMostrar"]');
-    if (img){
-      const js = img.getAttribute("onmouseover") || "";
-      const m = js.match(/infraTooltipMostrar\('([^']*)'/);
-      if (m) parts.push(limparTexto(m[1]));
-      const t = img.getAttribute("title"); if (t) parts.push(limparTexto(t));
-      const a = img.getAttribute("alt");   if (a) parts.push(limparTexto(a));
-    }
+  // (1) tenta capturar tooltip infraTooltipMostrar a partir de QUALQUER elemento (img ou span) que carregue o tooltip
+  const tipEl = td?.querySelector('[onmouseover*="Comportamento do Localizador REMOVER"]');
+  if (tipEl){
+    const onm = tipEl.getAttribute("onmouseover") || "";
+    const msg = parseTooltipMsgFromOnmouseover(onm);
+    if (msg) parts.push(limparTexto(msg));
 
-    const tt = td?.getAttribute?.("title"); if (tt) parts.push(limparTexto(tt));
-    parts.push(textWithoutImages(td));
-    return parts.filter(Boolean).join(" | ");
+    // se o elemento já foi trocado por emoji, pode ter dataset
+    const dv = tipEl.dataset?.atpRemoverVal;
+    const dm = tipEl.dataset?.atpRemoverMsg;
+    if (dm) parts.push(limparTexto(dm));
+    if (dv != null && dv !== "") parts.push("VAL=" + String(dv));
   }
+
+  // (2) fallback antigo (img)
+  const img = td?.querySelector('img[onmouseover*="infraTooltipMostrar"]');
+  if (img){
+    const js = img.getAttribute("onmouseover") || "";
+    const m = js.match(/infraTooltipMostrar\('([^']*)'/);
+    if (m) parts.push(limparTexto(m[1]));
+    const t = img.getAttribute("title"); if (t) parts.push(limparTexto(t));
+    const a = img.getAttribute("alt");   if (a) parts.push(limparTexto(a));
+  }
+
+  const tt = td?.getAttribute?.("title"); if (tt) parts.push(limparTexto(tt));
+  parts.push(textWithoutImages(td));
+  return parts.filter(Boolean).join(" | ");
+}
 
   function comportamentoRemove(txt){
     const s = lower(txt || "");
@@ -162,7 +168,7 @@
     const mv = (s.match(/\bval\s*=\s*([0-9]+)\b/) || [])[1];
     if (mv === "3") return false; // não remover
     if (mv === "0" || mv === "1" || mv === "2" || mv === "4") return true;
-    if (/\bna[oõ]\s*remover\b/.test(s)) return false;
+    if (/na[oõ]\s*remover\b/.test(s)) return false;
     if (/apenas\s+acrescentar\s+o\s+indicado/.test(s)) return false;
     return /remover\s+o\s+processo.*localizador(?:es)?\s+informado(?:s)?|remover\s+o\s+processo\s+de\s+todos\s+localizadores|remover\s+os\s+processos\s+de\s+todos\s+os\s+localizadores|remover\s+.*localizador/.test(s);
   }
@@ -176,13 +182,9 @@
   }
 
   function extrairMapaCriterios(tdOutros) {
-  const criterios = {};
-  if (!tdOutros) return criterios;
+    const criterios = {};
+    if (!tdOutros) return criterios;
 
-  // ----------------------------
-  // 1) Estrutura (div.ml-0.pt-2 + span.lblFiltro / bold)
-  // ----------------------------
-  try {
     const divs = tdOutros.querySelectorAll("div.ml-0.pt-2");
     divs.forEach(div => {
       const span = div.querySelector("span.lblFiltro, span.font-weight-bold");
@@ -193,71 +195,12 @@
 
       let valor = (div.textContent || "").replace(label, "");
       valor = valor.replace(/\u00a0/g, " ");
-      valor = valor.replace(/\s+/g, " ").trim();
-
-      if (!valor) return;
-
-      // Pode haver múltiplas ocorrências do mesmo critério:
-      // concatena com separador consistente (o parser depois transforma em Set).
-      if (criterios[key] && criterios[key] !== valor) {
-        criterios[key] = String(criterios[key]) + " | " + valor;
-      } else {
-        criterios[key] = valor;
-      }
+      valor = valor.replace(/\s+/g," ").trim();
+      criterios[key] = valor;
     });
-  } catch (e) {}
 
-  // ----------------------------
-  // 2) Fallback textual (quando o HTML não está estruturado em divs)
-  //    Ex.: "Classificador por Conteúdo: Petições - ..."
-  // ----------------------------
-  try {
-    const raw = (tdOutros.innerText || tdOutros.textContent || "")
-      .replace(/\u00a0/g, " ")
-      .replace(/\r/g, "\n");
-
-    // 2.a) Captura múltiplas ocorrências de "Classificador por Conteúdo:"
-    //      Mantém o valor inteiro (sem quebrar por espaço), para diferenciar textos longos.
-    const reClassif = /Classificador\s+por\s+Conte[uú]do\s*:\s*([^\n]+)(?:\n|$)/gi;
-    let m;
-    const vals = [];
-    while ((m = reClassif.exec(raw)) !== null) {
-      const v = limparTexto(m[1]);
-      if (v) vals.push(v);
-    }
-    if (vals.length) {
-      const k = normalizarChave("Classificador por Conteúdo");
-      // agrega (sem duplicar)
-      const uniq = Array.from(new Set(vals));
-      criterios[k] = uniq.join(" | ");
-    }
-
-    // 2.b) Captura genérica "Label: Valor" por linha
-    //      (separador por linha) — útil quando critérios são renderizados como texto simples.
-    const lines = raw.split("\n").map(l => limparTexto(l)).filter(Boolean);
-    for (const line of lines) {
-      // ignora linhas sem ":" ou que já foram tratadas acima
-      if (line.indexOf(":") === -1) continue;
-      if (/^Classificador\s+por\s+Conte[uú]do\s*:/i.test(line)) continue;
-
-      const idx = line.indexOf(":");
-      const label = limparTexto(line.slice(0, idx));
-      const valor = limparTexto(line.slice(idx + 1));
-
-      if (!label || !valor) continue;
-      const key = normalizarChave(label);
-      if (!key) continue;
-
-      if (criterios[key] && criterios[key] !== valor) {
-        criterios[key] = String(criterios[key]) + " | " + valor;
-      } else if (!criterios[key]) {
-        criterios[key] = valor;
-      }
-    }
-  } catch (e) {}
-
-  return criterios;
-}
+    return criterios;
+  }
 
   function splitValues(raw){
     if (!raw) return new Set();
@@ -396,7 +339,7 @@
       list.push({
         num,
         prioridade: parsePriority(prioridadeTexto),
-        origem: limparTextoRemoverBase(tdRemover),
+        origem: (tdRemover?.dataset?.atpRemoverWildcard === "1") ? "[*]" : limparTextoRemoverBase(tdRemover),
         comportamento: getRemoverBehaviorText(tdRemover) || "[*]",
         destino: limparTexto(tdIncluir),
         tipoRaw: limparTexto(tdTipo) || "[*]",
@@ -412,122 +355,169 @@
   // ==========================================================
   // ANÁLISE (alerta sempre na regra que SOFRE)
   // ==========================================================
-  function analyzeConflicts(rules) {
-    const conflictsByRule = new Map();
 
-    function ensureBucket(baseNum){
-      let bucket = conflictsByRule.get(baseNum);
-      if (!bucket) { bucket = new Map(); conflictsByRule.set(baseNum, bucket); }
-      return bucket;
+// ==========================================================
+// ANÁLISE (alerta sempre na regra que SOFRE)
+// - "origem" pode ser "[*]" (coringa) quando a tela mostra: Nenhum / Todos os localizadores / Manter os localizadores de sistema
+//   => nesses casos, a regra NÃO filtra por Localizador REMOVER (aplica a todos os processos)
+// ==========================================================
+function analyzeConflicts(rules) {
+  const conflictsByRule = new Map();
+
+  function ensureBucket(baseNum){
+    let bucket = conflictsByRule.get(baseNum);
+    if (!bucket) { bucket = new Map(); conflictsByRule.set(baseNum, bucket); }
+    return bucket;
+  }
+
+  function upsert(baseNum, otherNum, tipo, impacto, motivo){
+    const bucket = ensureBucket(baseNum);
+    const ex = bucket.get(otherNum) || { iNum: baseNum, jNum: otherNum, tipos: new Set(), motivosByTipo: new Map(), impactoMax: "Baixo" };
+    ex.tipos.add(tipo);
+    if (!ex.motivosByTipo.has(tipo)) ex.motivosByTipo.set(tipo, new Set());
+    ex.motivosByTipo.get(tipo).add(motivo);
+    if (impactoRank[impacto] > impactoRank[ex.impactoMax]) ex.impactoMax = impacto;
+    bucket.set(otherNum, ex);
+  }
+
+  function addOnBoth(aNum, bNum, tipo, impacto, motivo){
+    upsert(aNum, bNum, tipo, impacto, motivo);
+    upsert(bNum, aNum, tipo, impacto, motivo);
+  }
+
+  function comparePair(A, B){
+    const rel = relationOutros(A, B);
+    const pA  = A.prioridade.num, pB = B.prioridade.num;
+    const known = (pA != null && pB != null);
+
+    // 1) Idênticos -> colisões
+    if (rel === "identicos") {
+      if ((known && pA === pB) || (!known && prioritiesEqual(A.prioridade, B.prioridade))) {
+        addOnBoth(A.num, B.num, "Colisão Total", "Alto", "Prioridade, REMOVER, TIPO e CRITÉRIOS idênticos.");
+      } else {
+        addOnBoth(A.num, B.num, "Colisão Parcial", "Alto", "REMOVER, TIPO e CRITÉRIOS idênticos; prioridades diferentes.");
+      }
+
+      // Perda de objeto: se anterior remove, o posterior pode ser esvaziado (critérios idênticos)
+      if (known) {
+        const anterior  = (pA < pB) ? A : (pB < pA ? B : null);
+        const posterior = (pA < pB) ? B : (pB < pA ? A : null);
+        if (anterior && posterior && comportamentoRemove(anterior.comportamento)) {
+          upsert(posterior.num, anterior.num, "Perda de Objeto", "Médio", "Regra anterior com 'remover' pode esvaziar esta (critérios idênticos).");
+        }
+      }
+      return;
     }
 
-    function upsert(baseNum, otherNum, tipo, impacto, motivo){
-      const bucket = ensureBucket(baseNum);
-      const ex = bucket.get(otherNum) || { iNum: baseNum, jNum: otherNum, tipos: new Set(), motivosByTipo: new Map(), impactoMax: "Baixo" };
-      ex.tipos.add(tipo);
-      if (!ex.motivosByTipo.has(tipo)) ex.motivosByTipo.set(tipo, new Set());
-      ex.motivosByTipo.get(tipo).add(motivo);
-      if (impactoRank[impacto] > impactoRank[ex.impactoMax]) ex.impactoMax = impacto;
-      bucket.set(otherNum, ex);
+    // Sem prioridade numérica não dá pra decidir execução
+    if (!known) return;
+
+    // 2) Inclusão/Subset (mais critérios = mais restrita)
+    // rel === "sub_a_em_b" => A é mais ampla, B é mais restrita
+    if (rel === "sub_a_em_b") {
+      // Se A executa antes (pA < pB), então B (mais restrita) "sofre"
+      if (pA < pB) {
+        upsert(B.num, A.num, "Sobreposição", "Médio", "Regra mais ampla executa antes; esta (mais restrita) fica sobreposta.");
+        if (comportamentoRemove(A.comportamento)) {
+          upsert(B.num, A.num, "Perda de Objeto", "Médio", "Regra anterior (mais ampla) com 'remover' pode esvaziar esta.");
+        }
+      }
     }
 
-    function addOnBoth(aNum, bNum, tipo, impacto, motivo){
-      upsert(aNum, bNum, tipo, impacto, motivo);
-      upsert(bNum, aNum, tipo, impacto, motivo);
+    // rel === "sub_b_em_a" => B é mais ampla, A é mais restrita
+    if (rel === "sub_b_em_a") {
+      // Se B executa antes (pB < pA), então A (mais restrita) "sofre"
+      if (pB < pA) {
+        upsert(A.num, B.num, "Sobreposição", "Médio", "Regra mais ampla executa antes; esta (mais restrita) fica sobreposta.");
+        if (comportamentoRemove(B.comportamento)) {
+          upsert(A.num, B.num, "Perda de Objeto", "Médio", "Regra anterior (mais ampla) com 'remover' pode esvaziar esta.");
+        }
+      }
     }
+  }
 
-    // Agrupa por (REMOVER + TIPO) pra reduzir comparações
-    const buckets = new Map();
-    for (const r of rules) {
-      const key = `${r.origem || ""}||${r.tipoRaw}`;
-      let arr = buckets.get(key);
-      if (!arr) { arr = []; buckets.set(key, arr); }
+  // Agrupa por TIPO e (origem específica ou coringa)
+  const byTipo = new Map();
+  for (const r of rules) {
+    const tipoKey = (r.tipoRaw || "[*]");
+    let slot = byTipo.get(tipoKey);
+    if (!slot) { slot = { specific: new Map(), wildcard: [] }; byTipo.set(tipoKey, slot); }
+
+    const isWildcard = (r.origem === "[*]") || (r.tr?.querySelector?.(':scope > td')?.[0]?.dataset?.atpRemoverWildcard === "1");
+    if (isWildcard) {
+      slot.wildcard.push(r);
+    } else {
+      const oKey = (r.origem || "");
+      let arr = slot.specific.get(oKey);
+      if (!arr) { arr = []; slot.specific.set(oKey, arr); }
       arr.push(r);
     }
-
-    for (const list of buckets.values()) {
-      if (!list || list.length < 2) continue;
-
-      for (let x=0; x<list.length; x++) {
-        const A = list[x];
-        for (let y=x+1; y<list.length; y++) {
-          const B = list[y];
-
-          const rel = relationOutros(A, B);
-          const pA  = A.prioridade.num, pB = B.prioridade.num;
-          const known = (pA != null && pB != null);
-
-          // 1) Idênticos -> colisões
-          if (rel === "identicos") {
-            if ((known && pA === pB) || (!known && prioritiesEqual(A.prioridade, B.prioridade))) {
-              addOnBoth(A.num, B.num, "Colisão Total", "Alto", "Prioridade, REMOVER, TIPO e CRITÉRIOS idênticos.");
-            } else {
-              addOnBoth(A.num, B.num, "Colisão Parcial", "Alto", "REMOVER, TIPO e CRITÉRIOS idênticos; prioridades diferentes.");
-            }
-
-            // Perda de objeto: se anterior remove, o posterior pode ser esvaziado (critérios idênticos)
-            if (known) {
-              const anterior  = (pA < pB) ? A : (pB < pA ? B : null);
-              const posterior = (pA < pB) ? B : (pB < pA ? A : null);
-              if (anterior && posterior && comportamentoRemove(anterior.comportamento)) {
-                upsert(posterior.num, anterior.num, "Perda de Objeto", "Médio", "Regra anterior com 'remover' pode esvaziar esta (critérios idênticos).");
-              }
-            }
-            continue;
-          }
-
-          // Sem prioridade numérica não dá pra decidir execução
-          if (!known) continue;
-
-          // 2) Inclusão/Subset (mais critérios = mais restrita)
-          // rel === "sub_a_em_b" => A é mais ampla, B é mais restrita
-          if (rel === "sub_a_em_b") {
-            // Se A executa antes (pA < pB), então B (mais restrita) "sofre"
-            if (pA < pB) {
-              upsert(B.num, A.num, "Sobreposição", "Médio", "Regra mais ampla executa antes; esta (mais restrita) fica sobreposta.");
-              if (comportamentoRemove(A.comportamento)) {
-                upsert(B.num, A.num, "Perda de Objeto", "Médio", "Regra anterior (mais ampla) com 'remover' pode esvaziar esta.");
-              }
-            }
-          }
-
-          // rel === "sub_b_em_a" => B é mais ampla, A é mais restrita
-          if (rel === "sub_b_em_a") {
-            // Se B executa antes (pB < pA), então A (mais restrita) "sofre"
-            if (pB < pA) {
-              upsert(A.num, B.num, "Sobreposição", "Médio", "Regra mais ampla executa antes; esta (mais restrita) fica sobreposta.");
-              if (comportamentoRemove(B.comportamento)) {
-                upsert(A.num, B.num, "Perda de Objeto", "Médio", "Regra anterior (mais ampla) com 'remover' pode esvaziar esta.");
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // 3) Looping (multi-localizadores) — requer TIPO igual e critérios idênticos
-    for (let i=0; i<rules.length; i++){
-      const A = rules[i];
-      for (let j=i+1; j<rules.length; j++){
-        const B = rules[j];
-        if (lower(A.tipoRaw) !== lower(B.tipoRaw)) continue;
-        if (relationOutros(A, B) !== "identicos") continue;
-
-        const remA = locSiglas(A.origem), incA = locSiglas(A.destino);
-        const remB = locSiglas(B.origem), incB = locSiglas(B.destino);
-        if (!remA.size || !incA.size || !remB.size || !incB.size) continue;
-
-        const aRemAlgumQueBInclui = [...remA].some(x => incB.has(x));
-        const bRemAlgumQueAInclui = [...remB].some(x => incA.has(x));
-        if (aRemAlgumQueBInclui && bRemAlgumQueAInclui){
-          const motivo = `Looping potencial: A remove ${A.origem} e inclui ${A.destino}; B remove ${B.origem} e inclui ${B.destino}; Critérios idênticos.`;
-          addOnBoth(A.num, B.num, "Looping", "Alto", motivo);
-        }
-      }
-    }
-
-    return conflictsByRule;
   }
+
+  // Comparações:
+  // (a) dentro de cada origem específica (mantém performance)
+  // (b) coringas vs todo mundo do mesmo tipo
+  const processed = new Set();
+
+  for (const slot of byTipo.values()) {
+    // (a) buckets específicos
+    for (const arr of slot.specific.values()) {
+      if (!arr || arr.length < 2) continue;
+      for (let x=0; x<arr.length; x++){
+        const A = arr[x];
+        for (let y=x+1; y<arr.length; y++){
+          const B = arr[y];
+          const k = (Number(A.num) < Number(B.num)) ? `${A.num}#${B.num}` : `${B.num}#${A.num}`;
+          if (processed.has(k)) continue;
+          processed.add(k);
+          comparePair(A,B);
+        }
+      }
+    }
+
+    // (b) coringas vs todos no tipo
+    if (slot.wildcard && slot.wildcard.length) {
+      const all = [];
+      slot.specific.forEach(arr => { if (arr && arr.length) all.push(...arr); });
+      all.push(...slot.wildcard);
+
+      for (let i=0; i<slot.wildcard.length; i++){
+        const W = slot.wildcard[i];
+        for (let j=0; j<all.length; j++){
+          const R = all[j];
+          if (R === W) continue;
+          const k = (Number(W.num) < Number(R.num)) ? `${W.num}#${R.num}` : `${R.num}#${W.num}`;
+          if (processed.has(k)) continue;
+          processed.add(k);
+          comparePair(W,R);
+        }
+      }
+    }
+  }
+
+  // 3) Looping (multi-localizadores) — requer TIPO igual e critérios idênticos
+  for (let i=0; i<rules.length; i++){
+    const A = rules[i];
+    for (let j=i+1; j<rules.length; j++){
+      const B = rules[j];
+      if (lower(A.tipoRaw) !== lower(B.tipoRaw)) continue;
+      if (relationOutros(A, B) !== "identicos") continue;
+
+      const remA = locSiglas(A.origem), incA = locSiglas(A.destino);
+      const remB = locSiglas(B.origem), incB = locSiglas(B.destino);
+      if (!remA.size || !incA.size || !remB.size || !incB.size) continue;
+
+      const aRemAlgumQueBInclui = [...remA].some(x => incB.has(x));
+      const bRemAlgumQueAInclui = [...remB].some(x => incA.has(x));
+      if (aRemAlgumQueBInclui && bRemAlgumQueAInclui){
+        const motivo = `Looping potencial: A remove ${A.origem} e inclui ${A.destino}; B remove ${B.origem} e inclui ${B.destino}; Critérios idênticos.`;
+        addOnBoth(A.num, B.num, "Looping", "Alto", motivo);
+      }
+    }
+  }
+
+  return conflictsByRule;
+}
 
   function injectStyle(){
     if (document.getElementById("atp-conf-inline-style")) return;
@@ -614,6 +604,7 @@
         width:1px !important;
         height:1px !important;
       }
+      .atp-remover-plain-text{display:none !important;}
     `;
     document.head.appendChild(style);
   }
@@ -780,6 +771,24 @@
   }
 
 
+  // Quando NÃO há tooltip (lupa.gif) no REMOVER, o eProc às vezes mostra texto direto na célula:
+  // - "Nenhum" => não remover (VAL=3)
+  // - "Todos os localizadores" => remover todos (VAL=1)
+
+function removerPlainTextToValue(txt){
+  const s = rmAcc(lower(txt || "")).replace(/\.+$/,"").trim();
+  if (!s) return null;
+
+  // Casos SEM tooltip e SEM lista de localizadores (são coringa de REMOVER)
+  if (s === "nenhum") return "3";
+  if (s.includes("manter") && s.includes("localizador") && s.includes("sistema")) return "2";
+  if (s.includes("todos") && s.includes("localizador")) return "1";
+
+  return null;
+}
+
+
+
 
   // Troca a lupa (tooltip do REMOVER) por um span com emoji, MAS sem remover o <img>:
   // - escondemos o img (para não quebrar re-render/updates do eProc)
@@ -847,6 +856,42 @@
   }
 
 
+function applyRemoverTextIcons(table, cols){
+  try{
+    const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
+    const rows = tbodys.flatMap(tb => Array.from(tb.rows));
+
+    for (const tr of rows){
+      const tds = Array.from(tr.querySelectorAll(':scope > td'));
+      if (!tds.length) continue;
+
+      const tdRemover = tds[cols?.colRemover ?? 3] || tds[3];
+      if (!tdRemover) continue;
+
+      // Se já tem tooltip do REMOVER (img ou span), não é esse caso
+      if (tdRemover.querySelector('[onmouseover*="Comportamento do Localizador REMOVER"]')) continue;
+      if (tdRemover.querySelector('img[src*="lupa.gif"]')) continue;
+
+      // Se já foi aplicado antes
+      if (tdRemover.dataset?.atpRemoverVal && tdRemover.querySelector('.atp-remover-emoji')) continue;
+
+      const plain = limparTexto(tdRemover.textContent || "");
+      const val = removerPlainTextToValue(plain);
+      if (!val) continue;
+
+      // Marca como "coringa": sem filtro de Localizador REMOVER
+      try { tdRemover.dataset.atpRemoverVal = String(val); } catch(e) {}
+      try { tdRemover.dataset.atpRemoverWildcard = "1"; } catch(e) {}
+      try { tdRemover.dataset.atpRemoverTextOriginal = plain; } catch(e) {}
+
+      // Troca visual por emoji (mantém simples, sem tooltip)
+      tdRemover.textContent = "";
+      tdRemover.appendChild(mkEmojiSpan(val, "atp-in-table"));
+    }
+  }catch(e){}
+}
+
+
   function updateAllRemoverLupasByTooltipText(root){
     const scope = root || document;
     const imgs = Array.from(scope.querySelectorAll('img[src*="lupa.gif"][onmouseover*="Comportamento do Localizador REMOVER"]'));
@@ -856,6 +901,42 @@
       replaceLupaImgWithEmoji(img, val);
     }
   }
+
+
+  // Quando a célula REMOVER traz apenas texto (sem lupa/tooltip), substitui visualmente por emoji,
+  // mas mantém o texto original escondido para não quebrar agrupamento/análise.
+  function replacePlainRemoverTextInTable(table, cols){
+    try{
+      if(!table || !cols) return;
+      const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
+      const rows = tbodys.flatMap(tb => Array.from(tb.rows));
+      for (const tr of rows){
+        const tds = Array.from(tr.querySelectorAll(':scope > td'));
+        const td = tds[cols.colRemover] || null;
+        if (!td) continue;
+
+        // Se já tem lupa/tooltip ou emoji aplicado, ignora
+        if (td.querySelector('img[src*="lupa.gif"][onmouseover*="Comportamento do Localizador REMOVER"]')) continue;
+        if (td.querySelector('span.atp-remover-emoji')) continue;
+
+        const plain = limparTexto(td.textContent || "");
+        const val = removerPlainTextToValue(plain);
+        if (!val) continue;
+
+        const hidden = document.createElement("span");
+        hidden.className = "atp-remover-plain-text";
+        hidden.textContent = plain;
+
+        const emoji = mkEmojiSpan(val, "atp-in-table");
+        emoji.dataset.atpRemoverVal = val;
+
+        td.textContent = "";
+        td.appendChild(hidden);
+        td.appendChild(emoji);
+      }
+    }catch(e){}
+  }
+
 
   function updateMainRemoverIconBySelect(){
     const sel = document.getElementById("selOpcaoLocalizadorDesativacao");
@@ -1147,6 +1228,8 @@
       cols = mapColumns(table);
 
       updateAllRemoverLupasByTooltipText(table);
+      // também cobre casos sem tooltip (texto direto)
+      replacePlainRemoverTextInTable(table, cols);
       updateMainRemoverIconBySelect();
 
       const rules = parseRulesFromTable(table, cols);
@@ -1189,6 +1272,7 @@
     enhanceRemoverSelectWithIcons();
     updateAllRemoverLupasByTooltipText(document);
     updateMainRemoverIconBySelect();
+    applyRemoverTextIcons(table, mapColumns(table));
     watchRemoverEnhancer();
 
     scheduleIdle(recalc, 0);
