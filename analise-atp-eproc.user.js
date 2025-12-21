@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      2.18.1
+// @version      3
 // @description  Colisão Total/Parcial, Sobreposição, Perda de Objeto (direcionada) e Looping (multi-localizadores); ignora regras desativadas (quando checkbox existe); coluna única de conflitos com tooltip e botão Comparar; filtro; REMOVER com dropdown custom (emoji por option + observação) e troca do ícone/“lupa” do tooltip REMOVER conforme texto do tooltip e/ou opção selecionada.
 // @author
 // @run-at       document-end
@@ -18,7 +18,7 @@
 
   let filterOnlyConflicts = false;
 
-  const tipoRank    = { "Colisão Total": 5, "Colisão Parcial": 4, "Perda de Objeto": 3, "Looping": 5, "Sobreposição": 2 };
+  const tipoRank    = { "Colisão Total": 3, "Colisão Parcial": 2, "Perda de Objeto": 5, "Looping": 1, "Sobreposição": 4 };
   const impactoRank = { "Alto": 3, "Médio": 2, "Baixo": 1 };
 
   // ==========================================================
@@ -162,7 +162,7 @@
     const mv = (s.match(/\bval\s*=\s*([0-9]+)\b/) || [])[1];
     if (mv === "3") return false; // não remover
     if (mv === "0" || mv === "1" || mv === "2" || mv === "4") return true;
-    if (/na[oõ]\s*remover\b/.test(s)) return false;
+    if (/\bna[oõ]\s*remover\b/.test(s)) return false;
     if (/apenas\s+acrescentar\s+o\s+indicado/.test(s)) return false;
     return /remover\s+o\s+processo.*localizador(?:es)?\s+informado(?:s)?|remover\s+o\s+processo\s+de\s+todos\s+localizadores|remover\s+os\s+processos\s+de\s+todos\s+os\s+localizadores|remover\s+.*localizador/.test(s);
   }
@@ -176,9 +176,13 @@
   }
 
   function extrairMapaCriterios(tdOutros) {
-    const criterios = {};
-    if (!tdOutros) return criterios;
+  const criterios = {};
+  if (!tdOutros) return criterios;
 
+  // ----------------------------
+  // 1) Estrutura (div.ml-0.pt-2 + span.lblFiltro / bold)
+  // ----------------------------
+  try {
     const divs = tdOutros.querySelectorAll("div.ml-0.pt-2");
     divs.forEach(div => {
       const span = div.querySelector("span.lblFiltro, span.font-weight-bold");
@@ -189,12 +193,71 @@
 
       let valor = (div.textContent || "").replace(label, "");
       valor = valor.replace(/\u00a0/g, " ");
-      valor = valor.replace(/\s+/g," ").trim();
-      criterios[key] = valor;
-    });
+      valor = valor.replace(/\s+/g, " ").trim();
 
-    return criterios;
-  }
+      if (!valor) return;
+
+      // Pode haver múltiplas ocorrências do mesmo critério:
+      // concatena com separador consistente (o parser depois transforma em Set).
+      if (criterios[key] && criterios[key] !== valor) {
+        criterios[key] = String(criterios[key]) + " | " + valor;
+      } else {
+        criterios[key] = valor;
+      }
+    });
+  } catch (e) {}
+
+  // ----------------------------
+  // 2) Fallback textual (quando o HTML não está estruturado em divs)
+  //    Ex.: "Classificador por Conteúdo: Petições - ..."
+  // ----------------------------
+  try {
+    const raw = (tdOutros.innerText || tdOutros.textContent || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\r/g, "\n");
+
+    // 2.a) Captura múltiplas ocorrências de "Classificador por Conteúdo:"
+    //      Mantém o valor inteiro (sem quebrar por espaço), para diferenciar textos longos.
+    const reClassif = /Classificador\s+por\s+Conte[uú]do\s*:\s*([^\n]+)(?:\n|$)/gi;
+    let m;
+    const vals = [];
+    while ((m = reClassif.exec(raw)) !== null) {
+      const v = limparTexto(m[1]);
+      if (v) vals.push(v);
+    }
+    if (vals.length) {
+      const k = normalizarChave("Classificador por Conteúdo");
+      // agrega (sem duplicar)
+      const uniq = Array.from(new Set(vals));
+      criterios[k] = uniq.join(" | ");
+    }
+
+    // 2.b) Captura genérica "Label: Valor" por linha
+    //      (separador por linha) — útil quando critérios são renderizados como texto simples.
+    const lines = raw.split("\n").map(l => limparTexto(l)).filter(Boolean);
+    for (const line of lines) {
+      // ignora linhas sem ":" ou que já foram tratadas acima
+      if (line.indexOf(":") === -1) continue;
+      if (/^Classificador\s+por\s+Conte[uú]do\s*:/i.test(line)) continue;
+
+      const idx = line.indexOf(":");
+      const label = limparTexto(line.slice(0, idx));
+      const valor = limparTexto(line.slice(idx + 1));
+
+      if (!label || !valor) continue;
+      const key = normalizarChave(label);
+      if (!key) continue;
+
+      if (criterios[key] && criterios[key] !== valor) {
+        criterios[key] = String(criterios[key]) + " | " + valor;
+      } else if (!criterios[key]) {
+        criterios[key] = valor;
+      }
+    }
+  } catch (e) {}
+
+  return criterios;
+}
 
   function splitValues(raw){
     if (!raw) return new Set();
@@ -1112,6 +1175,16 @@
     const recalc = makeRunner(table);
     addOnlyConflictsCheckbox(table, () => scheduleIdle(recalc, 0));
     bindPriorityChange(table, recalc);
+
+    // Recalcula conflitos quando muda o comportamento global de REMOVER (ex.: Remover marcados -> Remover todos)
+    // Isso impacta a detecção de Perda de Objeto e precisa refletir imediatamente na análise.
+    try{
+      const selRem = document.getElementById("selOpcaoLocalizadorDesativacao");
+      if (selRem && !selRem._atpRecalcHook){
+        selRem.addEventListener("change", () => scheduleIdle(recalc, 0));
+        selRem._atpRecalcHook = true;
+      }
+    }catch(e){}
 
     enhanceRemoverSelectWithIcons();
     updateAllRemoverLupasByTooltipText(document);
