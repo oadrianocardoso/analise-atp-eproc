@@ -8,6 +8,8 @@
 // @match        https://eproc1g.tjsp.jus.br/eproc/*
 // @match        https://eproc-1g-sp-hml.tjsp.jus.br/*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/analise-atp-eproc.user.js
+// @downloadURL  https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/analise-atp-eproc.user.js
 
 /*******************************************************************************************
  * SCRIPT: Análise de ATP eProc
