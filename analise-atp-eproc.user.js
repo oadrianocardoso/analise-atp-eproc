@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      3.1
+// @version      3.5
 // @description  Análise de conflitos de ATP (Colisão, Sobreposição, Perda de Objeto e Looping)
 // @run-at       document-start
 // @noframes
@@ -565,6 +565,8 @@ function mkEmojiSpan(val, extraClass) { // Cria <span> com emoji + nota.
   function ensureSortUI(table) {
     const thead = table.tHead || table.querySelector("thead");
     if (!thead) return;
+    // Se o DataTables já foi inicializado, NÃO altere a estrutura (isso dispara TN/18)
+    if ((table.classList && table.classList.contains('dataTable')) || table.closest('.dataTables_wrapper')) return;
 
     const colIdx = findPriorityColumnIndex(table);
     if (colIdx < 0) return;
@@ -599,7 +601,11 @@ function mkEmojiSpan(val, extraClass) { // Cria <span> com emoji + nota.
 
   function init() {
     const table = document.getElementById(TABLE_ID);
-    if (table) ensureSortUI(table);
+    if (table) {
+      // Garante nossa coluna ANTES do DataTables “pegar” a tabela.
+      try { ensureColumns(table); } catch (e) {}
+      ensureSortUI(table);
+    }
   }
 
   init();
@@ -1457,35 +1463,123 @@ function parsearExpressaoLogicaLocalizadores(root) { // Parseia expressão com E
     document.head.appendChild(st); // Aplica no <head>.
   }
 
-function ensureColumns(table) { // Garante a existência das colunas "Conflita com / Tipo".
-    const thead = table.tHead || table.querySelector('thead'); // Localiza <thead>.
-    if (!thead) return; // Se não existe, aborta.
-    const headerRow = thead.rows?.[0] || thead.querySelector('tr'); // Pega 1ª linha do header.
-    if (!headerRow) return; // Se não existe, aborta.
-    const ths = Array.from(headerRow.querySelectorAll('th')); // Lista de <th>.
-    const hasConfl = ths.some(th => /Conflita com/i.test(th.textContent || '')); // Verifica se já existe.
-    if (!hasConfl) { // Se não existe, cria.
-      const th = document.createElement('th'); // Cria <th>.
-      th.textContent = 'Conflita com / Tipo'; // Texto do cabeçalho.
-      th.style.whiteSpace = 'nowrap'; // Evita quebra.
-      th.dataset.atpCol = 'conflita-th'; // Marca para CSS.
-      headerRow.appendChild(th); // Adiciona no fim.
-    } else { // Se já existe, só marca.
-      const th = ths.find(x => /Conflita com/i.test(x.textContent || '')); // Encontra o TH existente.
-      if (th) th.dataset.atpCol = 'conflita-th'; // Marca para CSS.
-    }
+function ensureColumns(table) { // DataTables-safe: garante contagem consistente no THEAD e TBODY (inclui COLSPAN)
+    try {
+      const thead = table.tHead || table.querySelector('thead');
+      if (!thead) return;
 
-    const bodies = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector('tbody')].filter(Boolean); // Todos TBODYs.
-    const rows = bodies.flatMap(tb => Array.from(tb.rows)); // Todas as linhas.
-    rows.forEach(tr => { // Itera cada linha.
-      if (!tr.querySelector('td[data-atp-col="conflita"]')) { // Se a célula não existe...
-        const td = document.createElement('td'); // Cria TD.
-        td.dataset.atpCol = 'conflita'; // Marca para CSS e busca.
-        tr.appendChild(td); // Adiciona ao fim.
+      // 1) Descobre se a coluna já existe (por data-atp-col ou pelo texto)
+      const allTh = Array.from(thead.querySelectorAll('th'));
+      const thExisting =
+        allTh.find(th => th && th.dataset && th.dataset.atpCol === 'conflita-th') ||
+        allTh.find(th => /Conflita com/i.test(th.textContent || ''));
+
+      // Se já existir, só garante a marcação
+      if (thExisting) {
+        try { thExisting.dataset.atpCol = 'conflita-th'; } catch (e) {}
       }
-    });
 
-    injectStyle(); // Garante CSS.
+      // 2) Para cada linha do THEAD, garante 1 TH correspondente
+      const headRows = Array.from(thead.querySelectorAll('tr'));
+      headRows.forEach((tr, idx) => {
+        const ths = Array.from(tr.children).filter(n => n && n.tagName === 'TH');
+
+        const has =
+          ths.some(th => th.dataset && th.dataset.atpCol === 'conflita-th') ||
+          ths.some(th => /Conflita com/i.test(th.textContent || ''));
+
+        if (has) return;
+
+        const th = document.createElement('th');
+        th.dataset.atpCol = 'conflita-th';
+
+        // Só a PRIMEIRA linha recebe o título; as demais ficam vazias
+        if (idx === 0) {
+          th.textContent = 'Conflita com / Tipo';
+          th.style.whiteSpace = 'nowrap';
+        } else {
+          th.textContent = '';
+        }
+
+        tr.appendChild(th);
+      });
+
+      // Helper: conta colunas "efetivas" considerando colspan
+      const effectiveCellCount = (cells) => {
+        let n = 0;
+        cells.forEach(c => {
+          const cs = parseInt(c.getAttribute('colspan') || '1', 10);
+          n += (isFinite(cs) && cs > 1) ? cs : 1;
+        });
+        return n;
+      };
+
+      // 3) Garante que cada TR do TBODY tenha a quantidade correta (considerando colspan)
+      const firstHeadRow = headRows[0] || (thead.rows ? thead.rows[0] : null);
+      const expectedCols = firstHeadRow ? effectiveCellCount(Array.from(firstHeadRow.children)) : null;
+
+      const bodies = table.tBodies && table.tBodies.length
+        ? Array.from(table.tBodies)
+        : [table.querySelector('tbody')].filter(Boolean);
+
+      const rows = bodies.flatMap(tb => Array.from(tb.rows));
+
+      rows.forEach(tr => {
+        if (!tr || tr.nodeType !== 1) return;
+
+        const tds = Array.from(tr.children).filter(n => n && n.tagName === 'TD');
+        if (!tds.length) return;
+
+        // Caso DataTables: linha "vazia" costuma ser 1 TD com COLSPAN
+        if (expectedCols && tds.length === 1) {
+          const only = tds[0];
+          const cs = parseInt(only.getAttribute('colspan') || '1', 10);
+          if (isFinite(cs) && cs >= 1 && cs !== expectedCols) {
+            // Ajusta colspan para bater com o total esperado (inclui nossa coluna)
+            only.setAttribute('colspan', String(expectedCols));
+            return;
+          }
+        }
+
+        // Se já tem nosso TD marcado, ok
+        if (tr.querySelector('td[data-atp-col="conflita"]')) {
+          // mas ainda garante colspan de alguma célula que cubra tudo (caso raro)
+          return;
+        }
+
+        if (!expectedCols) {
+          // Fallback: adiciona 1 TD no fim
+          const td = document.createElement('td');
+          td.dataset.atpCol = 'conflita';
+          tr.appendChild(td);
+          return;
+        }
+
+        const eff = effectiveCellCount(tds);
+        if (eff < expectedCols) {
+          // Completa faltantes com TDs simples
+          const missing = expectedCols - eff;
+          for (let k = 0; k < missing; k++) {
+            const td = document.createElement('td');
+            if (k === missing - 1) td.dataset.atpCol = 'conflita'; // marca o último como nossa coluna
+            tr.appendChild(td);
+          }
+        } else if (eff > expectedCols) {
+          // Se sobrou coluna (muito raro), tenta remover nosso TD extra se existir no fim
+          const last = tds[tds.length - 1];
+          if (last && (last.dataset && last.dataset.atpCol === 'conflita')) {
+            last.remove();
+          }
+        } else {
+          // eff == expectedCols: adiciona nossa célula (1 TD) só se o row não tinha (caso: colspan compensando)
+          const td = document.createElement('td');
+          td.dataset.atpCol = 'conflita';
+          tr.appendChild(td);
+        }
+      });
+
+      injectStyle(); // Garante CSS.
+    } catch (e) {}
   }
 
   // ==============================
@@ -2532,7 +2626,15 @@ function addOnlyConflictsCheckbox(table, onToggle) { // Adiciona checkbox no blo
 
 function recalc(table) { // Recalcula tudo (parse -> analyze -> render).
     if (!document.body.contains(table)) return; // Se tabela sumiu do DOM, não faz nada.
-    ensureColumns(table); // Garante colunas extras.
+    // Evita mexer na estrutura durante redraw/processamento do DataTables (reduz TN/18 intermitente)
+    if (table.classList && table.classList.contains('dataTable') && table.querySelector('.dataTables_processing')) {
+      schedule(() => recalc(table), 250);
+      return;
+    }
+    // Só garante/insere colunas ANTES do DataTables inicializar.
+    if (!(table.classList && table.classList.contains('dataTable')) && !table.closest('.dataTables_wrapper')) {
+      ensureColumns(table);
+    }
     const cols = mapColumns(table); // Mapeia colunas.
     updateAllRemoverLupasByTooltipText(table); // Troca lupas do REMOVER por emoji (mantendo tooltip).
     replacePlainRemoverTextInTable(table, cols); // Para linhas sem lupa, tenta inserir emoji.
