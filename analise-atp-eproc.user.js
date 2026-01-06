@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      4.0
+// @version      6.0
 // @description  Análise de conflitos de ATP (Colisão, Sobreposição, Perda de Objeto e Looping)
 // @run-at       document-start
 // @noframes
@@ -223,9 +223,6 @@ function showATPLoading() {
         </div>
         <div id="atpLoadingMsg" style="font-size: 13px; color: #374151; margin-top: 6px;">
           Aguardando carregamento completo do eProc…
-        </div>
-        <div style="font-size: 11px; color: #6b7280; margin-top: 10px;">
-          (timeout automático em 2 minutos)
         </div>
       </div>
     `;
@@ -565,6 +562,8 @@ function mkEmojiSpan(val, extraClass) { // Cria <span> com emoji + nota.
   function ensureSortUI(table) {
     const thead = table.tHead || table.querySelector("thead");
     if (!thead) return;
+    // Se o DataTables já foi inicializado, NÃO altere a estrutura (isso dispara TN/18)
+    if ((table.classList && table.classList.contains('dataTable')) || table.closest('.dataTables_wrapper')) return;
 
     const colIdx = findPriorityColumnIndex(table);
     if (colIdx < 0) return;
@@ -599,7 +598,13 @@ function mkEmojiSpan(val, extraClass) { // Cria <span> com emoji + nota.
 
   function init() {
     const table = document.getElementById(TABLE_ID);
-    if (table) ensureSortUI(table);
+    if (table) {
+      // Garante nossa coluna ANTES do DataTables “pegar” a tabela.
+      const dtOn = (table.classList && table.classList.contains('dataTable')) || table.closest('.dataTables_wrapper');
+      if (!dtOn) {
+        try { ensureColumns(table); } catch (e) {}
+      }ensureSortUI(table);
+    }
   }
 
   init();
@@ -1457,59 +1462,43 @@ function parsearExpressaoLogicaLocalizadores(root) { // Parseia expressão com E
     document.head.appendChild(st); // Aplica no <head>.
   }
 
-function ensureColumns(table) { // Garante a existência das colunas "Conflita com / Tipo" (atômico p/ evitar warning do DataTables).
+function ensureColumns(table) { // DataTables-safe: injeta apenas nossa coluna (sem padding de TDs vazios)
   try {
     if (!table) return;
 
-    const thead = table.tHead || table.querySelector('thead');
-    const tbodyList = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector('tbody')].filter(Boolean);
-    if (!thead || !tbodyList.length) return;
+    // Se DataTables já "pegou" a tabela, não mexe na estrutura (evita TN/18 e layout quebrado).
+    const dtOn = (table.classList && table.classList.contains('dataTable')) ||
+                 table.closest('.dataTables_wrapper');
+    if (dtOn) return;
 
-    const headerRow = thead.rows?.[0] || thead.querySelector('tr');
-    if (!headerRow) return;
-
-    // Já existe?
-    let th = Array.from(headerRow.querySelectorAll('th')).find(x => /Conflita com/i.test(x.textContent || '')) || null;
-
-    // Para evitar estado intermediário (thead com +1 e tbody ainda sem td), escondemos a tabela enquanto ajusta.
-    const prevVis = table.style.visibility;
-    table.style.visibility = 'hidden';
-
-    try {
-      if (!th) {
-        th = document.createElement('th');
-        th.textContent = 'Conflita com / Tipo';
+    // THEAD
+    const thead = table.querySelector('thead');
+    if (thead) {
+      const hr = thead.querySelector('tr');
+      if (hr && !hr.querySelector('th[data-atp-col="conflita"]')) {
+        const th = document.createElement('th');
+        th.dataset.atpCol = 'conflita';
+        th.textContent = 'Conflitos';
+        th.className = 'infraTh sorting_disabled';
         th.style.whiteSpace = 'nowrap';
-        th.dataset.atpCol = 'conflita-th';
-        headerRow.appendChild(th);
-      } else {
-        th.dataset.atpCol = 'conflita-th';
+        hr.appendChild(th);
       }
-
-      // Coluna adicionada no fim -> expected é o total de colunas do header.
-      const expected = headerRow.cells.length;
-
-      // Para cada linha, garante que a contagem de TDs bate com o header (padding no fim).
-      const rows = tbodyList.flatMap(tb => Array.from(tb.rows || []));
-      for (const tr of rows) {
-        // Se a linha estiver "curta" por qualquer motivo (corrida com DataTables/AJAX),
-        // completa com TDs vazios até igualar o header.
-        while (tr.cells.length < expected) {
-          const td = document.createElement('td');
-          tr.appendChild(td);
-        }
-
-        // Marca o ÚLTIMO TD como nossa coluna (porque ela fica no final).
-        const lastTd = tr.cells[expected - 1];
-        if (lastTd) lastTd.dataset.atpCol = 'conflita';
-      }
-
-      injectStyle(); // Garante CSS.
-    } finally {
-      table.style.visibility = prevVis || '';
     }
-  } catch {}
-}
+
+    // TBODY
+    const tbody = table.querySelector('tbody');
+    if (!tbody) return;
+
+    const trs = tbody.querySelectorAll('tr');
+    trs.forEach(tr => {
+      if (tr.querySelector('td[data-atp-col="conflita"]')) return;
+      const td = document.createElement('td');
+      td.dataset.atpCol = 'conflita';
+      td.textContent = ''; // preenchido depois pela análise
+      tr.appendChild(td);
+    });
+  } catch (e) {}
+} // ensureColumns
 
   // ==============================
   // Mapeamento de colunas (por título)
@@ -2042,7 +2031,7 @@ function doesRemove(removerText) { // Decide se a regra "remove" (true) ou só a
             if (earlierCobreLater) {
               const detalheOutros = (relEL === 'identicos')
                 ? 'Outros idênticos'
-                : 'Regra anterior é mais ampla em "Outros"';
+                : 'Regra anterior é mais ampla em "Outros Critérios"';
 
               const sugOrdem = `Sugestão: Alterar a prioridade da regra ${later.num} (${later.prioridade.num}ª) para menor que a regra ${earlier.num} (${earlier.prioridade.num}ª), ou tornar a regra ${earlier.num} mais restritiva.`;
 
@@ -2052,7 +2041,7 @@ function doesRemove(removerText) { // Decide se a regra "remove" (true) ou só a
                 upsert(later.num, earlier.num, 'Perda de Objeto', 'Alto',
                   `Mesmo Localizador REMOVER e mesmo Tipo de Controle / Critério; ${detalheOutros}. ` +
                   `Regra ${earlier.num} (prioridade ${earlier.prioridade.text}) executa antes ` +
-                  `e remove o processo do(s) localizador(es) informado(s), impedindo a regra ${later.num}. ` + sugOrdem);
+                  `e remove o processo do(s) localizador(es) informado(s), impedindo que sejam capturados pela regra ${later.num}. ` + sugOrdem);
               } else {
                 upsert(later.num, earlier.num, 'Sobreposição', 'Médio',
                   `Mesmo Localizador REMOVER e mesmo Tipo de Controle / Critério; ${detalheOutros}. ` +
@@ -2099,16 +2088,16 @@ function doesRemove(removerText) { // Decide se a regra "remove" (true) ou só a
   }
 
 function tipoClass(t) { // Mapeia tipo de conflito para classe CSS.
-    return ({ // Mapa direto.
-      'Colisão Total': 'collision', // Colisão => collision.
-      'Colisão Parcial': 'collision', // Colisão => collision.
-      'Sobreposição': 'overlap', // Sobreposição => overlap.
-      'Possível Sobreposição': 'overlap', // Possível Sobreposição => overlap.
-      'Perda de Objeto': 'objectloss', // Perda => objectloss.
-      'Looping': 'loop', // Looping => loop.
-      'Looping Potencial': 'loop' // Looping Potencial => loop.
-    }[t] || ''); // Default vazio.
-  }
+  return ({ // Mapa direto.
+    'Colisão Total': 'collision',        // Colisão => collision.
+    'Colisão Parcial': 'collision',      // Colisão => collision.
+    'Sobreposição': 'overlap',            // Sobreposição => overlap.
+    'Possível Sobreposição': 'overlap',   // Possível Sobreposição => overlap.
+    'Perda de Objeto': 'objectloss',      // Perda => objectloss.
+    'Looping': 'loop'                     // Looping => loop.
+  }[t] || ''); // Default vazio.
+}
+
 
 function setNumeroRegraAndSearch(nums) { // Preenche txtNumeroRegra e clica pesquisar (Comparar).
     try { // Protege contra erros de DOM.
@@ -2555,7 +2544,15 @@ function addOnlyConflictsCheckbox(table, onToggle) { // Adiciona checkbox no blo
 
 function recalc(table) { // Recalcula tudo (parse -> analyze -> render).
     if (!document.body.contains(table)) return; // Se tabela sumiu do DOM, não faz nada.
-    ensureColumns(table); // Garante colunas extras.
+    // Evita mexer na estrutura durante redraw/processamento do DataTables (reduz TN/18 intermitente)
+    if (table.classList && table.classList.contains('dataTable') && table.querySelector('.dataTables_processing')) {
+      schedule(() => recalc(table), 250);
+      return;
+    }
+    // Só garante/insere colunas ANTES do DataTables inicializar.
+    if (!(table.classList && table.classList.contains('dataTable')) && !table.closest('.dataTables_wrapper')) {
+      ensureColumns(table);
+    }
     const cols = mapColumns(table); // Mapeia colunas.
     updateAllRemoverLupasByTooltipText(table); // Troca lupas do REMOVER por emoji (mantendo tooltip).
     replacePlainRemoverTextInTable(table, cols); // Para linhas sem lupa, tenta inserir emoji.
