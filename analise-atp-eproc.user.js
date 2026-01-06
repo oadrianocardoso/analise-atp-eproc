@@ -224,9 +224,6 @@ function showATPLoading() {
         <div id="atpLoadingMsg" style="font-size: 13px; color: #374151; margin-top: 6px;">
           Aguardando carregamento completo do eProc…
         </div>
-        <div style="font-size: 11px; color: #6b7280; margin-top: 10px;">
-          (Por favor, aguarde.)
-        </div>
       </div>
     `;
 
