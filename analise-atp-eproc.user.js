@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      3.0
+// @version      3.1
 // @description  Análise de conflitos de ATP (Colisão, Sobreposição, Perda de Objeto e Looping)
-// @run-at       document-end
+// @run-at       document-start
 // @noframes
 // @match        https://eproc1g.tjsp.jus.br/eproc/*
 // @match        https://eproc-1g-sp-hml.tjsp.jus.br/*
@@ -175,7 +175,215 @@
 (function () {
   'use strict';
 
+// ============================================================
+// Loading (overlay) – aguarda carregamento COMPLETO do eProc (window.load)
+// e só some quando a análise/render estabilizar OU timeout (2 min)
+// ============================================================
+const ATP_LOADING_ID = 'atp-loading-overlay';
 
+function showATPLoading() {
+  try {
+    if (document.getElementById(ATP_LOADING_ID)) return;
+
+    const overlay = document.createElement('div');
+    overlay.id = ATP_LOADING_ID;
+    overlay.style.cssText = `
+      position: fixed;
+      inset: 0;
+      z-index: 999999;
+      background: rgba(243, 244, 246, 0.85);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: Arial, Helvetica, sans-serif;
+    `;
+
+    overlay.innerHTML = `
+      <div style="
+        background: #ffffff;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        padding: 24px 32px;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+        text-align: center;
+        min-width: 320px;
+      ">
+        <div style="
+          width: 42px;
+          height: 42px;
+          margin: 0 auto 16px;
+          border: 4px solid #e5e7eb;
+          border-top-color: #2563eb;
+          border-radius: 50%;
+          animation: atp-spin 1s linear infinite;
+        "></div>
+
+        <div style="font-size: 15px; font-weight: bold; color: #111827;">
+          Análise de ATP – eProc
+        </div>
+        <div id="atpLoadingMsg" style="font-size: 13px; color: #374151; margin-top: 6px;">
+          Aguardando carregamento completo do eProc…
+        </div>
+        <div style="font-size: 11px; color: #6b7280; margin-top: 10px;">
+          (Por favor, aguarde.)
+        </div>
+      </div>
+    `;
+
+    if (!document.getElementById('atp-loading-style')) {
+      const style = document.createElement('style');
+      style.id = 'atp-loading-style';
+      style.textContent = `
+        @keyframes atp-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      `;
+      (document.head || document.documentElement).appendChild(style);
+    }
+
+    (document.documentElement || document.body).appendChild(overlay);
+
+    // timeout de segurança (2 min)
+    window.__ATP_LOADING_TIMEOUT__ = setTimeout(() => {
+      try {
+        const el = document.getElementById(ATP_LOADING_ID);
+        if (el) el.remove();
+        window.__ATP_LOADING_HIDDEN__ = true;
+      } catch {}
+    }, 120000);
+  } catch {}
+}
+
+function setATPLoadingMsg(msg) {
+  try {
+    const el = document.getElementById('atpLoadingMsg');
+    if (el) el.textContent = msg;
+  } catch {}
+}
+
+function hideATPLoading() {
+  try {
+    if (window.__ATP_LOADING_HIDDEN__) return;
+    const overlay = document.getElementById(ATP_LOADING_ID);
+    if (overlay) overlay.remove();
+    window.__ATP_LOADING_HIDDEN__ = true;
+
+    if (window.__ATP_LOADING_TIMEOUT__) {
+      clearTimeout(window.__ATP_LOADING_TIMEOUT__);
+      window.__ATP_LOADING_TIMEOUT__ = null;
+    }
+    if (window.__ATP_LOADING_HIDE_TIMER__) {
+      clearTimeout(window.__ATP_LOADING_HIDE_TIMER__);
+      window.__ATP_LOADING_HIDE_TIMER__ = null;
+    }
+  } catch {}
+}
+
+// Gate: carregamento completo do eProc (window.load)
+window.__ATP_PAGE_LOADED__ = (document.readyState === 'complete');
+if (!window.__ATP_PAGE_LOADED__) {
+  window.addEventListener('load', () => {
+    window.__ATP_PAGE_LOADED__ = true;
+    setATPLoadingMsg('Carregamento completo. Analisando colisões…');
+    // tenta esconder quando estabilizar (se a análise já tiver renderizado)
+    try { scheduleHideATPLoading(1800); } catch {}
+  }, { once: true });
+}
+
+// Controle de renderização/estabilização
+function markATPRenderTick() {
+  try {
+    window.__ATP_LAST_RENDER_TS__ = Date.now();
+    window.__ATP_RENDER_COUNT__ = (window.__ATP_RENDER_COUNT__ || 0) + 1;
+    // sempre agenda hide; ele só efetiva depois do load + silêncio
+    scheduleHideATPLoading(1800);
+  } catch {}
+}
+
+// Esconde o loading somente quando:
+// - a página terminou de carregar (window.load)
+// - houve ao menos 1 renderização da análise
+// - e passou uma janela de silêncio sem novas renderizações
+function scheduleHideATPLoading(silenceMs = 1800) {
+  try {
+    if (window.__ATP_LOADING_HIDDEN__) return;
+
+    if (window.__ATP_LOADING_HIDE_TIMER__) {
+      clearTimeout(window.__ATP_LOADING_HIDE_TIMER__);
+    }
+
+    window.__ATP_LOADING_HIDE_TIMER__ = setTimeout(() => {
+      try {
+        window.__ATP_LOADING_HIDE_TIMER__ = null;
+
+        // 1) aguarda window.load
+        if (!window.__ATP_PAGE_LOADED__) return;
+
+        // 2) precisa ter renderizado ao menos 1x
+        if ((window.__ATP_RENDER_COUNT__ || 0) < 1) return;
+
+        // 3) silêncio após último tick
+        const last = window.__ATP_LAST_RENDER_TS__ || 0;
+        if (Date.now() - last < silenceMs) {
+          scheduleHideATPLoading(silenceMs);
+          return;
+        }
+
+        // 4) marcador de UI pronta (botão ou coluna/células)
+        const hasReportBtn = !!document.getElementById('btnGerarRelatorioColisoes');
+        const hasAnyConflictCell = !!document.querySelector('#tableAutomatizacaoLocalizadores td[data-atp-cell="conflito"], #tableAutomatizacaoLocalizadores td.atp-cell-conflito');
+        if (hasReportBtn || hasAnyConflictCell) {
+          hideATPLoading();
+        } else {
+          // se a UI ainda não apareceu, tenta novamente
+          scheduleHideATPLoading(silenceMs);
+        }
+      } catch {}
+    }, silenceMs);
+  } catch {}
+}
+
+// ============================================================
+// Ativa o loading SOMENTE na página que contém a tabela alvo
+// (tableAutomatizacaoLocalizadores). Em outras páginas do eProc,
+// não exibe overlay nenhum.
+// ============================================================
+(function atpBootstrapLoadingOnlyOnTargetPage() {
+  try {
+    const TARGET_TABLE_ID = 'tableAutomatizacaoLocalizadores';
+
+    // Heurística rápida por URL (ajuda antes do DOM existir).
+    const urlLooksLikeTarget = /automatizar_localizadores/i.test(String(location.href || ''));
+
+    // Se a URL não parece ser a tela alvo, não faz nada.
+    if (!urlLooksLikeTarget) return;
+
+    const startedAt = Date.now();
+    const tickMs = 200;
+
+    const t = setInterval(() => {
+      try {
+        const table = document.getElementById(TARGET_TABLE_ID);
+        if (table) {
+          clearInterval(t);
+
+          // Mostra overlay somente após detectar a tabela alvo.
+          showATPLoading();
+
+          // Atualiza flags do gate do page-load
+          window.__ATP_PAGE_LOADED__ = (document.readyState === 'complete');
+          if (window.__ATP_PAGE_LOADED__) {
+            setATPLoadingMsg('Carregamento completo. Analisando colisões…');
+            try { scheduleHideATPLoading(1800); } catch {}
+          } else {
+            setATPLoadingMsg('Aguardando carregamento completo do eProc…');
+          }
+        } else if (Date.now() - startedAt > 120000) {
+          // Se a tabela não apareceu em 2 min, não mostra loading.
+          clearInterval(t);
+        }
+      } catch {}
+    }, tickMs);
+  } catch {}
+})();
   // ======================================================================
   // Organização do código
   //  1) Utilitários
@@ -1811,7 +2019,7 @@ function doesRemove(removerText) { // Decide se a regra "remove" (true) ou só a
             if (earlierCobreLater) {
               const detalheOutros = (relEL === 'identicos')
                 ? 'Outros idênticos'
-                : 'Regra anterior é mais ampla em "Outros"';
+                : 'Regra anterior é mais ampla em "Outros Critérios"';
 
               const sugOrdem = `Sugestão: Alterar a prioridade da regra ${later.num} (${later.prioridade.num}ª) para menor que a regra ${earlier.num} (${earlier.prioridade.num}ª), ou tornar a regra ${earlier.num} mais restritiva.`;
 
@@ -1821,7 +2029,7 @@ function doesRemove(removerText) { // Decide se a regra "remove" (true) ou só a
                 upsert(later.num, earlier.num, 'Perda de Objeto', 'Alto',
                   `Mesmo Localizador REMOVER e mesmo Tipo de Controle / Critério; ${detalheOutros}. ` +
                   `Regra ${earlier.num} (prioridade ${earlier.prioridade.text}) executa antes ` +
-                  `e remove o processo do(s) localizador(es) informado(s), impedindo a regra ${later.num}. ` + sugOrdem);
+                  `e remove o processo do(s) localizador(es) informado(s), impedindo que sejam capturados pela regra ${later.num}. ` + sugOrdem);
               } else {
                 upsert(later.num, earlier.num, 'Sobreposição', 'Médio',
                   `Mesmo Localizador REMOVER e mesmo Tipo de Controle / Critério; ${detalheOutros}. ` +
@@ -1868,14 +2076,16 @@ function doesRemove(removerText) { // Decide se a regra "remove" (true) ou só a
   }
 
 function tipoClass(t) { // Mapeia tipo de conflito para classe CSS.
-    return ({ // Mapa direto.
-      'Colisão Total': 'collision', // Colisão => collision.
-      'Colisão Parcial': 'collision', // Colisão => collision.
-      'Sobreposição': 'overlap', // Sobreposição => overlap.
-      'Perda de Objeto': 'objectloss', // Perda => objectloss.
-      'Looping': 'loop' // Looping => loop.
-    }[t] || ''); // Default vazio.
-  }
+  return ({ // Mapa direto.
+    'Colisão Total': 'collision',        // Colisão => collision.
+    'Colisão Parcial': 'collision',      // Colisão => collision.
+    'Sobreposição': 'overlap',            // Sobreposição => overlap.
+    'Possível Sobreposição': 'overlap',   // Possível Sobreposição => overlap.
+    'Perda de Objeto': 'objectloss',      // Perda => objectloss.
+    'Looping': 'loop'                     // Looping => loop.
+  }[t] || ''); // Default vazio.
+}
+
 
 function setNumeroRegraAndSearch(nums) { // Preenche txtNumeroRegra e clica pesquisar (Comparar).
     try { // Protege contra erros de DOM.
@@ -1994,7 +2204,10 @@ function render(table, rules, conflictsByRule) { // Renderiza conflitos na colun
     }
 
     applyFilter(table); // Reaplica filtro após render.
-  }
+
+    // Tick de render para controle do loading
+    try { markATPRenderTick(); } catch (e) {}
+}
 
   // ==============================
   // UI: checkbox "Apenas regras com conflito"
@@ -2326,9 +2539,11 @@ function recalc(table) { // Recalcula tudo (parse -> analyze -> render).
     const rules = parseRules(table, cols);
     // Loga todas as regras capturadas (console).
     if (typeof logAllRules === "function") logAllRules(rules); // Extrai regras. // Extrai regras.
-    if (!rules.length) return; // Se nada, sai.
+    if (!rules.length) { try { markATPRenderTick(); } catch (e) {} return; } // Se nada, sai.
     const conflicts = analyze(rules); // Analisa conflitos.
-    render(table, rules, conflicts); // Renderiza.
+    render(table, rules, conflicts);
+    try { markATPRenderTick(); } catch (e) {}
+// Renderiza.
   }
 
   // ==============================
