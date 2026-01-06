@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      3.6
+// @version      3.7
 // @description  Análise de conflitos de ATP (Colisão, Sobreposição, Perda de Objeto e Looping)
 // @run-at       document-start
 // @noframes
