@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      6.6
+// @version      7.0
 // @description  Análise de conflitos de ATP (Colisão, Sobreposição, Perda de Objeto e Looping)
 // @run-at       document-start
 // @noframes
@@ -1501,13 +1501,24 @@ function ensureColumns(table) { // DataTables-safe: injeta apenas nossa coluna (
     const thead = table.querySelector('thead');
     if (thead) {
       const hr = thead.querySelector('tr');
+      const thAcoes = (function(){
+        try {
+          if (!hr) return null;
+          const ths = Array.from(hr.children).filter(n => n && n.tagName === 'TH');
+          if (!ths.length) return null;
+          const byText = ths.find(th => ((th.textContent || '').trim().toLowerCase()).includes('ações'));
+          if (byText) return byText;
+          return ths[ths.length - 1];
+        } catch (e) { return null; }
+      })();
       if (hr && !hr.querySelector('th[data-atp-col="conflita"]')) {
         const th = document.createElement('th');
         th.dataset.atpCol = 'conflita';
         th.textContent = 'Conflitos';
         th.className = 'infraTh sorting_disabled';
         th.style.whiteSpace = 'nowrap';
-        hr.appendChild(th);
+        if (thAcoes && thAcoes.parentNode === hr) hr.insertBefore(th, thAcoes);
+        else hr.appendChild(th);
       }
     }
 
@@ -1517,11 +1528,42 @@ function ensureColumns(table) { // DataTables-safe: injeta apenas nossa coluna (
 
     const trs = tbody.querySelectorAll('tr');
     trs.forEach(tr => {
-      if (tr.querySelector('td[data-atp-col="conflita"]')) return;
+      const existing = tr.querySelector('td[data-atp-col="conflita"]');
+      // Se já existe, só garante posição (antes de Ações) e sai.
+      if (existing) {
+        try {
+          const tds0 = Array.from(tr.children).filter(n => n && n.tagName === 'TD');
+          const tdAcoes0 = (function(){
+            try {
+              if (!tds0.length) return null;
+              // coluna de ações costuma ter ícones/links e fica ao final
+              const byIcons = tds0.find(td => td !== existing && td.querySelector && td.querySelector('i.material-icons, .material-icons, .custom-switch'));
+              if (byIcons) return byIcons;
+              return tds0[tds0.length - 1];
+            } catch (e) { return null; }
+          })();
+          if (tdAcoes0 && existing.nextSibling !== tdAcoes0) {
+            tr.insertBefore(existing, tdAcoes0);
+          }
+        } catch (e) {}
+        return;
+      }
       const td = document.createElement('td');
       td.dataset.atpCol = 'conflita';
       td.textContent = ''; // preenchido depois pela análise
-      tr.appendChild(td);
+      try {
+        const tds = Array.from(tr.children).filter(n => n && n.tagName === 'TD');
+        const tdAcoes = (function(){
+          try {
+            if (!tds.length) return null;
+            const byIcons = tds.find(x => x.querySelector && x.querySelector('i.material-icons, .material-icons, .custom-switch'));
+            if (byIcons) return byIcons;
+            return tds[tds.length - 1];
+          } catch (e) { return null; }
+        })();
+        if (tdAcoes) tr.insertBefore(td, tdAcoes);
+        else tr.appendChild(td);
+      } catch (e) { tr.appendChild(td); }
     });
   } catch (e) {}
 } // ensureColumns
@@ -2762,8 +2804,84 @@ function addOnlyConflictsCheckbox(table, onToggle) { // Adiciona checkbox no blo
     tDebounce = setTimeout(fn, wait); // Agenda novo.
   }
 
+
+  // ==============================
+  // Sincronização: aguarda o eProc terminar de popular os TDs (evita linhas “vazias” intermitentes)
+  // ==============================
+  const __atpReadyState = new WeakMap(); // table -> { t0:number, tries:number }
+
+  function atpIsTablePopulated(table) {
+    try {
+      const tb = table && table.tBodies && table.tBodies[0];
+      if (!tb) return false;
+
+      const rows = Array.from(tb.rows || []).filter(r => r && r.cells && r.cells.length >= 6);
+      if (!rows.length) return false;
+
+      // Amostra 5 linhas (espalhadas) pra reduzir custo.
+      const sample = [];
+      const n = rows.length;
+      const pick = (k) => rows[Math.min(n - 1, Math.max(0, k))];
+      sample.push(pick(0));
+      sample.push(pick(Math.floor(n * 0.25)));
+      sample.push(pick(Math.floor(n * 0.50)));
+      sample.push(pick(Math.floor(n * 0.75)));
+      sample.push(pick(n - 1));
+
+      let ok = 0;
+      for (const tr of sample) {
+        if (!tr || !tr.cells) continue;
+        const cells = Array.from(tr.cells);
+
+        // Ignora checkbox e ações (normalmente primeira e última).
+        const slice = cells.slice(1, Math.max(2, cells.length - 1));
+
+        const textLen = slice.reduce((acc, td) => acc + ((td && td.textContent) ? td.textContent.trim().length : 0), 0);
+
+        // Sinais típicos do eProc quando já terminou de montar conteúdo.
+        const hasSignals =
+          tr.querySelector('[id^="dadosResumidos_"],[id^="dadosCompletos_"]') ||
+          tr.querySelector('.selPrioridade') ||
+          /\bPor\s+(Evento|Documento|Data|Tempo|Tipo)\b/i.test(tr.textContent || '') ||
+          /Executar\s+Ação\s+Programada/i.test(tr.textContent || '');
+
+        if (textLen >= 40 && hasSignals) ok++;
+      }
+
+      // Considera “pronto” se pelo menos 2/5 amostras parecem completas.
+      return ok >= 2;
+    } catch (e) {}
+    return false;
+  }
+
+  function atpWaitTablePopulationOrRetry(table) {
+    // Retorna true se pode prosseguir; false se deve re-agendar.
+    try {
+      if (!table) return false;
+
+      const now = Date.now();
+      const st = __atpReadyState.get(table) || { t0: now, tries: 0 };
+      st.tries++;
+      __atpReadyState.set(table, st);
+
+      // Se já está populada, segue.
+      if (atpIsTablePopulated(table)) return true;
+
+      // Janela máxima de espera (evita loop eterno se o eProc mudar).
+      if ((now - st.t0) > 12000) return true;
+
+      return false;
+    } catch (e) {}
+    return true;
+  }
+
 function recalc(table) { // Recalcula tudo (parse -> analyze -> render).
-    if (!document.body.contains(table)) return; // Se tabela sumiu do DOM, não faz nada.
+    if (!document.body.contains(table)) return;
+    // Aguarda o eProc terminar de preencher os TDs (evita capturar linhas “vazias”)
+    if (!atpWaitTablePopulationOrRetry(table)) {
+      schedule(() => recalc(table), 200);
+      return;
+    } // Se tabela sumiu do DOM, não faz nada.
     // Evita mexer na estrutura durante redraw/processamento do DataTables (reduz TN/18 intermitente)
     if (table.classList && table.classList.contains('dataTable') && table.querySelector('.dataTables_processing')) {
       schedule(() => recalc(table), 250);
