@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      6.0
+// @version      6.6
 // @description  Análise de conflitos de ATP (Colisão, Sobreposição, Perda de Objeto e Looping)
 // @run-at       document-start
 // @noframes
@@ -146,7 +146,29 @@
  *
  * -----------------------------------------------------------------------------------------
  *
- * 6) LOOPING POTENCIAL (opcional)
+ * 6) CONTRADIÇÃO
+ *    Ocorre quando a PRÓPRIA regra contém critérios mutuamente exclusivos no mesmo
+ *    ramo lógico (conector "E" / AND), tornando a regra logicamente impossível
+ *    ou inválida.
+ *
+ *    Exemplos comuns:
+ *    - Seleção simultânea de condições COM e SEM o mesmo atributo
+ *      (ex.: prazo, representação processual, procurador, etc.).
+ *    - Estados incompatíveis do mesmo campo
+ *      (ex.: "Justiça Gratuita-Deferida" E "Justiça Gratuita-Indeferida").
+ *    - Condições exclusivas no mesmo polo
+ *      (ex.: APENAS UMA parte e MAIS DE UMA parte no mesmo polo).
+ *
+ *    Efeito:
+ *    - A regra não consegue encontrar nenhum processo válido ou se torna
+ *      praticamente inexecutável.
+ *
+ *    Sugestão:
+ *    - Remover seleções incompatíveis ou dividir a lógica em regras distintas.
+ *
+ * -----------------------------------------------------------------------------------------
+ *
+ * 7) LOOPING POTENCIAL (opcional)
  *    Detectado apenas se ATP_CONFIG.analisarLooping === true.
  *
  *    Ocorre quando:
@@ -169,6 +191,7 @@
  * - O objetivo é apoiar auditoria, governança e manutenção das regras de ATP.
  *
  *******************************************************************************************/
+
 
 // ==/UserScript==
 
@@ -403,6 +426,8 @@ function scheduleHideATPLoading(silenceMs = 1800) {
     'Colisão Total': 5, // Mais crítico.
     'Colisão Parcial': 4, // Quase tão crítico quanto total.
     'Looping': 5, // Crítico.
+    'Looping Potencial': 5, // Crítico.
+    'Contradição': 5, // Crítico (regra inexecutável/auto-contraditória).
     'Perda de Objeto': 3, // Médio.
     'Sobreposição': 2, // Baixo/médio.
     'Sobreposição (Outros iguais)': 2 // Baixo/médio (mais restritivo).
@@ -1447,6 +1472,7 @@ function parsearExpressaoLogicaLocalizadores(root) { // Parseia expressão com E
       .atp-conf-tipo.overlap{background:#fed7aa;}
       .atp-conf-tipo.objectloss{background:#fde68a;}
       .atp-conf-tipo.loop{background:#fee2e2;}
+      .atp-conf-tipo.contradiction{background:#c7d2fe;}
       .atp-compare-btn{margin-top:4px;padding:2px 6px;border:1px solid #1f2937;border-radius:6px;font-size:11px;background:#f3f4f6;cursor:pointer;}
       .atp-compare-btn:hover{background:#e5e7eb;}
       .atp-sev-2{background:#fff7ed;}
@@ -1611,7 +1637,11 @@ function criteriaSubAinB(A, B) { // Verifica se A ⊆ B (A mais ampla; B mais re
     '',
     'SOBREPOSIÇÃO = Quando "Localizador REMOVER" e "Tipo de Controle / Critério" são iguais, mas uma regra mais ampla pode executar antes de outra mais específica.',
     '',
+    'POSSÍVEL SOBREPOSIÇÃO = Quando "Localizador REMOVER" e "Tipo de Controle / Critério" são iguais, mas uma regra mais ampla pode executar antes de outra mais específica e as prioridades de execução são idênticas',
+    '',
     'PERDA DE OBJETO = Quando uma regra anterior remove o localizador (REMOVER informados) que a regra seguinte precisaria para se aplicar.',
+    '',
+    'CONTRADIÇÃO = Quando a própria regra contém critérios mutuamente exclusivos no mesmo ramo (conector "E"/AND), tornando-a logicamente impossível (ex.: COM e SEM; APENAS UMA e MAIS DE UMA; estados diferentes do mesmo Dado Complementar).',
     '',
     'LOOPING = Quando regras se retroalimentam (ciclo), gerando efeito repetido de incluir/remover.',
     '',
@@ -1699,7 +1729,146 @@ function criteriaSubAinB(A, B) { // Verifica se A ⊆ B (A mais ampla; B mais re
     return '';
   }
 
-  function relationOutros(ruleA, ruleB) { // Compara "Outros Critérios" considerando AND entre grupos (ml-0 pt-2).
+
+  function detectContradictions(rule) { // Detecta contradições internas (self) em Outros Critérios, baseadas nos selects do front-end.
+    const oc = rule?.outrosCriterios;
+    const groups = oc?.groups || [];
+    const motivos = [];
+
+    // Helpers
+    const norm = (s) => clean(String(s || '')).toLowerCase();
+    const add = (msg) => { if (msg && !motivos.includes(msg)) motivos.push(msg); };
+
+    // Detecta contradição dentro de um "ramo" (clause) — ou seja, termos ligados por AND.
+    const analyzeClause = (terms, contextLabel) => {
+      // Map key -> array de values
+      const kv = new Map();
+      for (const t of terms) {
+        const p = String(t || '');
+        const eq = p.indexOf('=');
+        if (eq <= 0) continue;
+        const k = p.slice(0, eq);
+        const v = p.slice(eq + 1);
+        if (!kv.has(k)) kv.set(k, []);
+        kv.get(k).push(v);
+      }
+
+      // ---------- 1) Dado Complementar do Processo (compSelIdDadoComplementarProcesso)
+      // Formato de valor no front: "<Grupo>-<Estado>" (ex.: "Justiça Gratuita-Deferida")
+      // Regra: dentro do mesmo ramo AND, não pode haver 2+ estados para o mesmo Grupo.
+      for (const [k, vals] of kv.entries()) {
+        if (k !== 'dadocomplementardoprocesso') continue;
+        const byGrupo = new Map(); // grupo -> Set(estados)
+        for (const v of vals) {
+          const raw = clean(v);
+          const parts = raw.split('-').map(s => clean(s)).filter(Boolean);
+          if (parts.length < 2) continue;
+          const grupo = parts.slice(0, -1).join('-');
+          const estado = parts[parts.length - 1];
+          if (!byGrupo.has(grupo)) byGrupo.set(grupo, new Set());
+          byGrupo.get(grupo).add(estado);
+        }
+        for (const [grupo, estados] of byGrupo.entries()) {
+          if (estados.size >= 2) {
+            add(`${contextLabel}Dado Complementar do Processo: "${grupo}" com múltiplos valores ao mesmo tempo (${Array.from(estados).join(', ')}).`);
+          }
+        }
+      }
+
+      // ---------- 2) Prazo múltiplo (selPrazoMultiplo)
+      // Contradições tratadas:
+      // - Geral: "COM prazo aberto/ag. abertura" vs "SEM prazo aberto/ag. abertura"
+      // - Por escopo: PASSIVO/ATIVO/ENTIDADES/PERITOS/UNIDADES EXTERNAS/APS (aberto/ag. abertura)
+      // Observação: não marcamos aberto vs fechado (pode coexistir em tese).
+      for (const [k, vals] of kv.entries()) {
+        if (k !== 'prazomultiplo' && k !== 'prazo') continue;
+        const bucket = new Map(); // assinatura -> Set(COM|SEM)
+        for (const v of vals) {
+          const txtv = clean(v);
+          let m = txtv.match(/^Processos\s+(COM|SEM)\s+prazo\s+aberto\/ag\.\s*abertura(\s+.*)?$/i);
+          if (m) {
+            const pol = m[1].toUpperCase();
+            const scope = clean(m[2] || '').toUpperCase(); // "", "DO PÓLO PASSIVO", etc
+            const sig = `ABERTO${scope ? ' ' + scope : ''}`;
+            if (!bucket.has(sig)) bucket.set(sig, new Set());
+            bucket.get(sig).add(pol);
+            continue;
+          }
+          // Alguns textos vêm como "Processos COM prazo aberto/ag. abertura DO PÓLO PASSIVO" (sem espaço extra)
+          m = txtv.match(/^Processos\s+(COM|SEM)\s+prazo\s+aberto\/ag\.\s*abertura\s+(DO\s+PÓLO\s+PASSIVO|DO\s+PÓLO\s+ATIVO|DE\s+ENTIDADES\s+DO\s+PÓLO\s+PASSIVO|DE\s+ENTIDADES\s+DO\s+PÓLO\s+ATIVO|DE\s+PERITOS|DE\s+UNIDADES\s+EXTERNAS\/APS)$/i);
+          if (m) {
+            const pol = m[1].toUpperCase();
+            const scope = clean(m[2] || '').toUpperCase();
+            const sig = `ABERTO ${scope}`;
+            if (!bucket.has(sig)) bucket.set(sig, new Set());
+            bucket.get(sig).add(pol);
+          }
+        }
+        for (const [sig, set] of bucket.entries()) {
+          if (set.has('COM') && set.has('SEM')) {
+            add(`${contextLabel}Prazo múltiplo: marcado como COM e SEM no mesmo critério (${sig.replace(/^ABERTO/, 'prazo aberto/ag. abertura')}).`);
+          }
+        }
+      }
+
+      // ---------- 3) Litisconsórcio (compSelTipoLitisconsorcio)
+      // "APENAS UMA parte" vs "MAIS DE UMA parte" no mesmo polo.
+      for (const [k, vals] of kv.entries()) {
+        if (k !== 'litisconsorcio') continue;
+        const polMap = new Map(); // PASSIVO|ATIVO -> Set(UMA|MAIS)
+        for (const v of vals) {
+          const t = clean(v);
+          const m = t.match(/^Processos\s+com\s+(APENAS\s+UMA|MAIS\s+DE\s+UMA)\s+parte\s+no\s+PÓLO\s+(PASSIVO|ATIVO)/i);
+          if (!m) continue;
+          const quant = norm(m[1]).includes('apenas') ? 'UMA' : 'MAIS';
+          const polo = m[2].toUpperCase();
+          if (!polMap.has(polo)) polMap.set(polo, new Set());
+          polMap.get(polo).add(quant);
+        }
+        for (const [polo, set] of polMap.entries()) {
+          if (set.has('UMA') && set.has('MAIS')) {
+            add(`${contextLabel}Litisconsórcio: "${polo}" marcado como APENAS UMA e MAIS DE UMA parte ao mesmo tempo.`);
+          }
+        }
+      }
+
+      // ---------- 4) Representação Processual (compSelTipoRepresentacaoProcessual)
+      // "COM procurador/advogado" vs "SEM procurador/advogado" no mesmo polo.
+      for (const [k, vals] of kv.entries()) {
+        if (k !== 'representacaoprocessualdaspartes') continue;
+        const polMap = new Map(); // PASSIVO|ATIVO -> Set(COM|SEM)
+        for (const v of vals) {
+          const t = clean(v);
+          const m = t.match(/^Processos\s+(COM|SEM)\s+procurador\/advogado\s+no\s+PÓLO\s+(PASSIVO|ATIVO)/i);
+          if (!m) continue;
+          const pol = m[1].toUpperCase();
+          const polo = m[2].toUpperCase();
+          if (!polMap.has(polo)) polMap.set(polo, new Set());
+          polMap.get(polo).add(pol);
+        }
+        for (const [polo, set] of polMap.entries()) {
+          if (set.has('COM') && set.has('SEM')) {
+            add(`${contextLabel}Representação processual: "${polo}" marcado como COM e SEM procurador/advogado ao mesmo tempo.`);
+          }
+        }
+      }
+    };
+
+    // Varre grupos/cláusulas (cada Set é um ramo AND)
+    for (const g of groups) {
+      const clauses = g?.clauses ? Array.from(g.clauses) : [];
+      const head = g?.header ? `${clean(g.header)}: ` : '';
+      const ctx = head ? `${head}` : '';
+      for (const clause of clauses) {
+        const terms = Array.from(clause || []);
+        analyzeClause(terms, ctx);
+      }
+    }
+
+    return motivos;
+  }
+
+function relationOutros(ruleA, ruleB) { // Compara "Outros Critérios" considerando AND entre grupos (ml-0 pt-2).
   // Retorno:
   // - 'identicos'      => mesmos grupos (independente da ordem)
   // - 'A_mais_ampla'   => A é mais ampla (menos ou igual restrições) e B tem restrições a mais
@@ -2068,6 +2237,18 @@ function doesRemove(removerText) { // Decide se a regra "remove" (true) ou só a
       }
     }
 
+
+    // ===== Contradições internas (self) em Outros Critérios =====
+    for (const r of (rules || [])) {
+      try {
+        const motivos = detectContradictions(r);
+        if (motivos && motivos.length) {
+          const sugest = 'Sugestão: Em “Outros Critérios”, remova seleções mutuamente exclusivas do mesmo campo (ex.: COM e SEM; APENAS UMA e MAIS DE UMA; estados diferentes do mesmo Dado Complementar). Se a intenção for abranger alternativas, separe em regras distintas ou use conector OU quando disponível.';
+          upsert(r.num, -1, 'Contradição', 'Alto', motivos.join(' | ') + '\n' + sugest);
+        }
+      } catch (e) {}
+    }
+
     return conflictsByRule; // Retorna mapa final.
   }
 
@@ -2089,12 +2270,14 @@ function doesRemove(removerText) { // Decide se a regra "remove" (true) ou só a
 
 function tipoClass(t) { // Mapeia tipo de conflito para classe CSS.
   return ({ // Mapa direto.
-    'Colisão Total': 'collision',        // Colisão => collision.
-    'Colisão Parcial': 'collision',      // Colisão => collision.
-    'Sobreposição': 'overlap',            // Sobreposição => overlap.
-    'Possível Sobreposição': 'overlap',   // Possível Sobreposição => overlap.
-    'Perda de Objeto': 'objectloss',      // Perda => objectloss.
-    'Looping': 'loop'                     // Looping => loop.
+    'Colisão Total': 'collision',          // Colisão => collision.
+    'Colisão Parcial': 'collision',        // Colisão => collision.
+    'Sobreposição': 'overlap',             // Sobreposição => overlap.
+    'Possível Sobreposição': 'overlap',    // Possível Sobreposição => overlap.
+    'Perda de Objeto': 'objectloss',       // Perda => objectloss.
+    'Looping': 'loop',                     // Looping => loop.
+    'Looping Potencial': 'loop',           // Looping potencial => loop.
+    'Contradição': 'contradiction'         // Contradição => contradiction.
   }[t] || ''); // Default vazio.
 }
 
@@ -2172,10 +2355,25 @@ function render(table, rules, conflictsByRule) { // Renderiza conflitos na colun
       let maxSev = 0; // Severidade acumulada.
 
       if (adj && adj.size) { // Se há conflitos...
-        const others = [...adj.keys()].sort((a, b) => Number(a) - Number(b)); // Ordena.
-        confTd.dataset.atpConfNums = others.join(','); // Salva para o botão comparar.
+        const others = [...adj.keys()].sort((a, b) => {
+          const na = Number(a), nb = Number(b);
+          const fa = Number.isFinite(na), fb = Number.isFinite(nb);
+          if (fa && fb) return na - nb;
+          if (fa && !fb) return -1;
+          if (!fa && fb) return 1;
+          return String(a).localeCompare(String(b));
+        }); // Ordena (numéricos primeiro).
 
-        for (const n of others) { // Para cada regra conflitante...
+        // Para o botão comparar: só números positivos (ignora -1 = própria regra)
+        const compNums = others
+          .map(x => Number(x))
+          .filter(n => Number.isFinite(n) && n > 0)
+          .sort((a, b) => a - b);
+
+        if (compNums.length) confTd.dataset.atpConfNums = compNums.join(',');
+        else delete confTd.dataset.atpConfNums;
+
+for (const n of others) { // Para cada regra conflitante...
           const rec = adj.get(n); // Registro.
           const tipos = [...(rec.tipos || [])].sort((a, b) => (tipoRank[b] || 0) - (tipoRank[a] || 0)); // Ordena tipos por criticidade.
           const impacto = rec.impactoMax || 'Médio'; // Impacto.
@@ -2185,7 +2383,8 @@ function render(table, rules, conflictsByRule) { // Renderiza conflitos na colun
             const tip = motivo ? `${tipo} (${impacto}) — ${motivo}` : `${tipo} (${impacto})`; // Tooltip.
             return `<span class="atp-conf-tipo ${esc(tipoClass(tipo))}" data-atp-tipo="${esc(tipo)}" data-atp-impacto="${esc(impacto)}" data-atp-porque="${esc(motivo)}">${esc(tipo)}</span>`; // Span.
           }).join(' '); // Junta spans.
-          html += `<div><span class="atp-conf-num">${esc(n)}:</span> ${spans}</div>`; // Linha do conflito.
+          const nLabel = (Number(n) < 0) ? '(Própria Regra)' : esc(n);
+          html += `<div><span class="atp-conf-num">${nLabel}:</span> ${spans}</div>`; // Linha do conflito.
           maxSev = Math.max(maxSev, severity(rec)); // Atualiza severidade.
         }
 
@@ -2289,6 +2488,12 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
         var seenPairs = new Set();
 
         function pairKey(tipo, a, b) {
+          // Contradição é intrarregra (self): não existe "Regra B" e não deve haver normalização A/B.
+          // Mantém chave estável para deduplicação.
+          if (String(b) === '(Própria Regra)' || String(b) === '(própria regra)') {
+            return String(tipo) + '|' + String(a || '') + '|SELF';
+          }
+
           var an = Number(a), bn = Number(b);
           if (Number.isFinite(an) && Number.isFinite(bn)) {
             var lo = Math.min(an, bn);
@@ -2360,6 +2565,11 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
             var aVal = numA || '(não identificado)';
             var bVal = numB || '(não identificado)';
             var keyTipo = String(tipo);
+            var tipoLower = String(keyTipo || '').toLowerCase();
+            var isContradicao = (tipoLower === 'contradição' || tipoLower === 'contradicao');
+            if (isContradicao) {
+              bVal = '(Própria Regra)';
+            }
 
             // Dedup por (tipo + par A/B canônico)
             var k = pairKey(keyTipo, aVal, bVal);
@@ -2374,17 +2584,23 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
             try { def = getTipoTooltip(tipo) || ''; } catch {}
             def = String(def || '').replace(/<br\s*\/?>/gi, '\n').trim();
 
-            // Normaliza A/B para sempre sair "menor x maior" no relatório (evita contradição visual)
-            var an = Number(aVal), bn = Number(bVal);
+            // Normaliza A/B para sempre sair "menor x maior" no relatório (evita contradição visual).
+            // EXCEÇÃO: Contradição é intrarregra (self) e não pode ser reordenada para não "inventar" Regra B.
             var normA = aVal, normB = bVal;
-            if (Number.isFinite(an) && Number.isFinite(bn) && an > bn) {
-              normA = bVal;
-              normB = aVal;
-            } else if (!Number.isFinite(an) || !Number.isFinite(bn)) {
-              if (String(aVal) > String(bVal)) {
+            if (!isContradicao) {
+              var an = Number(aVal), bn = Number(bVal);
+              if (Number.isFinite(an) && Number.isFinite(bn) && an > bn) {
                 normA = bVal;
                 normB = aVal;
+              } else if (!Number.isFinite(an) || !Number.isFinite(bn)) {
+                if (String(aVal) > String(bVal)) {
+                  normA = bVal;
+                  normB = aVal;
+                }
               }
+            } else {
+              normA = aVal;
+              normB = '(Própria Regra)';
             }
 
             records.push({
@@ -2426,7 +2642,11 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
 
         records.forEach(function (r) {
           lines.push('');
-          lines.push('Regra A(' + r.a + ') x Regra B(' + r.b + ')');
+          if (String(r.b) === '(Própria Regra)' || String(r.tipo || '').toLowerCase() === 'contradição' || String(r.tipo || '').toLowerCase() === 'contradicao') {
+            lines.push('Regra A(' + r.a + ') x (Própria Regra)');
+          } else {
+            lines.push('Regra A(' + r.a + ') x Regra B(' + r.b + ')');
+          }
           lines.push('Tipo: ' + r.tipo);
           if (r.def) {
             lines.push('Definição: ' + r.def);
