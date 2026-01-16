@@ -90,9 +90,9 @@ O script também pode exportar um **arquivo BPMN** para abrir no Bizagi (ou outr
 
 ## 🛠️ Como instalar
 
-### 1️⃣ Instale o Tampermonkey
+### 1️⃣ Instale a extenção Tampermonkey no Google Chrome
 
-[https://www.tampermonkey.net/](https://www.tampermonkey.net/)
+https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo?pli=1
 
 ### 2️⃣ Instale o script
 
