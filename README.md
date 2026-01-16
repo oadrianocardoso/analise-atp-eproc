@@ -98,7 +98,11 @@ https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmp
 
 1. Abra o link do script https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/analise-atp-eproc.user.js
 2. Clique em **Install** no Tampermonkey
-<img width="638" height="338" alt="image" src="https://github.com/user-attachments/assets/5b13b3b0-d20e-4907-8138-0bb8382f24ec" />
+3. <img width="638" height="338" alt="image" src="https://github.com/user-attachments/assets/5b13b3b0-d20e-4907-8138-0bb8382f24ec" />
+4. Acesse o menu **Gerenciar Extensão**
+5. <img width="342" height="505" alt="image" src="https://github.com/user-attachments/assets/4d6d236b-3c8f-44ff-928a-9db0ea1b2369" />
+6. Habilite a opção **Permitir scripts de usuário**
+7. <img width="687" height="776" alt="image" src="https://github.com/user-attachments/assets/7013568f-7871-4f9d-b5cd-75b63d9a4f82" />
 
 ### 3️⃣ Usar no dia a dia
 
