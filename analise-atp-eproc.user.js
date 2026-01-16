@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
 // @namespace    https://tjsp.eproc/automatizacoes
-// @version      7.0
+// @version      9.0
 // @description  Análise de conflitos de ATP (Colisão, Sobreposição, Perda de Objeto e Looping)
+// @author       ADRIANO AUGUSTO CARDOSO E SANTOS
 // @run-at       document-start
 // @noframes
 // @match        https://eproc1g.tjsp.jus.br/eproc/*
@@ -141,8 +142,9 @@
  *      já foi removido.
  *
  *    Regra Importante:
- *    - Quando há PERDA DE OBJETO, o script NÃO classifica como sobreposição,
- *      exibindo APENAS "Perda de Objeto".
+ *    - Quando há PERDA DE OBJETO, o script mantém o rótulo de SOBREPOSIÇÃO
+ *      (pois há cobertura/ordem) e ADICIONA também o rótulo "Perda de Objeto"
+ *      (modo analítico: exibe todos os tipos aplicáveis).
  *
  * -----------------------------------------------------------------------------------------
  *
@@ -197,6 +199,8 @@
 
 (function () {
   'use strict';
+
+  const LOG_PREFIX = '[ATP]';
 
 // ============================================================
 // Loading (overlay) – aguarda carregamento COMPLETO do eProc (window.load)
@@ -428,6 +432,7 @@ function scheduleHideATPLoading(silenceMs = 1800) {
     'Looping': 5, // Crítico.
     'Looping Potencial': 5, // Crítico.
     'Contradição': 5, // Crítico (regra inexecutável/auto-contraditória).
+    'Quebra de Fluxo': 4, // Médio/alto (ação sem saída de fluxo).
     'Perda de Objeto': 3, // Médio.
     'Sobreposição': 2, // Baixo/médio.
     'Sobreposição (Outros iguais)': 2 // Baixo/médio (mais restritivo).
@@ -844,6 +849,8 @@ function replacePlainRemoverTextInTable(table, cols) { // Para linhas sem lupa, 
 
           // Localizadores
           localizadorIncluirAcao: r?.localizadorIncluirAcao,
+
+          localizadorIncluirAcoes: (r?.localizadorIncluirAcao && Array.isArray(r.localizadorIncluirAcao.acoes)) ? r.localizadorIncluirAcao.acoes : [],
           localizadorRemover: r?.localizadorRemover,
           removerWildcard: !!r?.removerWildcard,
 
@@ -946,20 +953,178 @@ function extrairCondicaoExecucao(tdOutros) { // Pega o texto mais completo de "O
     if (divComp && clean(divComp.innerText || divComp.textContent || "")) return clean(divComp.innerText || divComp.textContent || ""); // Preferência: completo.
     return clean(tdOutros.innerText || tdOutros.textContent || "") || "[*]"; // Fallback: TD.
   }
-function extrairLocalizadorIncluirAcao(tdIncluir) { // Extrai o "Destino da ação" (INCLUIR) como expressão {canonical, clauses}.
-  if (!tdIncluir) return { canonical: '', clauses: [] }; // Guard.
+function extrairLocalizadorIncluirAcao(tdIncluir) { // Extrai o "Destino da ação" (INCLUIR) como expressão {canonical, clauses, acoes[]}.
+  if (!tdIncluir) return { canonical: '', clauses: [], acoes: [] }; // Guard.
 
-  // 1) Prioridade: dadosCompletos_*
+  // ------------------------------------------------------------
+  // 0) Sempre tenta extrair AÇÕES PROGRAMADAS (array), SEM afetar canonical/clauses.
+  // ------------------------------------------------------------
+  const acoes = (function extrairAcoesProgramadas() {
+    try {
+      const root = tdIncluir.cloneNode(true);
+
+      // Remove o trecho "destino" (antes do 2º <br>) para sobrar só a parte de ações.
+      const brs = Array.from(root.querySelectorAll('br'));
+      if (brs.length >= 2) {
+        // Remove tudo até o 2º <br> (inclusive), para evitar "misturar" o destino com as ações.
+        let node = root.firstChild;
+        const stop = brs[1];
+        // Remove nós até alcançar o 2º <br>
+        while (node && node !== stop) {
+          const next = node.nextSibling;
+          node.remove();
+          node = next;
+        }
+        if (node === stop) node.remove(); // remove o 2º <br>
+      }
+
+      // Agora, dentro do "restante", cada bloco costuma ter:
+      // - div preto (#n-ETAPA)
+      // - div azul (AÇÃO)
+      // - variáveis: "Label: <span bold>Valor</span><br>"
+      const divs = Array.from(root.querySelectorAll('div'));
+
+      const isBlue = (d) => {
+        const st = String(d.getAttribute('style') || '').toLowerCase();
+        return st.includes('color: blue') && st.includes('font-weight: bold');
+      };
+      const isBlackStage = (d) => {
+        const st = String(d.getAttribute('style') || '').toLowerCase();
+        if (!(st.includes('color: black') && st.includes('font-weight: bold'))) return false;
+        const t = clean(d.textContent || '');
+        return /^#\d+\s*-\s*/.test(t) || /^#\d+\b/.test(t);
+      };
+
+      // Indexa os divs por ordem de DOM para achar "próximo stage".
+      const blueDivs = divs.filter(isBlue);
+      if (!blueDivs.length) return [];
+
+      const result = [];
+
+      for (const blue of blueDivs) {
+        // Etapa costuma ser o div preto imediatamente anterior.
+        let etapa = '';
+        let prev = blue.previousElementSibling;
+        while (prev && prev.tagName === 'DIV') {
+          if (isBlackStage(prev)) { etapa = clean(prev.textContent || ''); break; }
+          // às vezes tem um div "Executar Ação Programada:" no meio — ignora.
+          prev = prev.previousElementSibling;
+        }
+
+        const acao = clean(blue.textContent || '');
+        const vars = [];
+
+        // Coleta nós após o div azul até o próximo "div preto de etapa" (ou fim).
+        const collected = [];
+        let n = blue.nextSibling;
+
+        // Função: detecta se um node é um div "stage".
+        const isStageNode = (node) => {
+          if (!node || node.nodeType !== 1) return false;
+          if (node.tagName !== 'DIV') return false;
+          return isBlackStage(node);
+        };
+
+        while (n) {
+          if (isStageNode(n)) break;
+          // Se encontrar outro div azul, também pode indicar mudança, mas normalmente vem após um stage.
+          if (n.nodeType === 1 && n.tagName === 'DIV' && isBlue(n)) break;
+          collected.push(n);
+          n = n.nextSibling;
+        }
+
+        // Parse de variáveis: label aparece em TEXT antes do span bold.
+        let pendingLabel = null;
+
+        const pushVar = (nome, valor) => {
+          const n = clean(nome || '');
+          const v = clean(valor || '');
+          if (!n || !v) return;
+          vars.push({ nome: n, valor: v });
+        };
+
+        for (const node of collected) {
+          // Texto "Label: "
+          if (node.nodeType === 3) { // TEXT
+            const txt = String(node.textContent || '');
+            if (txt.includes(':')) {
+              // pega o último label antes do ':' (ex.: "Modelo: ")
+              const parts = txt.split(':');
+              const label = clean(parts[0] || '');
+              if (label) pendingLabel = label;
+            }
+            continue;
+          }
+
+          if (node.nodeType !== 1) continue; // Só ELEMENT daqui pra baixo.
+
+          // Se houver <br>, não faz nada.
+          if (node.tagName === 'BR') continue;
+
+          // Span bold -> valor da variável
+          if (node.tagName === 'SPAN') {
+            const st = String(node.getAttribute('style') || '').toLowerCase();
+            const isBold = st.includes('font-weight:bold') || st.includes('font-weight: bold');
+            if (isBold && pendingLabel) {
+              pushVar(pendingLabel, node.textContent || '');
+              pendingLabel = null;
+            }
+            continue;
+          }
+
+          // Alguns casos vêm com "Label:" dentro de um elemento (raro), então varre texto interno.
+          if (pendingLabel) {
+            // procura primeiro span bold dentro do elemento
+            const sp = node.querySelector && node.querySelector('span[style*="font-weight"]');
+            if (sp) {
+              pushVar(pendingLabel, sp.textContent || '');
+              pendingLabel = null;
+            }
+          } else {
+            // tenta capturar padrões "Label: <span bold>..."
+            const textNodes = [];
+            try {
+              const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null);
+              while (walker.nextNode()) textNodes.push(walker.currentNode);
+            } catch {}
+            for (const tn of textNodes) {
+              const t = String(tn.textContent || '');
+              if (t.includes(':')) {
+                const label = clean(t.split(':')[0] || '');
+                if (label) {
+                  const sp = node.querySelector && node.querySelector('span[style*="font-weight"]');
+                  if (sp) pushVar(label, sp.textContent || '');
+                }
+              }
+            }
+          }
+        }
+
+        // Só adiciona se houver ação (mesmo que sem vars).
+        if (acao) result.push({ etapa, acao, vars });
+      }
+
+      return result;
+    } catch {
+      return [];
+    }
+  })();
+
+  // ------------------------------------------------------------
+  // 1) Captura do DESTINO (localizadores INCLUIR) — mantém comportamento anterior.
+  // ------------------------------------------------------------
+
+  // 1a) Prioridade: dadosCompletos_*
   const divComp = tdIncluir.querySelector('div[id^="dadosCompletos_"]');
   if (divComp) {
     const root = divComp.cloneNode(true); // Clona só o conteúdo completo.
     removeAlternarUI(root); // Remove UI de expandir (se existir).
     stripExpandArtifacts(root); // Remove artefatos tipo "... [ + Expandir ]" (por segurança).
-    return parsearExpressaoLogicaLocalizadores(root); // Trata E/OU e retorna {canonical, clauses}.
+    const expr = parsearExpressaoLogicaLocalizadores(root); // {canonical, clauses}
+    return { canonical: expr?.canonical || '', clauses: expr?.clauses || [], acoes };
   }
 
-  // 2) Fallback: usa o conteúdo do td (como sua função antiga), mas agora retornando expressão
-  // Mantém a regra de pegar antes do <br><br> (ou dois <br>)
+  // 1b) Fallback: usa o conteúdo do td (pega antes do 2º <br>)
   const clone = tdIncluir.cloneNode(true); // Clona td.
   const brs = Array.from(clone.querySelectorAll('br')); // Lista de <br>.
   if (brs.length >= 2) {
@@ -977,12 +1142,12 @@ function extrairLocalizadorIncluirAcao(tdIncluir) { // Extrai o "Destino da aç�
 
   // Tenta parsear E/OU do pedaço capturado
   const expr = parsearExpressaoLogicaLocalizadores(clone);
-  if (expr && expr.canonical) return expr;
+  if (expr && expr.canonical) return { canonical: expr.canonical, clauses: expr.clauses, acoes };
 
   // Se não der para parsear, usa texto simples
   const txt = clean(clone.textContent || '');
-  if (!txt) return { canonical: '', clauses: [] };
-  return { canonical: txt, clauses: [new Set([txt])] };
+  if (!txt) return { canonical: '', clauses: [], acoes };
+  return { canonical: txt, clauses: [new Set([txt])], acoes };
 }
 
 function extrairLocalizadorRemover(td) { // Extrai expressão de REMOVER (SEM dadosResumidos_).
@@ -1291,18 +1456,7 @@ function extrairOutrosCriterios(tdOutros) { // Extrai Outros Critérios como exp
 }
 
 
-  function extractTextIgnoringNodes(root, ignoreSelectors) { // Extrai texto de um nó ignorando alguns elementos.
-    if (!root) return ''; // Guard.
-    const clone = root.cloneNode(true); // Clona para não mexer no DOM real.
-    try { // Proteção.
-      (ignoreSelectors || []).forEach(sel => { // Para cada seletor...
-        clone.querySelectorAll(sel).forEach(n => n.remove()); // Remove.
-      });
-    } catch { /* noop */ }
-    return clean(clone.innerText || clone.textContent || ''); // Retorna texto limpo.
-  }
-
-// REMOVER (coluna) - extração + normalização para colisões
+  // REMOVER (coluna) - extração + normalização para colisões
   // ==============================
 
   const esc = (s) => String(s ?? '') // Escapa HTML para uso seguro em innerHTML.
@@ -1400,7 +1554,72 @@ function parsearExpressaoLogicaLocalizadores(root) { // Parseia expressão com E
     const s = (typeof x === 'string') ? x : ((x && x.textContent) ? x.textContent : ''); // Pega string ou textContent.
     return s.replace(/\u00A0/g, ' ').replace(/\s+/g, ' ').trim(); // Converte NBSP, colapsa espaços e corta.
   };
+  // -----------------------------------------------------------------------------
+  // DI helpers – garantem setas sempre conectadas (centro → centro, com dobra em L)
+  // -----------------------------------------------------------------------------
+  function atpCenter(shape) {
+    return {
+      x: shape.x + shape.width / 2,
+      y: shape.y + shape.height / 2
+    };
+  }
 
+  // Portas laterais (evita conexão na borda superior/inferior)
+  function atpSidePort(shape, side) {
+    const cy = shape.y + shape.height / 2;
+    if (side === 'L') return { x: shape.x, y: cy };
+    return { x: shape.x + shape.width, y: cy }; // 'R'
+  }
+
+  // Waypoints com conexão SOMENTE pelas laterais (esquerda/direita).
+  // Mantém dobra em "L" e um corredor horizontal no meio.
+  // -----------------------------------------------------------------------------
+// Humanização de "Outros Critérios" (exibição)
+// - Internamente continua canonical/map estruturado
+// - Aqui convertemos para algo legível (TXT e BPMN)
+// -----------------------------------------------------------------------------
+  function atpHumanizeOutrosCriteriosExpr(outrosExpr) {
+    try {
+      if (!outrosExpr) return '';
+
+      let raw = '';
+
+      // Preferir canonical bruto
+      if (typeof outrosExpr === 'string') {
+        raw = outrosExpr;
+      } else if (outrosExpr && typeof outrosExpr.canonical === 'string') {
+        raw = outrosExpr.canonical;
+      } else if (outrosExpr && outrosExpr.map && typeof outrosExpr.map === 'object') {
+        raw = Object.entries(outrosExpr.map)
+          .filter(([k, v]) => clean(k) && clean(v))
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' && ');
+      }
+
+      if (!raw) return '';
+
+      return raw
+        .replace(/^canonical=/gi, '')
+        .replace(/&&/g, ' E ')
+        .replace(/eventotipodepeticao=/gi, 'Tipo de Petição: ')
+        .replace(/localizadorquenaocontenhanenhum=/gi, 'Localizador NÃO contém: ')
+        .replace(/dadocomplementar=/gi, 'Dado Complementar: ')
+        .replace(/prazo=/gi, 'Prazo: ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    } catch (e) {
+      try { console.warn('[ATP][Humanize] Falha ao humanizar Outros Critérios:', e); } catch(_) {}
+      return '';
+    }
+  }
+
+
+
+
+// -----------------------------------------------------------------------------
+// Monta documentação (legível) para tasks de regra (TXT e BPMN)
+// -----------------------------------------------------------------------------
   const lower = (x) => clean(x).toLowerCase(); // Versão em minúsculas (após limpeza).
 
   const rmAcc = (v) => { // Remove acentos (compatível, sem optional chaining).
@@ -1435,13 +1654,6 @@ function parsearExpressaoLogicaLocalizadores(root) { // Parseia expressão com E
     return out;
   };
 
-  const exprOverlaps = (a, b) => { // True se há interseção de termos (OR de singletons).
-    const A = exprTermSet(a);
-    const B = exprTermSet(b);
-    if (!A.size || !B.size) return true; // Sem termos => trata como coringa.
-    for (const t of A) if (B.has(t)) return true;
-    return false;
-  };
 
 
   // ==========================================================
@@ -1472,7 +1684,8 @@ function parsearExpressaoLogicaLocalizadores(root) { // Parseia expressão com E
       .atp-conf-tipo.overlap{background:#fed7aa;}
       .atp-conf-tipo.objectloss{background:#fde68a;}
       .atp-conf-tipo.loop{background:#fee2e2;}
-      .atp-conf-tipo.contradiction{background:#c7d2fe;}
+      \.atp-conf-tipo\.contradiction\{background:#c7d2fe;\}
+      .atp-conf-tipo.breakflow{background:#bbf7d0;}
       .atp-compare-btn{margin-top:4px;padding:2px 6px;border:1px solid #1f2937;border-radius:6px;font-size:11px;background:#f3f4f6;cursor:pointer;}
       .atp-compare-btn:hover{background:#e5e7eb;}
       .atp-sev-2{background:#fff7ed;}
@@ -1620,46 +1833,13 @@ function splitVals(raw) { // Converte "a, b | c" etc em Set normalizado.
     return new Set(tokens); // Retorna set único.
   }
 
-function criteriaToStructure(criteriaMap) { // Converte {k: "a,b"} em Map<k, Set(vals)>.
-    const grupos = new Map(); // Mapa de grupos.
-    Object.entries(criteriaMap || {}).forEach(([k, v]) => { // Itera critérios.
-      if (!v) return; // Ignora vazio.
-      const set = splitVals(v); // Quebra valores.
-      if (!grupos.has(k)) grupos.set(k, new Set()); // Garante set.
-      set.forEach(x => grupos.get(k).add(x)); // Adiciona valores.
-    });
-    return grupos; // Retorna estrutura.
-  }
-
 function setsEqual(a, b) { // Compara Sets.
     if (a.size !== b.size) return false; // Tamanhos diferentes => falso.
     for (const v of a) if (!b.has(v)) return false; // Algum elemento não existe => falso.
     return true; // Igual.
   }
 
-function criteriaEqual(A, B) { // Compara Map<k,Set> por igualdade.
-    if (A.size !== B.size) return false; // Diferente em número de chaves => falso.
-    for (const [k, setA] of A.entries()) { // Para cada chave...
-      const setB = B.get(k); // Pega set do outro.
-      if (!setB || !setsEqual(setA, setB)) return false; // Se não existe ou difere => falso.
-    }
-    return true; // Igual.
-  }
-
-function criteriaSubAinB(A, B) { // Verifica se A ⊆ B (A mais ampla; B mais restrita).
-    for (const [k, setA] of A.entries()) { // Para cada chave em A...
-      const setB = B.get(k); // Precisa existir em B.
-      if (!setB) return false; // Se não existe, não é subset.
-      for (const v of setA) if (!setB.has(v)) return false; // Cada valor de A precisa estar em B.
-    }
-    // B precisa ter algo "a mais" para ser considerada mais restrita.
-    const hasMoreKeys = (B.size > A.size); // B tem mais chaves.
-    const hasMoreVals = Array.from(B.entries()).some(([k, setB]) => (A.get(k)?.size ?? 0) < setB.size); // B tem mais valores em alguma chave.
-    return hasMoreKeys || hasMoreVals; // Retorna se B é mais restrita.
-  }
-
-
-  // ============================================================
+// ============================================================
   // Tooltip (descrição fixa por tipo de conflito) - padrão eProc
   // ============================================================
   const ATP_TIPOS_TOOLTIPS = {
@@ -1667,7 +1847,8 @@ function criteriaSubAinB(A, B) { // Verifica se A ⊆ B (A mais ampla; B mais re
     'COLISÃO PARCIAL': 'COLISÃO PARCIAL = Quando "Localizador REMOVER", "Tipo de Controle / Critério" e "Outros Critérios" são iguais, mas a "Prioridade" é diferente.',
     'SOBREPOSIÇÃO': 'SOBREPOSIÇÃO = Quando "Localizador REMOVER", "Tipo de Controle / Critério" são iguais, mas a "Prioridade" de A é menor que a "Prioridade" de B.',
     'POSSÍVEL SOBREPOSIÇÃO': 'POSSÍVEL SOBREPOSIÇÃO = Quando "Localizador REMOVER", "Tipo de Controle / Critério" são iguais, mas a "Prioridade" de A e B são indefinidas.',
-    'PERDA DE OBJETO': 'PERDA DE OBJETO = Quando "Localizador REMOVER", "Tipo de Controle / Critério" são iguais, mas a "Prioridade" de A é menor que à "Prioridade" de B e A tem como comportamento do localizador "Remover o processo do(s) localizador(es) informado(s)."'
+    'PERDA DE OBJETO': 'PERDA DE OBJETO = Quando "Localizador REMOVER", "Tipo de Controle / Critério" são iguais, mas a "Prioridade" de A é menor que à "Prioridade" de B e A tem como comportamento do localizador "Remover o processo do(s) localizador(es) informado(s)."',
+    'QUEBRA DE FLUXO': 'QUEBRA DE FLUXO = Quando a regra executa Ação Programada, mas não inclui um Localizador de destino diferente do(s) Localizador(es) REMOVER, podendo repetir a ação em novo ciclo e gerar erro.'
   };
   // ============================================================
   // Mini-help (tooltip do filtro "Apenas regras com conflito")
@@ -1684,6 +1865,8 @@ function criteriaSubAinB(A, B) { // Verifica se A ⊆ B (A mais ampla; B mais re
     'PERDA DE OBJETO = Quando uma regra anterior remove o localizador (REMOVER informados) que a regra seguinte precisaria para se aplicar.',
     '',
     'CONTRADIÇÃO = Quando a própria regra contém critérios mutuamente exclusivos no mesmo ramo (conector "E"/AND), tornando-a logicamente impossível (ex.: COM e SEM; APENAS UMA e MAIS DE UMA; estados diferentes do mesmo Dado Complementar).',
+    '',
+    'QUEBRA DE FLUXO = Quando a regra executa Ação Programada, mas não inclui um Localizador de destino diferente do(s) Localizador(es) REMOVER, podendo repetir a ação em novo ciclo e gerar erro.',
     '',
     'LOOPING = Quando regras se retroalimentam (ciclo), gerando efeito repetido de incluir/remover.',
     '',
@@ -1972,21 +2155,7 @@ function relationOutros(ruleA, ruleB) { // Compara "Outros Critérios" considera
     return clean(decoded); // Retorna texto limpo.
   }
 
-function removerPlainToWildcard(td) { // Detecta casos simples onde o texto indica "coringa" (ex.: Nenhum / Todos os localizadores).
-    const t = clean(td && td.textContent || ''); // Texto.
-    return (t === 'Nenhum' || t === 'Todos os localizadores'); // Retorna se é coringa.
-  }
-
-function doesRemove(removerText) { // Decide se a regra "remove" (true) ou só adiciona (false).
-    const canon = (removerText && typeof removerText === 'object') ? (removerText.canonical || '') : (removerText || ''); // Suporta expr.
-    const s = rmAcc(lower(canon)); // Normaliza.
-    if (!s) return false; // Sem texto => assume que não remove.
-    if (/\bnao\s+remover\b/.test(s) || /\bnão\s+remover\b/.test(s)) return false; // Detecta "não remover".
-    if (/apenas\s+acrescentar/.test(s)) return false; // Detecta "apenas acrescentar".
-    return /remover\s+.*localizador|remover\s+todos|remover\s+o\s+processo/.test(s); // Heurística de remover.
-  }
-
-  // ==============================
+// ==============================
   // Parser: extrai regras da tabela
   // ==============================
 
@@ -2246,17 +2415,24 @@ function doesRemove(removerText) { // Decide se a regra "remove" (true) ou só a
 
               const sugOrdem = `Sugestão: Alterar a prioridade da regra ${later.num} (${later.prioridade.num}ª) para menor que a regra ${earlier.num} (${earlier.prioridade.num}ª), ou tornar a regra ${earlier.num} mais restritiva.`;
 
-              // PERDA DE OBJETO / SOBREPOSIÇÃO: se ocorrer perda, mostra APENAS "Perda de Objeto".
+              // SOBREPOSIÇÃO / PERDA DE OBJETO (modo analítico):
+              // - Sempre registra SOBREPOSIÇÃO quando a regra anterior cobre a posterior;
+              // - Se, além disso, a regra anterior usa o comportamento de REMOVER informados (Perda de Objeto),
+              //   registra também PERDA DE OBJETO (sem suprimir o rótulo de sobreposição).
+              // Obs.: a UI já suporta múltiplos tipos (chips) via rec.tipos (Set).
               const beh = normMsg(exprCanon(earlier.comportamentoRemover, ''));
+
+              // 1) Sempre: Sobreposição
+              upsert(later.num, earlier.num, 'Sobreposição', 'Médio',
+                `Mesmo Localizador REMOVER e mesmo Tipo de Controle / Critério; ${detalheOutros}. ` +
+                `Prioridade ${earlier.prioridade.text} executa antes de ${later.prioridade.text}. ` + sugOrdem);
+
+              // 2) Se houver perda: adiciona também Perda de Objeto
               if (beh === MSG_PERDA_OBJETO) {
                 upsert(later.num, earlier.num, 'Perda de Objeto', 'Alto',
                   `Mesmo Localizador REMOVER e mesmo Tipo de Controle / Critério; ${detalheOutros}. ` +
                   `Regra ${earlier.num} (prioridade ${earlier.prioridade.text}) executa antes ` +
                   `e remove o processo do(s) localizador(es) informado(s), impedindo que sejam capturados pela regra ${later.num}. ` + sugOrdem);
-              } else {
-                upsert(later.num, earlier.num, 'Sobreposição', 'Médio',
-                  `Mesmo Localizador REMOVER e mesmo Tipo de Controle / Critério; ${detalheOutros}. ` +
-                  `Prioridade ${earlier.prioridade.text} executa antes de ${later.prioridade.text}. ` + sugOrdem);
               }
             }
           }
@@ -2291,6 +2467,91 @@ function doesRemove(removerText) { // Decide se a regra "remove" (true) ou só a
       } catch (e) {}
     }
 
+
+    // ===== Quebra de Fluxo (self) – Ação Programada sem saída (INCLUIR == REMOVER) =====
+    for (const r of (rules || [])) {
+      try {
+        const acoesAll = (r?.localizadorIncluirAcao && Array.isArray(r.localizadorIncluirAcao.acoes))
+          ? r.localizadorIncluirAcao.acoes : [];
+        if (!acoesAll.length) continue; // Só avalia se existe Ação Programada.
+
+        // Normaliza para comparação (remove acentos, upper).
+        const normKey = (s) => clean(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+
+        // Tipos de ação que NÃO entram em Quebra de Fluxo (podem repetir sem erro/sem necessidade de avanço por localizador).
+        const IGNORE_ACOES = new Set([
+          'ALTERAR SITUACAO AUTOMATICAMENTE',
+          'ALTERAR SITUACAO DA JUSTICA GRATUITA DA PARTE',
+          'INSERIR DADO COMPLEMENTAR NO PROCESSO',
+          'RETIFICAR AUTUACAO',
+          'VERIFICACAO DE DADOS PROCESSUAIS'
+        ]);
+
+        // Filtra ações relevantes para "Quebra de Fluxo".
+        const acoes = acoesAll.filter(a => {
+          const nome = normKey(a?.acao || '');
+          if (!nome) return false;
+          if (IGNORE_ACOES.has(nome)) return false;
+
+          // Exceção: "Lançar evento automatizado" — se o valor contiver "conclusos", desconsidera.
+          if (nome === 'LANCAR EVENTO AUTOMATIZADO') {
+            const vars = Array.isArray(a?.vars) ? a.vars : [];
+            const temConclusos = vars.some(v => normKey(v?.valor || '').includes('CONCLUSOS'));
+            if (temConclusos) return false;
+          }
+          return true;
+        });
+
+        if (!acoes.length) continue; // Nada relevante para avaliar.
+
+        const remSet = exprTermsUnion(r.localizadorRemover);
+        const incSet = exprTermsUnion(r.localizadorIncluirAcao);
+
+        // Quebra de Fluxo:
+        // - Caso 1 (REMOVER = A E B ...): só marca se INCLUIR == REMOVER (conjunto exato).
+        // - Caso 2 (REMOVER = A OU B ...): marca se INCLUIR corresponder exatamente a QUALQUER ramo do OU
+        //   (ex.: REMOVER = A OU B, INCLUIR = A => quebra), pois no ciclo seguinte o processo pode continuar
+        //   em um localizador que ainda satisfaz a própria regra.
+
+        // Detecta se o REMOVER tem semântica de OU (vários ramos) pelo modelo interno (clauses[]).
+        const remClauses = Array.isArray(r?.localizadorRemover?.clauses) ? r.localizadorRemover.clauses : [];
+        const remIsOr = remClauses.length > 1;
+
+        const incHas = incSet.size > 0;
+
+        const matchAnyRemBranch = (() => {
+          if (!remIsOr || !incHas) return false;
+          // Para cada ramo (Set) do OU, extrai termos limpos e compara com INCLUIR.
+          for (const clause of remClauses) {
+            if (!(clause instanceof Set)) continue;
+            const branch = new Set();
+            for (const t of clause) {
+              const tt = clean(t);
+              if (!tt) continue;
+              if (tt === '[*]' || tt === 'E' || tt === 'OU') continue;
+              branch.add(tt);
+            }
+            if (branch.size && setsEqual(branch, incSet)) return true;
+          }
+          return false;
+        })();
+
+        // Marca quebra se:
+        // - INCLUIR == REMOVER (conjunto exato), OU
+        // - REMOVER for OU e INCLUIR == algum ramo do OU.
+        if (incHas && (setsEqual(remSet, incSet) || matchAnyRemBranch)) {
+          // Resume as ações (títulos) para ajudar o usuário a identificar a operação.
+          const titulos = [...new Set(acoes.map(a => clean(a?.acao || '')).filter(Boolean))];
+          const resumoAcoes = titulos.length
+            ? (titulos.slice(0, 4).join(' | ') + (titulos.length > 4 ? ' | …' : ''))
+            : '(ação programada)';
+
+          const sug = 'Sugestão: Defina um Localizador INCLUIR diferente do Localizador REMOVER (próximo passo do fluxo) após executar a ação, evitando reexecução no ciclo seguinte.';
+          upsert(r.num, -1, 'Quebra de Fluxo', 'Alto',
+            `A regra executa Ação Programada (${resumoAcoes}), mas mantém exatamente os mesmos Localizadores (INCLUIR == REMOVER). Isso pode fazer a regra rodar novamente em novo ciclo e gerar erro/duplicidade.\n` + sug);
+        }
+      } catch (e) {}
+    }
     return conflictsByRule; // Retorna mapa final.
   }
 
@@ -2319,7 +2580,8 @@ function tipoClass(t) { // Mapeia tipo de conflito para classe CSS.
     'Perda de Objeto': 'objectloss',       // Perda => objectloss.
     'Looping': 'loop',                     // Looping => loop.
     'Looping Potencial': 'loop',           // Looping potencial => loop.
-    'Contradição': 'contradiction'         // Contradição => contradiction.
+    'Contradição': 'contradiction',         // Contradição => contradiction.
+    'Quebra de Fluxo': 'breakflow'        // Quebra de Fluxo => breakflow.
   }[t] || ''); // Default vazio.
 }
 
@@ -2471,10 +2733,1950 @@ for (const n of others) { // Para cada regra conflitante...
   // Relatório de Colisões (botão único no bloco de filtros)
   // ============================================================
 
+
+// ============================================================
+// EXTRATO DE FLUXOS (texto estilo IF/THEN, fechamento completo)
+// ============================================================
+function atpClauseKey(setOrArr) {
+  const arr = Array.isArray(setOrArr) ? setOrArr : Array.from(setOrArr || []);
+  return arr.map(x => clean(String(x))).filter(Boolean).sort((a,b)=>a.localeCompare(b)).join(' && ');
+}
+function atpClausesToKeys(expr) {
+  const clauses = expr && Array.isArray(expr.clauses) ? expr.clauses : [];
+  const keys = [];
+  for (const c of clauses) {
+    const k = atpClauseKey(c);
+    if (k) keys.push(k);
+  }
+  return Array.from(new Set(keys));
+}
+
+function atpTarjanSCC(nodes, edgesMap) {
+  // nodes: array<string>, edgesMap: Map<string, Array<string>>
+  let index = 0;
+  const stack = [];
+  const onStack = new Set();
+  const idx = new Map();
+  const low = new Map();
+  const comps = [];
+
+  function strongconnect(v) {
+    idx.set(v, index);
+    low.set(v, index);
+    index++;
+    stack.push(v); onStack.add(v);
+
+    const outs = edgesMap.get(v) || [];
+    for (const w of outs) {
+      if (!idx.has(w)) {
+        strongconnect(w);
+        low.set(v, Math.min(low.get(v), low.get(w)));
+      } else if (onStack.has(w)) {
+        low.set(v, Math.min(low.get(v), idx.get(w)));
+      }
+    }
+
+    if (low.get(v) === idx.get(v)) {
+      const comp = [];
+      while (true) {
+        const w = stack.pop();
+        onStack.delete(w);
+        comp.push(w);
+        if (w === v) break;
+      }
+      comps.push(comp);
+    }
+  }
+
+  for (const v of nodes) {
+    if (!idx.has(v)) strongconnect(v);
+  }
+  return comps;
+}
+
+function atpBuildFluxosText(rules) {
+  try {
+    // 1) Indexa regras por origem (cláusula REMOVER)
+    const byFrom = new Map(); // fromKey -> array<{rule, toKeys}>
+    const allFrom = new Set();
+    const allTo = new Set();
+
+    for (const r of (rules || [])) {
+      const fromKeys = atpClausesToKeys(r.localizadorRemover);
+      const toKeys   = atpClausesToKeys(r.localizadorIncluirAcao);
+      for (const fk of fromKeys) {
+        allFrom.add(fk);
+        if (!byFrom.has(fk)) byFrom.set(fk, []);
+        byFrom.get(fk).push({ rule: r, toKeys });
+      }
+      for (const tk of toKeys) allTo.add(tk);
+    }
+
+    const startKeys = Array.from(allFrom).filter(k => !allTo.has(k)).sort((a,b)=>a.localeCompare(b));
+    const allKeys = Array.from(allFrom).sort((a,b)=>a.localeCompare(b));
+
+    // 2) Agrupa em fluxos (componentes alcançáveis a partir de cada início)
+    const assigned = new Set();
+    const fluxos = [];
+
+    function expandFrom(seed) {
+      const q = [seed];
+      const seen = new Set([seed]);
+      while (q.length) {
+        const k = q.shift();
+        const outs = byFrom.get(k) || [];
+        for (const item of outs) {
+          for (const tk of (item.toKeys || [])) {
+            if (!tk) continue;
+            if (!seen.has(tk) && allFrom.has(tk)) { // só expande para nós que são origens também
+              seen.add(tk);
+              q.push(tk);
+            }
+          }
+        }
+      }
+      return seen;
+    }
+
+    // 2a) Fluxos a partir de startKeys
+    for (const sk of (startKeys.length ? startKeys : allKeys)) {
+      if (assigned.has(sk)) continue;
+      const comp = expandFrom(sk);
+      for (const n of comp) assigned.add(n);
+      fluxos.push({ starts: [sk], nodes: Array.from(comp).sort((a,b)=>a.localeCompare(b)) });
+    }
+
+    // 2b) Sobras (ciclos puros onde ninguém é "start")
+    for (const k of allKeys) {
+      if (assigned.has(k)) continue;
+      const comp = expandFrom(k);
+      for (const n of comp) assigned.add(n);
+      fluxos.push({ starts: [k], nodes: Array.from(comp).sort((a,b)=>a.localeCompare(b)) });
+    }
+
+    // 3) Renderiza texto (pseudo-código por localizador)
+    const lines = [];
+    lines.push('Extrato de Fluxos Detectados (ATP / eProc)');
+    lines.push('Data/Hora: ' + new Date().toLocaleString());
+    lines.push('Total de fluxos: ' + fluxos.length);
+    lines.push('');
+
+    fluxos.forEach((fl, idxF) => {
+      const title = `FLUXO ${String(idxF+1).padStart(2,'0')} — Início(s): [${fl.starts.join(' | ')}]`;
+      lines.push(title);
+      lines.push('-'.repeat(Math.min(120, title.length)));
+      lines.push('');
+
+      // edges map para SCC
+      const edges = new Map();
+      for (const n of fl.nodes) {
+        const outs = [];
+        const items = byFrom.get(n) || [];
+        for (const it of items) {
+          for (const tk of (it.toKeys || [])) if (fl.nodes.includes(tk)) outs.push(tk);
+        }
+        edges.set(n, Array.from(new Set(outs)));
+      }
+      const comps = atpTarjanSCC(fl.nodes, edges)
+        .filter(comp => comp.length > 1 || ((edges.get(comp[0])||[]).includes(comp[0])));
+
+      const endNodes = fl.nodes.filter(n => !(byFrom.get(n)||[]).length || !(edges.get(n)||[]).some(tk => fl.nodes.includes(tk)));
+
+      // Caminhos completos (continua a partir do destino, até não haver continuação)
+      function flowIndent(level) {
+        // Indentação por blocos (apenas espaços), para leitura leiga.
+        // Cada nível = 2 espaços.
+        return '  '.repeat(Math.max(0, level|0));
+      }
+
+      function flowCondText(r) {
+        const cond = clean((r.tipoControleCriterio && r.tipoControleCriterio.canonical) || r.tipoControleCriterio || r.tipoControle || '');
+        const outrosHuman = atpHumanizeOutrosCriteriosExpr(r && r.outrosCriterios);
+        const parts = [];
+        if (cond) parts.push(cond);
+        if (outrosHuman) parts.push('Outros Critérios: ' + outrosHuman);
+        return parts.length ? parts.join(' E ') : 'condições configuradas';
+      }
+
+      function flowPrintActions(lines, r, detailIndent) {
+        const arr = (r.localizadorIncluirAcao && r.localizadorIncluirAcao.acoes) ? r.localizadorIncluirAcao.acoes : [];
+        if (!arr || !arr.length) return;
+
+        // detailIndent já aponta para o nível dos itens "- REMOVER/- INCLUIR"
+        lines.push(`${detailIndent}- AÇÕES:`);
+        for (const a of arr) {
+          const etapa = clean(a.etapa || '');
+          const acao  = clean(a.acao  || '');
+          lines.push(`${detailIndent}    • ${acao || 'AÇÃO'}`);
+          if (etapa) lines.push(`${detailIndent}      - Etapa: ${etapa}`);
+          const vars = a.vars || a.variaveis || [];
+          if (Array.isArray(vars) && vars.length) {
+            for (const v of vars) {
+              const nn = clean(v.nome || v.key || '');
+              const vv = clean(v.valor || v.value || '');
+              if (nn || vv) lines.push(`${detailIndent}      - ${nn || 'Variável'}: ${vv}`);
+            }
+          }
+        }
+      }
+
+      function dfsFlowFrom(nodeKey, level, pathSet) {
+        const ind = flowIndent(level);              // nível do LOCALIZADOR
+        const indSE = ind + '  ';                   // nível do SE (dentro do LOCALIZADOR)
+        const indTHEN = indSE + '  ';               // nível do ENTÃO (dentro do SE)
+        const indDet = indTHEN + '  ';              // nível dos detalhes "- REMOVER/- INCLUIR" (dentro do ENTÃO)
+        const indDet2 = indDet + '  ';              // nível do detalhe extra (mensagens/alertas)
+
+        lines.push(`${ind}LOCALIZADOR: ${nodeKey}`);
+
+        const itemsRaw = (byFrom.get(nodeKey) || []);
+        if (!itemsRaw.length) {
+          lines.push(`${indSE}FIM: (Sem regras de saída detectadas para este localizador)`);
+          lines.push('');
+          return;
+        }
+
+        // Ordena por número de regra (estável)
+        const items = itemsRaw.slice().sort((a,b)=> (a.rule?.num||0) - (b.rule?.num||0));
+
+        // Marca no caminho atual (para ciclos)
+        const nextPath = new Set(pathSet);
+        nextPath.add(nodeKey);
+
+        for (const it of items) {
+          const r = it.rule;
+
+          lines.push(`${indSE}SE (${flowCondText(r)})`);
+          lines.push(`${indTHEN}ENTÃO aplicar REGRA ${r.num}:`);
+          lines.push(`${indDet}- REMOVER: ${(r.localizadorRemover && r.localizadorRemover.canonical) ? r.localizadorRemover.canonical : '(vazio)'}`);
+          lines.push(`${indDet}- INCLUIR: ${(r.localizadorIncluirAcao && r.localizadorIncluirAcao.canonical) ? r.localizadorIncluirAcao.canonical : '(vazio)'}`);
+
+          // Ações (array)
+          flowPrintActions(lines, r, indDet);
+
+          const destAll = (it.toKeys || []).filter(Boolean);
+          const destsLabel = destAll.length ? destAll.join(' | ') : '(nenhum)';
+          lines.push(`${indDet}- VAI PARA: [${destsLabel}]`);
+          lines.push('');
+
+          // Expande (continua o fluxo) para cada destino que também é nó do fluxo
+          const destExpand = destAll.filter(tk => fl.nodes.includes(tk) && (byFrom.get(tk) || []).length);
+
+          if (!destExpand.length) continue;
+
+          for (const dk of destExpand) {
+            if (nextPath.has(dk)) {
+              // ciclo no ramo atual
+              lines.push(`${indDet2}ALERTA: CICLO detectado (voltou para "${dk}")`);
+              lines.push('');
+              continue;
+            }
+            dfsFlowFrom(dk, level + 3, nextPath);
+          }
+        }
+
+        lines.push('');
+      }
+
+      // Para cada início, imprime o fluxo completo encadeado
+      for (const sk of fl.starts) {
+        dfsFlowFrom(sk, 0, new Set());
+      }
+if (endNodes.length) {
+        lines.push('FINS DETECTADOS (sem continuação dentro deste fluxo):');
+        for (const e of endNodes) lines.push('  - ' + e);
+        lines.push('');
+      }
+
+      if (comps.length) {
+        lines.push('CICLOS DETECTADOS:');
+        comps.forEach((c, i) => lines.push('  - Ciclo ' + (i+1) + ': {' + c.sort((a,b)=>a.localeCompare(b)).join(' | ') + '}'));
+        lines.push('');
+      }
+
+      lines.push('');
+      lines.push('='.repeat(90));
+      lines.push('');
+    });
+
+    return lines.join('\n');
+  } catch (e) {
+    return 'Falha ao gerar extrato de fluxos: ' + String(e && e.message ? e.message : e);
+  }
+}
+
+// ============================================================
+// Extrato de Fluxos: Exportação BPMN 2.0 (Bizagi Modeler)
+// ============================================================
+
+// =========================================================
+// Opção B (teste): Vista agrupada por Fluxo (headers colapsáveis)
+// - Implementação "safe": não altera a tabela original (evita DataTables / colunas).
+// - Ao ativar, a tabela original é ocultada e renderizamos uma visão agrupada (clonando linhas).
+// =========================================================
+function atpComputeFluxosData(rules) {
+  const allFrom = new Set();
+  const allTo = new Set();
+  const byFrom = new Map(); // fromKey -> [{rule, toKeys}]
+  const fluxos = [];
+  const assigned = new Set();
+
+  for (const r of (rules || [])) {
+    const fromKeys = atpClausesToKeys(r.localizadorRemover);
+    const toKeys   = atpClausesToKeys(r.localizadorIncluirAcao);
+    for (const fk of fromKeys) {
+      allFrom.add(fk);
+      if (!byFrom.has(fk)) byFrom.set(fk, []);
+      byFrom.get(fk).push({ rule: r, toKeys });
+    }
+    for (const tk of toKeys) allTo.add(tk);
+  }
+
+  const startKeys = Array.from(allFrom).filter(k => !allTo.has(k)).sort((a,b)=>a.localeCompare(b));
+  const allKeys = Array.from(allFrom).sort((a,b)=>a.localeCompare(b));
+
+  function expandFrom(start) {
+    const q = [start];
+    const seen = new Set([start]);
+    while (q.length) {
+      const cur = q.shift();
+      const outs = byFrom.get(cur) || [];
+      for (const item of outs) {
+        for (const tk of (item.toKeys || [])) {
+          if (!tk) continue;
+          if (!seen.has(tk) && allFrom.has(tk)) { // só expande para nós que são origens também
+            seen.add(tk);
+            q.push(tk);
+          }
+        }
+      }
+    }
+    return seen;
+  }
+
+  // Fluxos a partir de startKeys; se não houver start, usa allKeys como "sementes".
+  for (const sk of ((startKeys.length ? startKeys : allKeys))) {
+    if (assigned.has(sk)) continue;
+    const comp = expandFrom(sk);
+    for (const n of comp) assigned.add(n);
+    fluxos.push({ starts: [sk], nodes: Array.from(comp).sort((a,b)=>a.localeCompare(b)) });
+  }
+
+  // Sobras (ciclos puros onde ninguém é "start")
+  for (const k of allKeys) {
+    if (assigned.has(k)) continue;
+    const comp = expandFrom(k);
+    for (const n of comp) assigned.add(n);
+    fluxos.push({ starts: [k], nodes: Array.from(comp).sort((a,b)=>a.localeCompare(b)) });
+  }
+
+  // Map rápido: nodeKey -> flowId
+  const keyToFlow = new Map();
+  fluxos.forEach((fl, i) => {
+    for (const n of (fl.nodes || [])) keyToFlow.set(n, i);
+  });
+
+  return { fluxos, keyToFlow, byFrom, startKeys, allFrom, allTo };
+}
+
+function atpEnsureGroupedViewStyles() {
+  if (document.getElementById('atpFluxosGroupedStyles')) return;
+  const style = document.createElement('style');
+  style.id = 'atpFluxosGroupedStyles';
+  style.textContent = `
+    #atpFluxosGroupedView { border:1px solid #e5e7eb; border-radius:10px; margin-top:10px; background:#fff; }
+    #atpFluxosGroupedTopbar { display:flex; gap:8px; align-items:center; justify-content:space-between; padding:10px 12px; border-bottom:1px solid #e5e7eb; background:#f9fafb; }
+    #atpFluxosGroupedTopbar .left { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    #atpFluxosGroupedTopbar .title { font-weight:700; color:#111827; }
+    .atpFlowBlock { border-top:1px solid #e5e7eb; }
+    .atpFlowHeader { cursor:pointer; user-select:none; display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; background:#ffffff; }
+    .atpFlowHeader:hover { background:#f3f4f6; }
+    .atpFlowHeader .meta { font-size:12px; color:#4b5563; }
+    .atpFlowHeader .hTitle { font-weight:700; color:#111827; }
+    .atpFlowBody { padding:0 12px 12px 12px; }
+    .atpFlowBody[hidden] { display:none !important; }
+    .atpFlowBadge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid #e5e7eb; background:#f9fafb; color:#111827; }
+    .atpFlowBadgeStart { border-color:#c7d2fe; background:#eef2ff; }
+    .atpFlowBadgeCycle { border-color:#fecaca; background:#fef2f2; }
+    .atpMiniHint { font-size:12px; color:#6b7280; }
+    .atpGroupedTableWrap { overflow:auto; border:1px solid #e5e7eb; border-radius:10px; }
+    .atpGroupedTableWrap table { width:100%; }
+  `;
+  document.head.appendChild(style);
+}
+
+function atpIsGroupedViewActive(table) {
+  return !!document.getElementById('atpFluxosGroupedView') && table && table.dataset && table.dataset.atpGroupedView === '1';
+}
+
+function atpGroupedViewOff(table) {
+  try {
+    const el = document.getElementById('atpFluxosGroupedView');
+    if (el) el.remove();
+    if (table) {
+      table.style.display = '';
+      table.dataset.atpGroupedView = '';
+    }
+  } catch (e) {}
+}
+
+function atpGroupedViewOn(table, rules, data) {
+  if (!table) return;
+  atpEnsureGroupedViewStyles();
+
+  // Marca / oculta tabela original
+  table.dataset.atpGroupedView = '1';
+  table.style.display = 'none';
+
+  const container = document.createElement('div');
+  container.id = 'atpFluxosGroupedView';
+
+  // Topbar
+  const top = document.createElement('div');
+  top.id = 'atpFluxosGroupedTopbar';
+
+  const left = document.createElement('div');
+  left.className = 'left';
+
+  const title = document.createElement('div');
+  title.className = 'title';
+  title.textContent = 'Vista Agrupada por Fluxo (Opção B — teste)';
+
+  const hint = document.createElement('div');
+  hint.className = 'atpMiniHint';
+  hint.textContent = 'Clique no cabeçalho do fluxo para colapsar/expandir. Esta vista clona as linhas (não altera a tabela original).';
+
+  left.appendChild(title);
+  left.appendChild(hint);
+
+  const right = document.createElement('div');
+  right.style.display = 'flex';
+  right.style.gap = '8px';
+  right.style.alignItems = 'center';
+
+  const btnExpandAll = document.createElement('button');
+  btnExpandAll.type='button';
+  btnExpandAll.className='infraButton';
+  btnExpandAll.textContent='Expandir tudo';
+
+  const btnCollapseAll = document.createElement('button');
+  btnCollapseAll.type='button';
+  btnCollapseAll.className='infraButton';
+  btnCollapseAll.textContent='Colapsar tudo';
+
+  const btnBack = document.createElement('button');
+  btnBack.type='button';
+  btnBack.className='infraButton';
+  btnBack.textContent='Voltar à tabela normal';
+
+  btnBack.addEventListener('click', ()=> atpGroupedViewOff(table));
+
+  right.appendChild(btnExpandAll);
+  right.appendChild(btnCollapseAll);
+  right.appendChild(btnBack);
+
+  top.appendChild(left);
+  top.appendChild(right);
+  container.appendChild(top);
+
+  // Agrupa regras por flowId
+  const byFlow = new Map(); // flowId -> Array<rule>
+  for (const r of (rules || [])) {
+    const fromKeys = atpClausesToKeys(r.localizadorRemover);
+    let flowId = null;
+    for (const fk of fromKeys) {
+      if (data.keyToFlow.has(fk)) { flowId = data.keyToFlow.get(fk); break; }
+    }
+    if (flowId == null) continue;
+    if (!byFlow.has(flowId)) byFlow.set(flowId, []);
+    byFlow.get(flowId).push(r);
+  }
+
+  function mkBadge(text, cls) {
+    const b = document.createElement('span');
+    b.className = 'atpFlowBadge' + (cls ? (' ' + cls) : '');
+    b.textContent = text;
+    return b;
+  }
+
+  const flowBlocks = [];
+
+  (data.fluxos || []).forEach((fl, i) => {
+    const rulesHere = byFlow.get(i) || [];
+    // Contadores
+    const uniqueLocs = new Set();
+    for (const r of rulesHere) {
+      const fks = atpClausesToKeys(r.localizadorRemover);
+      const tks = atpClausesToKeys(r.localizadorIncluirAcao);
+      fks.forEach(k=>uniqueLocs.add('F:'+k));
+      tks.forEach(k=>uniqueLocs.add('T:'+k));
+    }
+
+    const isStart = (data.startKeys || []).includes((fl.starts||[])[0]);
+    const badge = isStart ? mkBadge('Start', 'atpFlowBadgeStart') : mkBadge('Ciclo', 'atpFlowBadgeCycle');
+
+    const block = document.createElement('div');
+    block.className = 'atpFlowBlock';
+
+    const header = document.createElement('div');
+    header.className = 'atpFlowHeader';
+
+    const leftH = document.createElement('div');
+    leftH.style.display='flex';
+    leftH.style.flexDirection='column';
+    leftH.style.gap='2px';
+
+    const t = document.createElement('div');
+    t.className = 'hTitle';
+    t.textContent = `FLUXO ${String(i+1).padStart(2,'0')} — Início(s): [${(fl.starts||[]).join(' | ')}]`;
+
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = `Regras: ${rulesHere.length} • Localizadores (aprox): ${uniqueLocs.size} • Nós(origens): ${(fl.nodes||[]).length}`;
+
+    leftH.appendChild(t);
+    leftH.appendChild(meta);
+
+    const rightH = document.createElement('div');
+    rightH.style.display='flex';
+    rightH.style.gap='8px';
+    rightH.style.alignItems='center';
+    rightH.appendChild(badge);
+
+    const caret = document.createElement('span');
+    caret.textContent = '▼';
+    caret.style.fontWeight='700';
+    caret.style.color='#374151';
+    rightH.appendChild(caret);
+
+    header.appendChild(leftH);
+    header.appendChild(rightH);
+
+    const body = document.createElement('div');
+    body.className = 'atpFlowBody';
+
+    // Tabela clonada (thead igual)
+    const wrap = document.createElement('div');
+    wrap.className = 'atpGroupedTableWrap';
+
+    const t2 = document.createElement('table');
+    t2.className = table.className || '';
+    // thead
+    if (table.tHead) t2.appendChild(table.tHead.cloneNode(true));
+    const tb = document.createElement('tbody');
+
+    // Clona linhas das regras do fluxo
+    for (const r of rulesHere) {
+      const tr = r.tr;
+      if (!tr) continue;
+      const cloned = tr.cloneNode(true);
+      // remove possíveis marcas de processamento/hidden
+      cloned.style.display = '';
+      tb.appendChild(cloned);
+    }
+    t2.appendChild(tb);
+    wrap.appendChild(t2);
+    body.appendChild(wrap);
+
+    // Toggle
+    header.addEventListener('click', ()=> {
+      const hid = body.hasAttribute('hidden');
+      if (hid) { body.removeAttribute('hidden'); caret.textContent='▼'; }
+      else { body.setAttribute('hidden',''); caret.textContent='▶'; }
+    });
+
+    block.appendChild(header);
+    block.appendChild(body);
+    container.appendChild(block);
+    flowBlocks.push({body, caret});
+  });
+
+  btnExpandAll.addEventListener('click', ()=> {
+    for (const b of flowBlocks) { b.body.removeAttribute('hidden'); b.caret.textContent='▼'; }
+  });
+  btnCollapseAll.addEventListener('click', ()=> {
+    for (const b of flowBlocks) { b.body.setAttribute('hidden',''); b.caret.textContent='▶'; }
+  });
+
+  // Insere após tabela original
+  table.parentNode.insertBefore(container, table.nextSibling);
+}
+
+function atpToggleGroupedView(table, rules) {
+  try {
+    if (!table) return;
+    if (atpIsGroupedViewActive(table)) {
+      atpGroupedViewOff(table);
+      return;
+    }
+    const data = atpComputeFluxosData(rules);
+    atpGroupedViewOn(table, rules, data);
+  } catch (e) {
+    console.warn(LOG_PREFIX, 'Falha na vista agrupada (Opção B)', e);
+    try { atpGroupedViewOff(table); } catch (e2) {}
+  }
+}
+
+
+
+function atpEnsureJSZip() {
+  return new Promise(function (resolve, reject) {
+    try {
+      if (window.JSZip) return resolve(window.JSZip);
+
+      var existing = document.getElementById('atp_jszip_loader');
+      if (existing) {
+        // Já está carregando: aguarda
+        var tries = 0;
+        var t = setInterval(function () {
+          tries++;
+          if (window.JSZip) { clearInterval(t); return resolve(window.JSZip); }
+          if (tries > 80) { clearInterval(t); return reject(new Error('Timeout carregando JSZip')); }
+        }, 100);
+        return;
+      }
+
+      var sc = document.createElement('script');
+      sc.id = 'atp_jszip_loader';
+      sc.async = true;
+      sc.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+      sc.onload = function () {
+        if (window.JSZip) resolve(window.JSZip);
+        else reject(new Error('JSZip carregou, mas window.JSZip não está disponível'));
+      };
+      sc.onerror = function () { reject(new Error('Falha ao carregar JSZip (CDN)')); };
+      (document.head || document.documentElement).appendChild(sc);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function atpBuildFluxosBPMN(rules, opts) {
+  opts = opts || {};
+  try {
+    // ============================================================
+    // BPMN 2.0 + BPMNDI (Bizagi) — CADA FLUXO EM UMA POOL
+    // - Um participant/pool + um process por "início" estrutural
+    // - Nó = Localizador (Task)
+    // - Aresta = Regra (SequenceFlow) REMOVER -> INCLUIR
+    // - Gateway exclusivo quando um localizador tem múltiplas saídas
+    // - Layout L->R por níveis (BFS), pools empilhadas verticalmente
+    //
+    // IMPORTANTE: usa o shape do parseRules():
+    //   r.localizadorRemover = { canonical, clauses[] }
+    //   r.localizadorIncluirAcao = { canonical, clauses[], acoes[] }
+    // ============================================================
+
+    if (!Array.isArray(rules) || !rules.length) return null;
+
+    // Sanitiza texto para XML 1.0 (remove caracteres inválidos / surrogates soltos)
+const xmlSanitize = (s) => {
+  const str = String(s == null ? '' : s);
+  let out = '';
+  for (const ch of str) { // itera por codepoint
+    const cp = ch.codePointAt(0);
+    const ok = (cp === 0x9 || cp === 0xA || cp === 0xD ||
+      (cp >= 0x20 && cp <= 0xD7FF) ||
+      (cp >= 0xE000 && cp <= 0xFFFD) ||
+      (cp >= 0x10000 && cp <= 0x10FFFF));
+    if (ok) out += ch;
+  }
+  return out;
+};
+
+const xmlEsc = (s) => xmlSanitize(s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+
+    const norm = (s) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+
+    function hashCode(str) {
+      str = String(str == null ? '' : str);
+      let h = 0;
+      for (let i = 0; i < str.length; i++) { h = ((h << 5) - h) + str.charCodeAt(i); h |= 0; }
+      return h;
+    }
+
+    const makeId = (prefix, raw) => {
+      const base = norm(raw).toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+      return prefix + '_' + (base || 'x') + '_' + Math.abs(hashCode(raw)).toString(36);
+    };
+
+
+const getRuleLabel = (r) => {
+      const num = (r && (r.num || r.numero || r.id || '')) + '';
+
+      // Tipo de Controle / Critério (preferir canonical)
+      const tipo = norm(r && (r.tipoControleCriterio?.canonical || r.tipoControleCriterio?.text || r.tipoControleCriterio || r.tipoControle || r.tipo || r.criterio || r.gatilho || ''));
+
+      // Outros Critérios (k=v) — filtra campos internos e serializa Sets/Objects com segurança
+      const IGNORE_KEYS = new Set(['clauses','groups','map','canonical','raw','text','expr','expression']);
+      const seenKV = new Set();
+      const partsOutros = [];
+
+      function valToStr(v) {
+        if (v == null) return '';
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return norm(String(v));
+
+        if (typeof v === 'object') {
+          if (v.canonical) return norm(String(v.canonical));
+          if (v.text) return norm(String(v.text));
+          if (v.raw) return norm(String(v.raw));
+
+          if (Array.isArray(v)) {
+            const arr = v.map(valToStr).filter(Boolean);
+            return arr.join(', ');
+          }
+          if (v instanceof Set) {
+            const arr = Array.from(v).map(valToStr).filter(Boolean);
+            return arr.join(' && ');
+          }
+
+          try {
+            const shallow = {};
+            for (const [k2, v2] of Object.entries(v)) {
+              const kk = norm(String(k2 || ''));
+              if (!kk) continue;
+              if (IGNORE_KEYS.has(kk.toLowerCase())) continue;
+              const vv = valToStr(v2);
+              if (!vv) continue;
+              shallow[kk] = vv;
+            }
+            const keys = Object.keys(shallow);
+            if (keys.length) {
+              return keys.map(k => `${k}=${shallow[k]}`).join('; ');
+            }
+          } catch (e) {}
+        }
+
+        const s = norm(String(v));
+        if (/^\[object\s+.*\]$/i.test(s)) return '';
+        return s;
+      }
+
+      try {
+        const outros = (r && r.outrosCriterios && typeof r.outrosCriterios === 'object') ? r.outrosCriterios : null;
+        for (const [k, v] of Object.entries(outros || {})) {
+          const kkRaw = norm(String(k || ''));
+          if (!kkRaw) continue;
+          const kk = kkRaw.toLowerCase();
+          if (IGNORE_KEYS.has(kk)) continue;
+
+          const vv = valToStr(v);
+          if (!vv) continue;
+
+          const sig = kk + '=' + vv;
+          if (seenKV.has(sig)) continue;
+          seenKV.add(sig);
+
+          partsOutros.push(`${kkRaw}=${vv}`);
+        }
+      } catch (e) {}
+
+      const parts = [];
+      parts.push(('REGRA ' + num).trim());
+      if (tipo) parts.push('Tipo/Critério: ' + tipo);
+      const outrosHuman = atpHumanizeOutrosCriteriosExpr(r && r.outrosCriterios);
+      if (outrosHuman) parts.push('Outros Critérios: ' + outrosHuman);
+
+      let label = parts.join(' — ').trim();
+      if (label.length > 420) label = label.slice(0, 417) + '...';
+      return label;
+    };
+
+    // ---- Build global graph (MESMA LÓGICA/CHAVES DO TXT)
+    const allFrom = new Set();
+    const allTo   = new Set();
+    const outGlobal = new Map(); // fromKey -> Set(toKey)
+    const edgeMeta  = new Map(); // "from||to" -> Array<labels>
+
+    for (const r of (rules || [])) {
+      // IMPORTANTE: usa exatamente as mesmas chaves do TXT (clauses -> atpClauseKey)
+      const fromKeys = atpClausesToKeys(r && r.localizadorRemover);
+      const toKeys   = atpClausesToKeys(r && r.localizadorIncluirAcao);
+
+      for (const fk of fromKeys) {
+        const fromK = norm(fk);
+        if (!fromK) continue;
+
+        allFrom.add(fromK);
+        if (!outGlobal.has(fromK)) outGlobal.set(fromK, new Set());
+
+        for (const tk of toKeys) {
+          const toK = norm(tk);
+          if (!toK) continue;
+
+          allTo.add(toK);
+          outGlobal.get(fromK).add(toK);
+
+          const key = fromK + '||' + toK;
+          const arr = edgeMeta.get(key) || [];
+          arr.push(getRuleLabel(r));
+          edgeMeta.set(key, arr);
+        }
+      }
+    }
+
+    // Ordenação determinística (igual ao TXT): chaves em pt-BR e starts derivados nessa mesma ordem
+    const allKeys = Array.from(allFrom).sort((a,b)=>String(a).localeCompare(String(b), 'pt-BR'));
+
+    // Detecta inícios exatamente como no TXT: FROM que não é TO
+    let starts = allKeys.filter(k => !allTo.has(k));
+    if (!starts.length) starts = allKeys.slice();
+// Monta fluxos na mesma ordem/critério do TXT (assigned + expansão)
+    const assigned = new Set();
+    const fluxos = [];
+    const expandFrom = (startKey) => {
+      const q = [startKey];
+      const vis = new Set([startKey]);
+      while (q.length) {
+        const u = q.shift();
+        const outs = outGlobal.get(u);
+        if (!outs) continue;
+        for (const v of outs) {
+          // MESMA LÓGICA DO TXT: só expande para nós que também são origem (allFrom)
+          if (!v) continue;
+          if (!vis.has(v) && allFrom.has(v)) { vis.add(v); q.push(v); }
+        }
+      }
+      return vis;
+    };
+
+    for (const st of starts) {
+      if (assigned.has(st)) continue;
+      const nodes = expandFrom(st);
+      for (const n of nodes) assigned.add(n);
+      fluxos.push({ starts: [st], nodes });
+    }
+    // Sobras (ciclos sem início)
+    for (const k of allKeys) {
+      if (assigned.has(k)) continue;
+      const nodes = expandFrom(k);
+      for (const n of nodes) assigned.add(n);
+      fluxos.push({ starts: [k], nodes });
+    }
+
+    // Adiciona nós terminais (destinos que NÃO são origem) ao mesmo fluxo,
+    // sem expandir, para o BPMN refletir o agrupamento do TXT e ainda desenhar os fins.
+    for (const fl of fluxos) {
+      const full = new Set(fl.nodes);
+      for (const u of fl.nodes) {
+        const outs = outGlobal.get(u);
+        if (!outs) continue;
+        for (const v of outs) {
+          if (!v) continue;
+          if (!full.has(v) && !allFrom.has(v)) full.add(v);
+        }
+      }
+      fl.nodes = Array.from(full);
+    }
+
+    // subgraph signature to avoid duplicate pools (segurança extra)
+    const flowSigs = new Set();
+
+
+    // ============================================================
+    // Modo ZIP: retorna 1 arquivo BPMN por fluxo (cada pool/processo isolado)
+    // ============================================================
+    if (opts && opts.splitFiles) {
+      const files = [];
+      let fileIndex = 0;
+
+      const buildOne = (fluxo, idx) => {
+        // Cabeçalho
+        const collabId1 = 'Collab_ATP_' + idx;
+        const procId = 'Process_Fluxo_' + idx;
+        const partId = 'Participant_Fluxo_' + idx;
+
+        let x = '';
+        x += '<?xml version="1.0" encoding="UTF-8"?>\n';
+        x += '<bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"\n';
+        x += '  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"\n';
+        x += '  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"\n';
+        x += '  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"\n';
+        x += '  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"\n';
+        x += '  id="Definitions_ATP_' + idx + '" targetNamespace="http://tjsp.eproc/atp">\n';
+        x += '  <bpmn:collaboration id="' + collabId1 + '">\n';
+
+        const startName = (fluxo && fluxo.starts && fluxo.starts.length) ? String(fluxo.starts[0]) : ('Fluxo ' + idx);
+        x += '    <bpmn:participant id="' + partId + '" name="Fluxo ' + idx + ' — ' + xmlEsc(startName) + '" processRef="' + procId + '"/>\n';
+        x += '  </bpmn:collaboration>\n';
+        x += '  <bpmn:process id="' + procId + '" isExecutable="false">\n';
+
+        // ---- Nós e arestas (reuso da lógica do builder principal)
+        const nodes = Array.from((fluxo && fluxo.nodes) ? fluxo.nodes : []);
+        // nodeSet (origens) segue a lógica do TXT: apenas localizadores que são origem (REMOVER).
+        const nodeSet = new Set(nodes);
+
+        // Para o BPMN ficar tão "completo" quanto o TXT, precisamos também desenhar os destinos
+        // que NÃO são origem (nós terminais): o TXT lista as regras e mostra o "VAI PARA" mesmo
+        // quando não há continuação. Aqui, criamos tasks para esses destinos e conectamos as arestas,
+        // mas NÃO expandimos o fluxo a partir deles.
+        const terminalSet = new Set();
+        for (const n of nodes) {
+          const outs = outGlobal.get(n);
+          if (!outs) continue;
+          for (const t of outs) {
+            if (!t) continue;
+            if (!nodeSet.has(t)) terminalSet.add(t);
+          }
+        }
+        const nodesAll = nodes.concat(Array.from(terminalSet));
+        const nodeSetAll = new Set(nodesAll);
+const startId = 'Start_' + procId;
+        x += '    <bpmn:startEvent id="' + startId + '" name="Início"/>\n';
+
+        // tasks por localizador
+        const taskIdByNode = new Map();
+        for (const n of nodes) {
+          const tid = makeId('Task_' + procId, n);
+          taskIdByNode.set(n, tid);
+          x += '    <bpmn:task id="' + tid + '" name="' + xmlEsc(n) + '"/>\n';
+        }
+
+
+// gateways: quando múltiplas saídas (ou múltiplas regras para o mesmo destino)
+// IMPORTANTE: se há 1 único destino, mas 2+ regras (labels) para o mesmo par from->to,
+// também precisamos de gateway, senão perderíamos regras (165/166 etc.).
+const gwIdByNode = new Map();
+const outLocal = new Map();
+for (const n of nodes) {
+  const outs = outGlobal.get(n);
+  const arr = outs ? Array.from(outs).filter(t => nodeSetAll.has(t)) : [];
+  outLocal.set(n, arr);
+
+  // conta "ramos" = soma dos labels por destino (mínimo 1 por destino)
+  let branches = 0;
+  for (const t of arr) {
+    const labels = edgeMeta.get(n + '||' + t) || [];
+    branches += Math.max(1, labels.length);
+  }
+
+  if (branches > 1) {
+    const gid = makeId('Gw_' + procId, n);
+    gwIdByNode.set(n, gid);
+    x += '    <bpmn:exclusiveGateway id="' + gid + '" name="Decisão"/>';
+  }
+}
+
+// ends para nós sem saída
+
+        let endCount = 0;
+        const endIdByNode = new Map();
+        for (const n of nodesAll) {
+          const outs = outGlobal.get(n);
+          const arr = outs ? Array.from(outs).filter(t => nodeSetAll.has(t)) : [];
+          if (!arr.length) {
+            endCount++;
+            const eid = 'End_' + procId + '_' + endCount;
+            endIdByNode.set(n, eid);
+            x += '    <bpmn:endEvent id="' + eid + '" name="Fim"/>\n';
+          }
+        }
+
+
+// ServiceTasks (entre decisão/gateway e localizador destino)
+// Nesta versão, SEMPRE criamos uma serviceTask para cada regra (label),
+// inclusive quando múltiplas regras apontam para o mesmo destino.
+const svcTaskMeta = new Map();    // id -> {from,to,label}
+const svcIdsByEdge = new Map();   // "from||to" -> Array<svcId>
+
+let svcCount = 0;
+for (const from of nodesAll) {
+  const outs = outGlobal.get(from);
+  if (!outs) continue;
+
+  for (const to of outs) {
+    if (!nodeSetAll.has(to)) continue;
+
+    const labels = edgeMeta.get(from + '||' + to) || [];
+    const labs = labels.length ? labels : ['REGRA ?'];
+
+    for (let li = 0; li < labs.length; li++) {
+      svcCount++;
+      // id único e estável: inclui contador + hash simples da regra (quando houver)
+      const sid = 'Svc_' + procId + '_' + svcCount;
+      const label = labs[li];
+
+      svcTaskMeta.set(sid, { from, to, label });
+      const k = from + '||' + to;
+      const arr = svcIdsByEdge.get(k) || [];
+      arr.push(sid);
+      svcIdsByEdge.set(k, arr);
+
+      x += '    <bpmn:serviceTask id="' + sid + '" name="' + xmlEsc(label) + '"/>';
+    }
+  }
+}
+
+// flows
+
+        let flowCount = 0;
+        const edgesForDI = []; // {id, src, dst}
+        const addFlow = (srcId, dstId, name) => {
+          flowCount++;
+          const fid = 'Flow_' + procId + '_' + flowCount;
+          x += '    <bpmn:sequenceFlow id="' + fid + '" sourceRef="' + srcId + '" targetRef="' + dstId + '"' + (name ? (' name="' + xmlEsc(name) + '"') : '') + '/>\n';
+          edgesForDI.push({ id: fid, src: srcId, dst: dstId });
+        };
+
+        // Start -> (cada start do fluxo)
+        const startsList = (fluxo && fluxo.starts && fluxo.starts.length) ? fluxo.starts : (nodes.length ? [nodes[0]] : []);
+        for (const st of startsList) {
+          if (!taskIdByNode.has(st)) continue;
+          addFlow(startId, taskIdByNode.get(st), '');
+        }
+
+
+// Node -> (gateway?) -> targets
+        for (const from of nodes) {
+          const outs = outLocal.get(from) || [];
+          const fromTaskId = taskIdByNode.get(from);
+          const gwId = gwIdByNode.get(from);
+
+          if (gwId) {
+            // Task -> Gateway
+            addFlow(fromTaskId, gwId, '');
+
+            // Gateway -> (uma serviceTask por regra) -> Destino
+            for (const to of outs) {
+              const toTaskId = taskIdByNode.get(to);
+              const edgeKey = from + '||' + to;
+              const svcIds = svcIdsByEdge.get(edgeKey) || [];
+
+              // Se por algum motivo não existir, ainda assim liga direto
+              if (!svcIds.length) {
+                addFlow(gwId, toTaskId, '');
+                continue;
+              }
+
+              for (const sid of svcIds) {
+                addFlow(gwId, sid, '');
+                addFlow(sid, toTaskId, '');
+              }
+            }
+          } else {
+            // Sem gateway: deve haver apenas 1 "ramo" (1 destino com 1 regra),
+            // mas ainda assim desenhamos Task -> ServiceTask -> Destino.
+            if (outs.length) {
+              for (const to of outs) {
+                const toTaskId = taskIdByNode.get(to);
+                const edgeKey = from + '||' + to;
+                const svcIds = svcIdsByEdge.get(edgeKey) || [];
+
+                if (svcIds.length) {
+                  // Em modo sem gateway, usamos o primeiro (há só 1).
+                  const sid = svcIds[0];
+                  addFlow(fromTaskId, sid, '');
+                  addFlow(sid, toTaskId, '');
+                } else {
+                  // fallback
+                  addFlow(fromTaskId, toTaskId, '');
+                }
+              }
+            } else {
+              const eid = endIdByNode.get(from);
+              if (eid) addFlow(fromTaskId, eid, '');
+            }
+          }
+        }
+
+        x += '  </bpmn:process>';
+
+
+        // ---- BPMNDI (grid simples)
+        x += '  <bpmndi:BPMNDiagram id="BPMNDiagram_' + procId + '">\n';
+        x += '    <bpmndi:BPMNPlane id="BPMNPlane_' + procId + '" bpmnElement="' + collabId1 + '">\n';
+
+        // Pool bounds / layout grid
+        const padX = 40, padY = 40;
+
+        const nodeW = 240, nodeH = 80;     // tasks (localizadores)
+        const gwW = 50, gwH = 50;          // gateway
+        const svcW = 220, svcH = 60;       // serviceTask (informações da regra)
+
+        // Espaçamento padrão (Bizagi-safe)
+        const GAP = 100; // >= 100px horizontal e vertical
+        function applyHorizontalGap(x, gap) { return Math.round(x + (gap || GAP)); }
+        const gapX = GAP, gapY = GAP;
+
+        // Largura de uma "coluna" de nível: Task -> Gateway -> ServiceTask -> (respiro até a próxima Task)
+        // Isso evita gateway/servicetask colidirem com tasks do nível seguinte.
+        const COL_W = nodeW + GAP + gwW + GAP + svcW + GAP;
+        const bandGap = nodeH + GAP;
+
+        // ==============================
+        // LAYOUT EM 2 FASES
+        // 1) Planejar: calcular "peso/altura" de subárvores (quantos slots verticais cada ramo precisa)
+        // 2) Posicionar: atribuir X por nível (BFS) e Y por árvore (top-down)
+        // ==============================
+
+        // níveis por BFS (para eixo X)
+        const level = new Map();
+        const parent = new Map(); // v -> u (árvore-base; usado para medir subárvore sem duplicar merges)
+        const q = [];
+        for (const st of startsList) {
+          if (!level.has(st)) { level.set(st, 0); q.push(st); }
+        }
+        while (q.length) {
+          const u = q.shift();
+          const lu = level.get(u) || 0;
+          const outs = outLocal.get(u) || [];
+          for (const v of outs) {
+            if (!level.has(v)) {
+              level.set(v, lu + 1);
+              parent.set(v, u);
+              q.push(v);
+            }
+          }
+        }
+
+        // Adjacência (somente nós do fluxo)
+        const children = new Map(); // node -> [node,...]
+        for (const n of nodes) {
+          const outs = outLocal.get(n) || [];
+          const arr = outs.filter(t => taskIdByNode.has(t));
+          children.set(n, arr);
+        }
+
+        // Medida de "unidades" verticais (slots) por subárvore.
+        // Para DAGs com merges, usamos a árvore-base (parent) para não explodir altura.
+        // Para arestas "extra" (não pertencem à árvore-base), reservamos 1 slot (evita empilhamento no gateway).
+        const memoUnits = new Map();
+        const visiting = new Set();
+
+        function measureUnits(u) {
+          if (memoUnits.has(u)) return memoUnits.get(u);
+          if (visiting.has(u)) return 1; // ciclo defensivo
+          visiting.add(u);
+
+          const outs = children.get(u) || [];
+          let sum = 0;
+
+          for (const v of outs) {
+            if (parent.get(v) === u) sum += measureUnits(v);
+            else sum += 1;
+          }
+          if (!sum) sum = 1;
+
+          visiting.delete(u);
+          memoUnits.set(u, sum);
+          return sum;
+        }
+
+        // Coordenadas (nodes): nodeName -> {x,y}
+        const pos = new Map();
+        let maxX = 0, maxY = 0;
+
+        function placeSubtree(u, topY, spanPx) {
+          if (!taskIdByNode.has(u)) return;
+
+          const lv = level.has(u) ? (level.get(u) || 0) : 0;
+          const x0 = padX + 140 + (lv * COL_W);
+          const y0 = Math.round(topY + (spanPx - nodeH) / 2);
+
+          if (!pos.has(u)) pos.set(u, { x: x0, y: y0 });
+
+          const p0 = pos.get(u);
+          maxX = Math.max(maxX, p0.x + nodeW);
+          maxY = Math.max(maxY, p0.y + nodeH);
+
+          const outs = children.get(u) || [];
+          let yCursor = topY;
+
+          for (const v of outs) {
+            const units = (parent.get(v) === u) ? measureUnits(v) : 1;
+            const childSpan = units * bandGap;
+
+            if (!pos.has(v)) placeSubtree(v, yCursor, childSpan);
+
+            const pv = pos.get(v);
+            if (pv) {
+              maxX = Math.max(maxX, pv.x + nodeW);
+              maxY = Math.max(maxY, pv.y + nodeH);
+            }
+
+            yCursor += childSpan;
+          }
+        }
+
+        // Posiciona cada start como um "bloco" empilhado
+        let yStartCursor = padY + 60;
+        const startsOrdered = startsList.slice().filter(s=>taskIdByNode.has(s));
+        for (const st of startsOrdered) {
+          const units = measureUnits(st);
+          const span = units * bandGap;
+          placeSubtree(st, yStartCursor, span);
+          yStartCursor += span;
+        }
+
+        // Se nada foi posicionado (fallback), coloca tudo em linha
+        if (!pos.size) {
+          let i = 0;
+          for (const n of nodes) {
+            pos.set(n, { x: padX + 140 + (i * (nodeW + GAP)), y: padY + 60 });
+            i++;
+          }
+          maxX = padX + 140 + (nodes.length * (nodeW + GAP)) + nodeW;
+          maxY = padY + 60 + nodeH;
+        }
+
+        // Gateways: ao lado direito da task de origem, com GAP real.
+        // Ajuste importante (Bizagi-safe): quando houver múltiplas saídas, centraliza o gateway
+        // verticalmente no "bloco" de ramos (em vez de grudar no centro da task de origem).
+        // Isso evita aquele "poste" vertical gigante no split, principalmente quando os ramos são terminais.
+        const gwPos = new Map(); // gatewayId -> {x,y,w,h}
+        for (const [n, gid] of gwIdByNode.entries()) {
+          const p0 = pos.get(n) || { x: padX + 140, y: padY + 60 };
+          const gx = applyHorizontalGap(p0.x + nodeW, GAP);
+
+          // y default: centro da task origem
+          let gy = Math.round(p0.y + (nodeH - gwH) / 2);
+
+          try {
+            const outs = (children && children.get(n)) ? (children.get(n) || []) : [];
+            if (outs && outs.length >= 2) {
+              // centra o gateway entre os centros dos destinos
+              const centers = [];
+              for (const v of outs) {
+                const pv = pos.get(v);
+                if (pv) centers.push(pv.y + (nodeH / 2));
+              }
+              if (centers.length >= 2) {
+                centers.sort((a,b)=>a-b);
+                const mid = (centers[0] + centers[centers.length - 1]) / 2;
+                gy = Math.round(mid - (gwH / 2));
+              }
+            }
+          } catch (e) {}
+
+          gwPos.set(gid, { x: gx, y: gy, w: gwW, h: gwH });
+          maxX = Math.max(maxX, gx + gwW);
+          maxY = Math.max(maxY, gy + gwH);
+        }
+
+        // End events: próximos da task terminal (com GAP)
+        const END_W = 36, END_H = 36;
+        for (const [n, eid] of endIdByNode.entries()) {
+          const p0 = pos.get(n);
+          if (!p0) continue;
+          const ex = applyHorizontalGap(p0.x + nodeW, GAP);
+          const ey = Math.round(p0.y + (nodeH - END_H) / 2);
+          maxX = Math.max(maxX, ex + END_W);
+          maxY = Math.max(maxY, ey + END_H);
+        }
+
+// Ajuste de altura do pool: quando há múltiplas serviceTasks (múltiplas regras) para o mesmo REMOVER→INCLUIR,
+        // nós "espalhamos" verticalmente as serviceTasks para não empilhar. Reserve altura extra para não cortar o diagrama.
+        let __maxSvcStack = 1;
+        try {
+          const __tmp = new Map(); // pair -> count
+          for (const meta of (svcTaskMeta ? svcTaskMeta.values() : [])) {
+            if (!meta || !meta.from || !meta.to) continue;
+            const k = String(meta.from) + '||' + String(meta.to);
+            __tmp.set(k, (__tmp.get(k) || 0) + 1);
+          }
+          for (const v of __tmp.values()) __maxSvcStack = Math.max(__maxSvcStack, v || 1);
+        } catch (e) {}
+        // Shape: participant
+        const poolW = Math.max(680, maxX - padX + 60);
+        const poolH = Math.max(160, (maxY - padY + 60) + ((__maxSvcStack>1)?((__maxSvcStack-1)*(svcH+20)):0));
+        x += '      <bpmndi:BPMNShape id="DI_' + partId + '" bpmnElement="' + partId + '">\n';
+        x += '        <dc:Bounds x="' + padX + '" y="' + padY + '" width="' + poolW + '" height="' + poolH + '"/>\n';
+        x += '      </bpmndi:BPMNShape>\n';
+        // Shape: start (alinha verticalmente com o 1o no do fluxo)
+        const startX = padX + 40;
+        let startY = padY + 60;
+        try {
+          const __st0 = (startsOrdered && startsOrdered.length) ? startsOrdered[0] : ((startsList && startsList.length) ? startsList[0] : null);
+          const __p0 = __st0 ? pos.get(__st0) : null;
+          if (__p0) startY = Math.round(__p0.y + (nodeH - 36) / 2);
+        } catch (e) {}
+        x += '      <bpmndi:BPMNShape id="DI_' + startId + '" bpmnElement="' + startId + '">\n';
+        x += '        <dc:Bounds x="' + startX + '" y="' + startY + '" width="36" height="36"/>\n';
+        x += '      </bpmndi:BPMNShape>\n';
+
+        // Shapes: tasks
+        for (const n of nodes) {
+          const tid = taskIdByNode.get(n);
+          const p = pos.get(n) || { x: padX + 280, y: padY + 60 };
+          x += '      <bpmndi:BPMNShape id="DI_' + tid + '" bpmnElement="' + tid + '">\n';
+          x += '        <dc:Bounds x="' + p.x + '" y="' + p.y + '" width="' + nodeW + '" height="' + nodeH + '"/>\n';
+          x += '      </bpmndi:BPMNShape>\n';
+          if (gwIdByNode.has(n)) {
+            const gid = gwIdByNode.get(n);
+            const gp = (gwPos && gwPos.get(gid)) ? gwPos.get(gid) : null;
+            const gx = gp ? gp.x : applyHorizontalGap(p.x + nodeW, GAP);
+            const gy = gp ? gp.y : (p.y + (nodeH/2) - 25);
+            x += '      <bpmndi:BPMNShape id="DI_' + gid + '" bpmnElement="' + gid + '">\n';
+            x += '        <dc:Bounds x="' + gx + '" y="' + gy + '" width="' + gwW + '" height="' + gwH + '"/>\n';
+            x += '      </bpmndi:BPMNShape>\n';
+          }
+          if (endIdByNode.has(n)) {
+            const eid = endIdByNode.get(n);
+            const ex = applyHorizontalGap(p.x + nodeW, GAP);
+            const ey = Math.round(p.y + (nodeH - 36) / 2);
+            x += '      <bpmndi:BPMNShape id="DI_' + eid + '" bpmnElement="' + eid + '">\n';
+            x += '        <dc:Bounds x="' + ex + '" y="' + ey + '" width="36" height="36"/>\n';
+            x += '      </bpmndi:BPMNShape>\n';
+          }
+        }
+
+        // Shapes: service tasks (entre task origem e task destino; via gateway quando existir)
+        // Shapes: service tasks (entre task origem e task destino; via gateway quando existir)
+        const svcPos = new Map(); // sid -> {x,y,w,h}
+
+        // Agrupa serviceTasks por par REMOVER→INCLUIR para espalhar verticalmente (evita empilhamento)
+        const __svcGroups = new Map(); // "from||to" -> [sid, sid, ...]
+        try {
+          for (const [sid, meta] of svcTaskMeta.entries()) {
+            if (!meta || !meta.from || !meta.to) continue;
+            const k = String(meta.from) + '||' + String(meta.to);
+            if (!__svcGroups.has(k)) __svcGroups.set(k, []);
+            __svcGroups.get(k).push(sid);
+          }
+          for (const arr of __svcGroups.values()) arr.sort((a,b)=>String(a).localeCompare(String(b)));
+        } catch (e) {}
+
+        for (const [sid, meta] of svcTaskMeta.entries()) {
+          if (!meta) continue;
+
+          const from = meta.from, to = meta.to;
+          const pFrom = pos.get(from) || { x: padX + 140, y: padY + 60 };
+          const pTo   = pos.get(to)   || { x: (pFrom.x + COL_W), y: pFrom.y };
+
+          const viaGw = !!gwIdByNode.get(from);
+
+          // X: depois do gateway (se existir) ou depois da task
+          let sx;
+          if (viaGw) {
+            const gid = gwIdByNode.get(from);
+            const gp = (gid && gwPos && gwPos.get(gid)) ? gwPos.get(gid) : { x: applyHorizontalGap(pFrom.x + nodeW, GAP), y: pFrom.y, w: gwW, h: gwH };
+            sx = applyHorizontalGap(gp.x + gwW, GAP);
+          } else {
+            sx = applyHorizontalGap(pFrom.x + nodeW, GAP);
+          }
+
+          // Y: alinha na "faixa" do ramo (centro do destino). Isso elimina empilhamento em splits.
+          const __k = String(from) + '||' + String(to);
+          const __arr = __svcGroups.get(__k) || [sid];
+          const __idx = Math.max(0, __arr.indexOf(sid));
+          const __n = Math.max(1, __arr.length);
+          const __step = (svcH + 10); // empilha só quando várias regras pro MESMO destino
+          const __offset = (__idx - ((__n - 1) / 2)) * __step;
+
+          const baseCy = (pTo.y + (nodeH/2));
+          const sy = Math.round((baseCy - (svcH/2)) + __offset);
+
+          svcPos.set(sid, { x: sx, y: sy, w: svcW, h: svcH });
+
+          x += '      <bpmndi:BPMNShape id="DI_' + sid + '" bpmnElement="' + sid + '">\n';
+          x += '        <dc:Bounds x="' + sx + '" y="' + sy + '" width="' + svcW + '" height="' + svcH + '"/>\n';
+          x += '      </bpmndi:BPMNShape>\n';
+        }
+
+// Edges (simples: linha reta)
+        const centerOf = (elId) => {
+          // start
+          if (elId === startId) return { x: startX + 36, y: startY + 18 };
+
+          // tasks (localizadores)
+          for (const [n, tid] of taskIdByNode.entries()) {
+            if (tid === elId) {
+              const p = pos.get(n) || { x: padX + 280, y: padY + 60 };
+              return { x: p.x + nodeW, y: p.y + (nodeH/2) };
+            }
+          }
+
+          // serviceTasks (regras)
+          if (typeof svcPos !== 'undefined' && svcPos.has(elId)) {
+            const p0 = svcPos.get(elId);
+            return { x: p0.x + (p0.w), y: p0.y + (p0.h/2) };
+          }
+
+          // gateways
+          for (const [n, gid] of gwIdByNode.entries()) {
+            if (gid === elId) {
+              const gp = (typeof gwPos !== 'undefined' && gwPos && gwPos.get(gid)) ? gwPos.get(gid) : null;
+              if (gp) return { x: gp.x + gp.w, y: gp.y + (gp.h/2) };
+              const p = pos.get(n) || { x: padX + 280, y: padY + 60 };
+              return { x: applyHorizontalGap(p.x + nodeW, GAP) + gwW, y: p.y + (nodeH/2) };
+            }
+          }
+
+          // ends
+          for (const [n, eid] of endIdByNode.entries()) {
+            if (eid === elId) {
+              const p = pos.get(n) || { x: padX + 280, y: padY + 60 };
+              return { x: p.x + nodeW + 96, y: p.y + (nodeH/2) };
+            }
+          }
+
+          return { x: padX + 100, y: padY + 100 };
+        };
+
+
+        // ---- DI routing: assign a distinct "corridor" (midX) per outgoing edge of the same source
+        // This avoids the "vertical bus" effect where multiple orthogonal connectors share the same midX.
+        const ROUTE_MIN_CLEAR = 100;
+        const ROUTE_CORRIDOR_GAP = 70; // horizontal separation between corridors
+
+        const __diGetBoundsById = (function(){
+          // returns {x,y,w,h} for any element id (task/serviceTask/gateway/start/end)
+          return function(elId){
+            // Start
+            if (elId === startId) return { x: padX + 40, y: padY + 80, w: 36, h: 36 };
+            // tasks (localizadores)
+            for (let ii = 0; ii < nodes.length; ii++) {
+              const n = nodes[ii];
+              const tid = taskIdByNode.get(n);
+              if (tid === elId) {
+                const p0 = pos.get(n) || { x: padX + 280, y: padY + 60 };
+                return { x: p0.x, y: p0.y, w: nodeW, h: nodeH };
+              }
+            }
+            // service tasks (regras)
+            for (const [sid, s] of svcPos.entries()) {
+              if (sid === elId) return { x: s.x, y: s.y, w: s.w, h: s.h };
+            }
+            // gateways
+            for (const [n, gid] of gwIdByNode.entries()) {
+              if (gid === elId) {
+                const p = pos.get(n) || { x: padX + 280, y: padY + 60 };
+                const gp = (typeof gwPos !== 'undefined' && gwPos && gwPos.get(gid)) ? gwPos.get(gid) : null;
+                if (gp) return { x: gp.x, y: gp.y, w: gp.w, h: gp.h };
+                const gx = p.x + nodeW + gapX;
+                const gy = p.y + (nodeH/2) - (gwH/2);
+                return { x: gx, y: gy, w: gwW, h: gwH };
+              }
+            }
+            // end events
+            for (const [n, eid] of endIdByNode.entries()) {
+              if (eid === elId) {
+                const p = pos.get(n) || { x: padX + 280, y: padY + 60 };
+                const ex = applyHorizontalGap(p.x + nodeW, GAP);
+                const ey = Math.round(p.y + (nodeH - 36) / 2);
+                return { x: ex, y: ey, w: 36, h: 36 };
+              }
+            }
+            // fallback
+            return { x: padX + 280, y: padY + 60, w: 2, h: 2 };
+          };
+        })();
+
+        const __diCorridorIndexByFlowId = new Map();
+        const __diOutBySrc = new Map(); // srcId -> [{fid, ty}]
+
+        // precompute targetY rank per source
+        for (const e0 of edgesForDI) {
+          const sb0 = __diGetBoundsById(e0.src);
+          const tb0 = __diGetBoundsById(e0.dst);
+          const fromC0 = { x: sb0.x + sb0.w/2, y: sb0.y + sb0.h/2 };
+          const toC0   = { x: tb0.x + tb0.w/2, y: tb0.y + tb0.h/2 };
+          const leftToRight0 = (toC0.x >= fromC0.x);
+          const pA0 = { x: leftToRight0 ? (sb0.x + sb0.w) : sb0.x, y: sb0.y + sb0.h/2 };
+          const pB0 = { x: leftToRight0 ? tb0.x : (tb0.x + tb0.w), y: tb0.y + tb0.h/2 };
+
+          // Only allocate corridors when there is a vertical delta (the "bus" issue)
+          const needsCorridor = Math.abs(pA0.y - pB0.y) > 1;
+          if (!needsCorridor) {
+            __diCorridorIndexByFlowId.set(e0.id, 0);
+            continue;
+          }
+
+          const arr0 = __diOutBySrc.get(e0.src) || [];
+          arr0.push({ fid: e0.id, ty: pB0.y });
+          __diOutBySrc.set(e0.src, arr0);
+        }
+
+        for (const [srcId, arr] of __diOutBySrc.entries()) {
+          arr.sort((a,b)=> (a.ty - b.ty));
+          for (let i = 0; i < arr.length; i++) {
+            __diCorridorIndexByFlowId.set(arr[i].fid, i);
+          }
+        }
+
+        for (const e of edgesForDI) {
+          const a = centerOf(e.src);
+          const b = centerOf(e.dst);
+          x += '      <bpmndi:BPMNEdge id="DI_' + e.id + '" bpmnElement="' + e.id + '">';
+
+          // Waypoints somente pelas laterais (L/R), com dobra em "L"
+          const sb = (function(elId){
+            // tasks (localizadores)
+            for (let ii = 0; ii < nodes.length; ii++) {
+              const n = nodes[ii];
+              const tid = taskIdByNode.get(n);
+              if (tid === elId) {
+                const p0 = pos.get(n) || { x: padX + 280, y: padY + 60 };
+                return { x: p0.x, y: p0.y, w: nodeW, h: nodeH };
+              }
+            }
+            // service tasks (regras)
+            for (const [sid, s] of svcPos.entries()) {
+              if (sid === elId) return { x: s.x, y: s.y, w: s.w, h: s.h };
+            }
+            // gateways
+            for (const [n, gid] of gwIdByNode.entries()) {
+              if (gid === elId) {
+                const p = pos.get(n) || { x: padX + 280, y: padY + 60 };
+                const gp = (typeof gwPos !== 'undefined' && gwPos && gwPos.get(gid)) ? gwPos.get(gid) : null;
+                 if (gp) return { x: gp.x, y: gp.y, w: gp.w, h: gp.h };
+                 const gx = p.x + nodeW + gapX;
+                 const gy = p.y + (nodeH/2) - (gwH/2);
+                 return { x: gx, y: gy, w: gwW, h: gwH };
+              }
+            }
+            // start
+            if (elId === startId) {
+              const sx = startX;
+              const sy = startY;
+              return { x: sx, y: sy, w: 36, h: 36 };
+            }
+            // end
+            for (const [n, eid] of endIdByNode.entries()) {
+              if (eid === elId) {
+                const p = pos.get(n) || { x: padX + 280, y: padY + 60 };
+                const ex = applyHorizontalGap(p.x + nodeW, GAP);
+                const ey = Math.round(p.y + (nodeH - 36) / 2);
+                return { x: ex, y: ey, w: 36, h: 36 };
+              }
+            }
+            // fallback
+            return { x: a.x, y: a.y, w: 2, h: 2 };
+          })(e.src);
+
+          const tb = (function(elId){
+            // same helper for target
+            // tasks (localizadores)
+            for (let ii = 0; ii < nodes.length; ii++) {
+              const n = nodes[ii];
+              const tid = taskIdByNode.get(n);
+              if (tid === elId) {
+                const p0 = pos.get(n) || { x: padX + 280, y: padY + 60 };
+                return { x: p0.x, y: p0.y, w: nodeW, h: nodeH };
+              }
+            }
+            // service tasks (regras)
+            for (const [sid, s] of svcPos.entries()) {
+              if (sid === elId) return { x: s.x, y: s.y, w: s.w, h: s.h };
+            }
+            // gateways
+            for (const [n, gid] of gwIdByNode.entries()) {
+              if (gid === elId) {
+                const p = pos.get(n) || { x: padX + 280, y: padY + 60 };
+                const gp = (typeof gwPos !== 'undefined' && gwPos && gwPos.get(gid)) ? gwPos.get(gid) : null;
+                 if (gp) return { x: gp.x, y: gp.y, w: gp.w, h: gp.h };
+                 const gx = p.x + nodeW + gapX;
+                 const gy = p.y + (nodeH/2) - (gwH/2);
+                 return { x: gx, y: gy, w: gwW, h: gwH };
+              }
+            }
+            // end (target may be end)
+            for (const [n, eid] of endIdByNode.entries()) {
+              if (eid === elId) {
+                const p = pos.get(n) || { x: padX + 280, y: padY + 60 };
+                const ex = applyHorizontalGap(p.x + nodeW, GAP);
+                const ey = Math.round(p.y + (nodeH - 36) / 2);
+                return { x: ex, y: ey, w: 36, h: 36 };
+              }
+            }
+            // fallback
+            return { x: b.x, y: b.y, w: 2, h: 2 };
+          })(e.dst);
+
+          const fromC = { x: sb.x + sb.w/2, y: sb.y + sb.h/2 };
+          const toC   = { x: tb.x + tb.w/2, y: tb.y + tb.h/2 };
+          const leftToRight = (toC.x >= fromC.x);
+
+          const pA = { x: leftToRight ? (sb.x + sb.w) : sb.x, y: sb.y + sb.h/2 };
+          const pB = { x: leftToRight ? tb.x : (tb.x + tb.w), y: tb.y + tb.h/2 };
+          const minClear = ROUTE_MIN_CLEAR;
+          const corrIdx = __diCorridorIndexByFlowId.has(e.id) ? __diCorridorIndexByFlowId.get(e.id) : 0;
+          // Spread connectors leaving the same source into distinct corridors
+          const corrShift = (corrIdx || 0) * ROUTE_CORRIDOR_GAP;
+          let midX;
+          if (leftToRight) midX = Math.max(pA.x + minClear + corrShift, (pA.x + pB.x)/2 + corrShift);
+          else midX = Math.min(pA.x - minClear - corrShift, (pA.x + pB.x)/2 - corrShift);
+          // Clamp midX to avoid overshooting the target and coming back
+          if (leftToRight) midX = Math.min(midX, pB.x - 20);
+          else midX = Math.max(midX, pB.x + 20);
+
+          const wps = [
+            { x: pA.x, y: pA.y },
+            { x: midX, y: pA.y },
+            { x: midX, y: pB.y },
+            { x: pB.x, y: pB.y }
+          ];
+
+          for (let wi = 0; wi < wps.length; wi++) {
+            x += '        <di:waypoint x="' + wps[wi].x + '" y="' + wps[wi].y + '"/>';
+          }
+          x += '      </bpmndi:BPMNEdge>';
+        }
+
+        x += '    </bpmndi:BPMNPlane>\n';
+        x += '  </bpmndi:BPMNDiagram>\n';
+        x += '</bpmn:definitions>\n';
+        return x;
+      };
+
+      for (let i = 0; i < fluxos.length; i++) {
+        const fluxo = fluxos[i];
+        const nodes = Array.from(fluxo.nodes || []);
+        const sig = nodes.slice().sort().join('||');
+        if (flowSigs.has(sig)) continue;
+        flowSigs.add(sig);
+
+        fileIndex++;
+        const xmlOne = buildOne(fluxo, fileIndex);
+        const startK = (fluxo.starts && fluxo.starts[0]) ? norm(String(fluxo.starts[0])) : ('fluxo_' + fileIndex);
+        const safe = (startK || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80);
+        files.push({
+          filename: ('fluxo_' + String(fileIndex).padStart(2, '0') + '_' + (safe || 'inicio') + '.bpmn'),
+          xml: xmlOne
+        });
+      }
+
+      return files;
+    }
+
+    // ---- XML header / namespaces
+    const collabId = 'Collab_ATP';
+    let xml = '';
+    xml += '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += '<bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"\n';
+    xml += '  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"\n';
+    xml += '  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"\n';
+    xml += '  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"\n';
+    xml += '  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"\n';
+    xml += '  id="Definitions_ATP" targetNamespace="http://tjsp.eproc/atp">\n';
+    xml += '  <bpmn:collaboration id="' + collabId + '">\n';
+
+    let processesXML = '';
+    let diShapes = '';
+    let diEdges  = '';
+
+    // Layout constants
+    const POOL_X = 40;
+    const POOL_PAD_X = 40;
+    const POOL_PAD_Y = 40;
+    const TASK_W = 240;
+    const TASK_H = 80;
+    const GW_W = 50;
+    const GW_H = 50;
+    const START_W = 36;
+    const START_H = 36;
+    const END_W = 36;
+    const END_H = 36;
+
+    const DX = 360; // spacing per level
+    const DY = 130; // spacing per lane within pool
+
+    let poolY = 40;
+    let fluxoCount = 0;
+
+    // Helper to compute reachable subgraph from a start
+
+    // For each start, build pool/process
+    for (const fl of fluxos) {
+      const startLoc = (fl && fl.starts && fl.starts[0]) ? fl.starts[0] : '';
+
+      const startName = norm(startLoc);
+      if (!startName) continue;
+
+      const nodesSet = new Set((fl && fl.nodes) ? Array.from(fl.nodes) : []);
+      if (!nodesSet.size) continue;
+
+      if (!nodesSet.size) continue;
+
+      // Build edges within subgraph
+      const nodes = Array.from(nodesSet);
+      const nodeSet = new Set(nodes);
+
+      const out = new Map(); // u -> Array(v)
+      const edges = [];
+      for (const u of nodes) {
+        const outs = outGlobal.get(u);
+        if (!outs) continue;
+        for (const v of outs) {
+          if (!nodeSet.has(v)) continue;
+          edges.push([u, v]);
+          if (!out.has(u)) out.set(u, []);
+          out.get(u).push(v);
+        }
+      }
+
+      // Signature
+      const sig = nodes.slice().sort().join('||') + '##' + edges.slice().sort((a,b)=> (a[0]+a[1]).localeCompare(b[0]+b[1])).map(e=>e[0]+'->'+e[1]).join('|');
+      const sigHash = Math.abs(hashCode(sig)).toString(36);
+      if (flowSigs.has(sigHash)) continue;
+      flowSigs.add(sigHash);
+
+      fluxoCount++;
+      const procId = 'Process_Fluxo_' + fluxoCount;
+      const partId = 'Participant_Fluxo_' + fluxoCount;
+
+      xml += '    <bpmn:participant id="' + partId + '" name="' + xmlEsc('Fluxo ' + fluxoCount + ' — ' + startName) + '" processRef="' + procId + '"/>\n';
+
+      // ---- Build process
+      let p = '';
+      p += '  <bpmn:process id="' + procId + '" isExecutable="false">\n';
+
+      const startEventId = 'Start_' + procId;
+      p += '    <bpmn:startEvent id="' + startEventId + '" name="Início"/>\n';
+
+      // IDs for nodes
+      const taskId = new Map();
+      nodes.forEach(n => taskId.set(n, makeId('Task_' + procId, n)));
+
+      // Gateways
+      const gwId = new Map(); // u -> gwId
+      for (const [u, vs] of out.entries()) {
+        const uniq = Array.from(new Set(vs));
+        if (uniq.length > 1) {
+          gwId.set(u, makeId('Gw_' + procId, u));
+        }
+      }
+
+      // Terminals (no outgoing)
+      const terminals = nodes.filter(n => !(out.get(n) && out.get(n).length));
+      const endId = new Map();
+      terminals.forEach((n,i) => endId.set(n, 'End_' + procId + '_' + (i+1)));
+
+      // Emit tasks + gateways + ends
+      for (const n of nodes) {
+        p += '    <bpmn:task id="' + taskId.get(n) + '" name="' + xmlEsc(n) + '"/>\n';
+      }
+      for (const [u, gid] of gwId.entries()) {
+        p += '    <bpmn:exclusiveGateway id="' + gid + '" name="Decisão"/>\n';
+      }
+      for (const [n, eid] of endId.entries()) {
+        p += '    <bpmn:endEvent id="' + eid + '" name="Fim"/>\n';
+      }
+
+      // Sequence flows
+      let flowN = 0;
+      const mkFlowId = () => 'Flow_' + procId + '_' + (++flowN);
+
+      // Start -> start task(s) (mesma semântica do TXT: pode haver múltiplos inícios)
+      const flowIds = []; // for DI edges
+      const startKeys = (fl && Array.isArray(fl.starts) && fl.starts.length)
+        ? fl.starts.map(norm).filter(Boolean)
+        : (startName ? [startName] : []);
+
+      for (const sk of startKeys) {
+        const tid = taskId.get(sk);
+        if (!tid) continue;
+        const fStart = mkFlowId();
+        p += '    <bpmn:sequenceFlow id="' + fStart + '" sourceRef="' + startEventId + '" targetRef="' + tid + '"/>\n';
+        flowIds.push([fStart, startEventId, tid]);
+      }
+
+      for (const u of nodes) {
+        const vs = out.get(u) || [];
+        const uniq = Array.from(new Set(vs));
+        if (!uniq.length) continue;
+
+        const uTask = taskId.get(u);
+        const gid = gwId.get(u);
+
+        if (gid) {
+          const fUG = mkFlowId();
+          p += '    <bpmn:sequenceFlow id="' + fUG + '" sourceRef="' + uTask + '" targetRef="' + gid + '"/>\n';
+          flowIds.push([fUG, uTask, gid]);
+
+          for (const v of uniq) {
+            const key = u + '||' + v;
+            const labels = edgeMeta.get(key) || [];
+            const label = labels.length ? labels[0] : ''; // pega o 1o (curto). (Opcional: join)
+            const fGV = mkFlowId();
+            p += '    <bpmn:sequenceFlow id="' + fGV + '" sourceRef="' + gid + '" targetRef="' + taskId.get(v) + '"' + (label ? (' name="' + xmlEsc(label) + '"') : '') + '/>\n';
+            flowIds.push([fGV, gid, taskId.get(v)]);
+          }
+        } else {
+          for (const v of uniq) {
+            const key = u + '||' + v;
+            const labels = edgeMeta.get(key) || [];
+            const label = labels.length ? labels[0] : '';
+            const fUV = mkFlowId();
+            p += '    <bpmn:sequenceFlow id="' + fUV + '" sourceRef="' + uTask + '" targetRef="' + taskId.get(v) + '"' + (label ? (' name="' + xmlEsc(label) + '"') : '') + '/>\n';
+            flowIds.push([fUV, uTask, taskId.get(v)]);
+          }
+        }
+      }
+
+      // Task -> End for terminals
+      for (const n of terminals) {
+        const eid = endId.get(n);
+        const fTE = mkFlowId();
+        p += '    <bpmn:sequenceFlow id="' + fTE + '" sourceRef="' + taskId.get(n) + '" targetRef="' + eid + '"/>\n';
+        flowIds.push([fTE, taskId.get(n), eid]);
+      }
+
+      p += '  </bpmn:process>\n';
+      processesXML += p;
+
+      // ---- Layout per pool (BFS levels)
+      // levels
+      let levels = new Map();
+      const q = [startName];
+      levels.set(startName, 0);
+      while (q.length) {
+        const u = q.shift();
+        const lv = levels.get(u) || 0;
+        const vs = out.get(u) || [];
+        for (const v of vs) {
+          if (!levels.has(v)) { levels.set(v, lv + 1); q.push(v); }
+        }
+      }
+
+      // group nodes by level
+      const byLevel = new Map();
+      for (const n of nodes) {
+        const lv = levels.has(n) ? levels.get(n) : 0;
+        if (!byLevel.has(lv)) byLevel.set(lv, []);
+        byLevel.get(lv).push(n);
+      }
+      // deterministic order within level
+      for (const [lv, arr] of byLevel.entries()) {
+        arr.sort((a,b)=>a.localeCompare(b));
+      }
+
+      // positions
+      const pos = new Map(); // elementId -> {x,y,w,h}
+      const startX = POOL_X + POOL_PAD_X;
+      const startY = poolY + POOL_PAD_Y;
+
+      // Start event
+      pos.set(startEventId, { x: startX, y: startY + 10, w: START_W, h: START_H });
+
+      let maxLv = 0;
+      let maxY = startY;
+
+      if (opts.layout === 'grid') {
+        // --- Grid layout (simple, Bizagi-friendly)
+        const allNodes = Array.from(nodes).slice().sort((a,b)=>a.localeCompare(b));
+        const cols = Math.max(1, Math.ceil(Math.sqrt(allNodes.length)));
+        const dx = Math.max(260, DX * 0.8);
+        const dy = Math.max(110, DY * 0.9);
+
+        for (let i = 0; i < allNodes.length; i++) {
+          const n = allNodes[i];
+          const col = i % cols;
+          const row = Math.floor(i / cols);
+          const x = startX + dx * (col + 1);
+          const y = startY + dy * row;
+          pos.set(taskId.get(n), { x, y, w: TASK_W, h: TASK_H });
+          maxY = Math.max(maxY, y + TASK_H);
+          maxLv = Math.max(maxLv, col);
+        }
+      } else {
+        // --- Layout per pool (BFS levels)
+        for (const [lv, arr] of byLevel.entries()) {
+          if (lv > maxLv) maxLv = lv;
+          for (let i = 0; i < arr.length; i++) {
+            const n = arr[i];
+            const x = startX + DX * (lv + 1);
+            const y = startY + DY * i;
+            pos.set(taskId.get(n), { x, y, w: TASK_W, h: TASK_H });
+            maxY = Math.max(maxY, y + TASK_H);
+          }
+        }
+      }
+
+      // Gateways near their source task
+      for (const [u, gid] of gwId.entries()) {
+        const uPos = pos.get(taskId.get(u));
+        const x = (uPos ? (uPos.x + TASK_W + 100) : (startX + DX));
+        const y = (uPos ? (uPos.y + (TASK_H - GW_H)/2) : startY);
+        pos.set(gid, { x, y, w: GW_W, h: GW_H });
+        maxY = Math.max(maxY, y + GW_H);
+      }
+
+      // End events near terminal tasks
+      for (const n of terminals) {
+        const tPos = pos.get(taskId.get(n));
+        const x = (tPos ? (tPos.x + TASK_W + 120) : (startX + DX * (maxLv + 2)));
+        const y = (tPos ? (tPos.y + 20) : startY);
+        pos.set(endId.get(n), { x, y, w: END_W, h: END_H });
+        maxY = Math.max(maxY, y + END_H);
+      }
+
+      // pool bounds
+      const maxX = Math.max(...Array.from(pos.values()).map(p=>p.x + p.w)) + POOL_PAD_X;
+      const poolH = (maxY - poolY) + POOL_PAD_Y;
+      const poolW = maxX - POOL_X;
+
+      // DI: participant pool shape
+      diShapes += '    <bpmndi:BPMNShape id="DI_' + partId + '" bpmnElement="' + partId + '">\n';
+      diShapes += '      <dc:Bounds x="' + POOL_X + '" y="' + poolY + '" width="' + poolW + '" height="' + poolH + '"/>\n';
+      diShapes += '    </bpmndi:BPMNShape>\n';
+
+      // DI shapes for elements in this process
+      const addShape = (elId) => {
+        const p0 = pos.get(elId);
+        if (!p0) return;
+        diShapes += '    <bpmndi:BPMNShape id="DI_' + elId + '" bpmnElement="' + elId + '">\n';
+        diShapes += '      <dc:Bounds x="' + p0.x + '" y="' + p0.y + '" width="' + p0.w + '" height="' + p0.h + '"/>\n';
+        diShapes += '    </bpmndi:BPMNShape>\n';
+      };
+
+      addShape(startEventId);
+      nodes.forEach(n => addShape(taskId.get(n)));
+      for (const gid of gwId.values()) addShape(gid);
+      for (const eid of endId.values()) addShape(eid);
+
+      // DI edges (simple orthogonal)
+      const center = (p0) => ({ cx: p0.x + p0.w/2, cy: p0.y + p0.h/2 });
+      const rightMid = (p0) => ({ x: p0.x + p0.w, y: p0.y + p0.h/2 });
+      const leftMid  = (p0) => ({ x: p0.x, y: p0.y + p0.h/2 });
+
+      for (const [fid, srcEl, dstEl] of flowIds) {
+        const ps = pos.get(srcEl);
+        const pt = pos.get(dstEl);
+        if (!ps || !pt) continue;
+        const a = rightMid(ps);
+        const b = leftMid(pt);
+        const midX = (a.x + b.x) / 2;
+
+        diEdges += '    <bpmndi:BPMNEdge id="DI_' + fid + '" bpmnElement="' + fid + '">\n';
+        diEdges += '      <di:waypoint x="' + a.x + '" y="' + a.y + '"/>\n';
+        diEdges += '      <di:waypoint x="' + midX + '" y="' + a.y + '"/>\n';
+        diEdges += '      <di:waypoint x="' + midX + '" y="' + b.y + '"/>\n';
+        diEdges += '      <di:waypoint x="' + b.x + '" y="' + b.y + '"/>\n';
+        diEdges += '    </bpmndi:BPMNEdge>\n';
+      }
+
+      poolY += poolH + 40; // next pool
+    }
+
+    xml += '  </bpmn:collaboration>\n';
+    xml += processesXML;
+
+    xml += '  <bpmndi:BPMNDiagram id="BPMNDiagram_ATP">\n';
+    xml += '    <bpmndi:BPMNPlane id="BPMNPlane_ATP" bpmnElement="' + collabId + '">\n';
+    xml += diShapes;
+    xml += diEdges;
+    xml += '    </bpmndi:BPMNPlane>\n';
+    xml += '  </bpmndi:BPMNDiagram>\n';
+    xml += '</bpmn:definitions>\n';
+
+    return xml;
+  } catch (e) {
+    console.warn(LOG_PREFIX, 'Falha ao gerar BPMN (pools por fluxo)', e);
+    return null;
+  }
+}
+
 function atpEnsureReportButton(host, afterLabelEl, tableRef) {
   try {
     if (!host || host.querySelector('#btnGerarRelatorioColisoes')) return;
 
+    // =========================
+    // Botão 1: Relatório Conflitos
+    // =========================
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'infraButton';
@@ -2494,33 +4696,6 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
         var cols = null;
         try { cols = mapColumns(table); } catch (e) { cols = null; }
 
-        // Reconstrói as regras (para pegar campos completos).
-        var rules = [];
-        try { rules = (cols ? parseRules(table, cols) : parseRules(table, mapColumns(table))); } catch (e) { rules = []; }
-        var ruleByNum = new Map((rules || []).map(function (r) { return [String(r.num), r]; }));
-
-        function fmtExpr(expr) {
-          if (!expr) return '';
-          if (typeof expr === 'string') return clean(expr);
-          if (expr.canonical) return clean(expr.canonical);
-          return clean(String(expr.text || expr.raw || ''));
-        }
-
-        function fmtOutros(outros) {
-          if (!outros) return '';
-          try {
-            var entries = Object.entries(outros);
-            if (!entries.length) return '';
-            return entries.map(function (kv) {
-              var k = clean(kv[0]);
-              var v = clean(kv[1]);
-              return k + ': ' + v;
-            }).join(' | ');
-          } catch (e) {
-            return clean(String(outros));
-          }
-        }
-
         // Pega todas as células de conflito renderizadas pelo script.
         var cells = Array.from(table.querySelectorAll('td[data-atp-col="conflita"]'));
 
@@ -2530,12 +4705,10 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
         var seenPairs = new Set();
 
         function pairKey(tipo, a, b) {
-          // Contradição é intrarregra (self): não existe "Regra B" e não deve haver normalização A/B.
-          // Mantém chave estável para deduplicação.
+          // Contradição é intrarregra (self).
           if (String(b) === '(Própria Regra)' || String(b) === '(própria regra)') {
             return String(tipo) + '|' + String(a || '') + '|SELF';
           }
-
           var an = Number(a), bn = Number(b);
           if (Number.isFinite(an) && Number.isFinite(bn)) {
             var lo = Math.min(an, bn);
@@ -2568,7 +4741,7 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
               var mm = raw.match(/\b(\d{1,6})\b/);
               if (mm) numA = mm[1];
             }
-          } catch {}
+          } catch (e) {}
 
           // Cada <div> representa um conflito B para essa regra A
           var confDivs = Array.from(td.querySelectorAll(':scope > div')).filter(function (d) {
@@ -2584,7 +4757,7 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
             var impacto = sp ? clean(sp.getAttribute('data-atp-impacto') || '') : '';
             var pqRaw = sp ? clean(sp.getAttribute('data-atp-porque') || '') : '';
 
-            // Extrai sugestões do texto (padrão: "Sugestão: ...") para exportar em seção própria.
+            // Sugestões no pq (se houver)
             var sugestoes = [];
             try {
               var reSug = /Sugest[aã]o:\s*([^|]+)(?:\||$)/gi;
@@ -2593,9 +4766,9 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
                 var s = clean(m[1] || '');
                 if (s) sugestoes.push(s);
               }
-            } catch {}
+            } catch (e) {}
 
-            // Remove os trechos de sugestão do "por quê" técnico (mantém só o diagnóstico).
+            // Remove trechos de sugestão do pq técnico
             var pq = String(pqRaw || '')
               .replace(/\s*(\|\s*)?Sugest[aã]o:\s*[^|]+/gi, '')
               .replace(/\s*\|\s*/g, ' | ')
@@ -2606,28 +4779,23 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
 
             var aVal = numA || '(não identificado)';
             var bVal = numB || '(não identificado)';
-            var keyTipo = String(tipo);
-            var tipoLower = String(keyTipo || '').toLowerCase();
-            var isContradicao = (tipoLower === 'contradição' || tipoLower === 'contradicao');
-            if (isContradicao) {
-              bVal = '(Própria Regra)';
-            }
 
-            // Dedup por (tipo + par A/B canônico)
-            var k = pairKey(keyTipo, aVal, bVal);
+            var tipoLower = String(tipo || '').toLowerCase();
+            var isContradicao = (tipoLower === 'contradição' || tipoLower === 'contradicao');
+            if (isContradicao) bVal = '(Própria Regra)';
+
+            var k = pairKey(tipo, aVal, bVal);
             if (seenPairs.has(k)) return;
             seenPairs.add(k);
 
-            // Contagem por tipo (já deduplicado)
-            countsByTipo[keyTipo] = (countsByTipo[keyTipo] || 0) + 1;
+            countsByTipo[tipo] = (countsByTipo[tipo] || 0) + 1;
 
             // Definição (tooltip padrão do tipo)
             var def = '';
-            try { def = getTipoTooltip(tipo) || ''; } catch {}
+            try { def = getTipoTooltip(tipo) || ''; } catch (e) {}
             def = String(def || '').replace(/<br\s*\/?>/gi, '\n').trim();
 
-            // Normaliza A/B para sempre sair "menor x maior" no relatório (evita contradição visual).
-            // EXCEÇÃO: Contradição é intrarregra (self) e não pode ser reordenada para não "inventar" Regra B.
+            // Normaliza A/B
             var normA = aVal, normB = bVal;
             if (!isContradicao) {
               var an = Number(aVal), bn = Number(bVal);
@@ -2648,7 +4816,7 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
             records.push({
               a: normA,
               b: normB,
-              tipo: keyTipo,
+              tipo: String(tipo),
               impacto: impacto,
               def: def,
               pq: pq,
@@ -2657,7 +4825,7 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
           });
         });
 
-        // Ordena só para ficar estável (A, depois B, depois Tipo)
+        // Ordena só para estabilidade
         records.sort(function (x, y) {
           var ax = Number(x.a), ay = Number(y.a);
           if (Number.isFinite(ax) && Number.isFinite(ay) && ax !== ay) return ax - ay;
@@ -2668,11 +4836,10 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
           return String(x.tipo).localeCompare(String(y.tipo));
         });
 
-        // Formata no layout "antigo" desejado
+        // Formata
         var lines = [];
         lines.push('Relatório de Colisões (ATP / eProc)');
         lines.push('Data/Hora: ' + (new Date()).toLocaleString());
-        // lines.push('URL: ' + location.href);
         lines.push('');
         lines.push('Total de conflitos listados: ' + String(records.length));
         lines.push('Resumo por tipo:');
@@ -2690,17 +4857,11 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
             lines.push('Regra A(' + r.a + ') x Regra B(' + r.b + ')');
           }
           lines.push('Tipo: ' + r.tipo);
-          if (r.def) {
-            lines.push('Definição: ' + r.def);
-          }
-          if (r.pq) {
-            lines.push('Colisão: ' + r.pq);
-          }
+          if (r.def) lines.push('Definição: ' + r.def);
+          if (r.pq) lines.push('Colisão: ' + r.pq);
           if (r.sugestoes && r.sugestoes.length) {
             lines.push('Sugestão:');
-            r.sugestoes.forEach(function (s) {
-              lines.push('- ' + s);
-            });
+            r.sugestoes.forEach(function (s) { lines.push('- ' + s); });
           }
         });
 
@@ -2726,16 +4887,150 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
       }
     });
 
-    // Insere depois do label
+    // =========================
+    // Botão 2: Extrato de Fluxos (TXT)
+    // =========================
+    const btnFluxos = document.createElement('button');
+    btnFluxos.type = 'button';
+    btnFluxos.className = 'infraButton';
+    btnFluxos.id = 'btnExtratoFluxosATP';
+    btnFluxos.textContent = 'Extrato de Fluxos';
+    btnFluxos.style.marginLeft = '8px';
+
+// =========================
+// Botão 2b: Vista Agrupada por Fluxo (Opção B — teste)
+// =========================
+const btnFluxosGroup = document.createElement('button');
+btnFluxosGroup.type = 'button';
+btnFluxosGroup.className = 'infraButton';
+btnFluxosGroup.id = 'btnAgruparFluxosATP';
+btnFluxosGroup.textContent = 'Agrupar por Fluxo (teste)';
+btnFluxosGroup.style.marginLeft = '8px';
+
+
+    btnFluxos.addEventListener('mouseenter', () => { btnFluxos.style.background = '#e5e7eb'; });
+    btnFluxos.addEventListener('mouseleave', () => { btnFluxos.style.background = '#f3f4f6'; });
+
+    btnFluxos.addEventListener('click', function () {
+      try {
+        var table = tableRef || findTable();
+        if (!table) return;
+
+        try { ensureColumns(table); } catch (e) {}
+        var cols = null;
+        try { cols = mapColumns(table); } catch (e) { cols = null; }
+        if (!cols) cols = {};
+
+        const rules = parseRules(table, cols);
+        const txt = atpBuildFluxosText(rules);
+
+        var blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'extrato_fluxos_ATP.txt';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(function(){ URL.revokeObjectURL(url); try{a.remove();}catch(e){} }, 0);
+      } catch (e) {
+        console.warn(LOG_PREFIX, 'Falha ao gerar Extrato de Fluxos', e);
+      }
+    });
+
+    // =========================
+
+btnFluxosGroup.addEventListener('click', function () {
+  try {
+    var table = tableRef || findTable();
+    if (!table) return;
+
+    try { ensureColumns(table); } catch (e) {}
+    var cols = null;
+    try { cols = mapColumns(table); } catch (e) { cols = null; }
+    if (!cols) cols = {};
+
+    const rules = parseRules(table, cols);
+    atpToggleGroupedView(table, rules);
+  } catch (e) {
+    console.warn(LOG_PREFIX, 'Falha ao abrir vista agrupada (Opção B)', e);
+  }
+});
+
+// Botão 3: Exportar BPMN (Grid)
+    // =========================
+    const btnBPMNGrid = document.createElement('button');
+    btnBPMNGrid.type = 'button';
+    btnBPMNGrid.className = 'infraButton';
+    btnBPMNGrid.id = 'btnExtratoFluxosBPMNGrid_ATP';
+    btnBPMNGrid.textContent = 'Exportar BPMN (Grid)';
+    btnBPMNGrid.style.marginLeft = '8px';
+
+    btnBPMNGrid.addEventListener('mouseenter', () => { btnBPMNGrid.style.background = '#e5e7eb'; });
+    btnBPMNGrid.addEventListener('mouseleave', () => { btnBPMNGrid.style.background = '#f3f4f6'; });
+
+    btnBPMNGrid.addEventListener('click', function () {
+      try {
+        var table = tableRef || findTable();
+        if (!table) return;
+
+        try { ensureColumns(table); } catch (e) {}
+        var cols = null;
+        try { cols = mapColumns(table); } catch (e) { cols = null; }
+        if (!cols) cols = {};
+
+        const rules = parseRules(table, cols);
+
+        // Gera 1 BPMN por fluxo e compacta em ZIP (como já fazíamos antes)
+        atpEnsureJSZip().then(function (JSZip) {
+          try {
+            const files = atpBuildFluxosBPMN(rules, { layout: 'grid', splitFiles: true });
+            if (!files || !files.length) {
+              console.warn(LOG_PREFIX, '[ATP][Fluxos/BPMN] ZIP vazio: nenhum BPMN foi gerado.');
+              return;
+            }
+
+            var zip = new JSZip();
+            files.forEach(function (f) {
+              zip.file(f.filename, f.xml);
+            });
+
+            zip.generateAsync({ type: 'blob' }).then(function (blob) {
+              var url = URL.createObjectURL(blob);
+              var a = document.createElement('a');
+              a.href = url;
+              a.download = 'extrato_fluxos_ATP_grid.zip';
+              document.body.appendChild(a);
+              a.click();
+              setTimeout(function(){ URL.revokeObjectURL(url); try{a.remove();}catch(e){} }, 0);
+            }).catch(function (e) {
+              console.warn(LOG_PREFIX, '[ATP][Fluxos/BPMN] Falha ao gerar ZIP', e);
+            });
+          } catch (e) {
+            console.warn(LOG_PREFIX, '[ATP][Fluxos/BPMN] Falha ao montar BPMNs', e);
+          }
+        }).catch(function (e) {
+          console.warn(LOG_PREFIX, '[ATP][Fluxos/BPMN] Não foi possível carregar JSZip', e);
+        });
+      } catch (e) {
+        console.warn(LOG_PREFIX, 'Falha ao exportar BPMN (Grid)', e);
+      }
+    });
+
+    // Inserção no host
     if (afterLabelEl && afterLabelEl.parentNode === host) {
-      host.insertBefore(btn, afterLabelEl.nextSibling);
+      const anchor = afterLabelEl.nextSibling;
+      host.insertBefore(btnFluxos, anchor);
+      host.insertBefore(btnFluxosGroup, anchor);
+      host.insertBefore(btnBPMNGrid, anchor);
+      host.insertBefore(btn, btnFluxos); // mantém ordem: Relatório -> Fluxos -> BPMN
     } else {
       host.appendChild(btn);
+      host.appendChild(btnFluxos);
+      host.appendChild(btnFluxosGroup);
+      host.appendChild(btnBPMNGrid);
     }
-  } catch {}
+  } catch (e) {}
 }
-
-
 
 
 function addOnlyConflictsCheckbox(table, onToggle) { // Adiciona checkbox no bloco de filtros + botão de relatório.
@@ -2962,4 +5257,6 @@ function waitTable(timeoutMs = 120000) { // Espera a tabela aparecer (SPA/AJAX) 
   }
 
   init(); // Executa init.
-})(); // Fim do IIFE.
+}
+
+)(); // Fim do IIFE.
