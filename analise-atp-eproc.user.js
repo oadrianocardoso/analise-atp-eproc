@@ -4894,7 +4894,7 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
     btnFluxos.type = 'button';
     btnFluxos.className = 'infraButton';
     btnFluxos.id = 'btnExtratoFluxosATP';
-    btnFluxos.textContent = 'Extrato de Fluxos';
+    btnFluxos.textContent = 'Gerar Extrato de Fluxos';
     btnFluxos.style.marginLeft = '8px';
 
 // =========================
@@ -4904,7 +4904,7 @@ const btnFluxosGroup = document.createElement('button');
 btnFluxosGroup.type = 'button';
 btnFluxosGroup.className = 'infraButton';
 btnFluxosGroup.id = 'btnAgruparFluxosATP';
-btnFluxosGroup.textContent = 'Agrupar por Fluxo (teste)';
+btnFluxosGroup.textContent = 'Agrupar por Fluxo';
 btnFluxosGroup.style.marginLeft = '8px';
 
 
@@ -4962,7 +4962,7 @@ btnFluxosGroup.addEventListener('click', function () {
     btnBPMNGrid.type = 'button';
     btnBPMNGrid.className = 'infraButton';
     btnBPMNGrid.id = 'btnExtratoFluxosBPMNGrid_ATP';
-    btnBPMNGrid.textContent = 'Exportar BPMN (Grid)';
+    btnBPMNGrid.textContent = 'Exportar BPMN para Bizagi';
     btnBPMNGrid.style.marginLeft = '8px';
 
     btnBPMNGrid.addEventListener('mouseenter', () => { btnBPMNGrid.style.background = '#e5e7eb'; });
