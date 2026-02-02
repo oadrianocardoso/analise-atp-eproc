@@ -1,8 +1,7 @@
 // ==UserScript==
-// @name         Análise de ATP eProc (Loader LOCAL Modular)
-// @namespace    https://tjsp.eproc/automatizacoes
-// @version      9.0.28-modular-local
-// @description  Loader modular local do Análise de ATP eProc
+// @name         Análise de ATP eProc
+// @version      10.1
+// @description  Análise de conflitos de ATP (Colisão, Sobreposição, Perda de Objeto e Looping)
 // @author       ADRIANO AUGUSTO CARDOSO E SANTOS
 // @run-at       document-start
 // @noframes
