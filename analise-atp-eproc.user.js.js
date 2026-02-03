@@ -8,6 +8,10 @@
 // @match        https://eproc1g.tjsp.jus.br/eproc/*
 // @match        https://eproc-1g-sp-hml.tjsp.jus.br/*
 // @grant        none
+// @downloadURL  https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/analise-atp-eproc.user.js.js
+// @updateURL    https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/analise-atp-eproc.user.js.js
+// @homepageURL  https://github.com/oadrianocardoso/analise-atp-eproc/
+// @supportURL   https://github.com/oadrianocardoso/analise-atp-eproc/
 
 // @require      file:///C:/Users/Adriano/Downloads/ATP_MODULAR/utils.js
 // @require      file:///C:/Users/Adriano/Downloads/ATP_MODULAR/02_dom_and_style.js
