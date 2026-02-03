@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Análise de ATP eProc
-// @version      10.1
+// @version      10.2
 // @description  Análise de conflitos de ATP (Colisão, Sobreposição, Perda de Objeto e Looping)
 // @author       ADRIANO AUGUSTO CARDOSO E SANTOS
 // @run-at       document-start
