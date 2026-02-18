@@ -379,12 +379,15 @@ if (typeof ATP_CONFIG === 'undefined' || ATP_CONFIG?.analisarPerdaObjetoCondicio
                   : 'Regra anterior é mais ampla em "Outros Critérios"';
                 const pEarlier = prioLabel(earlier);
                 const pLater = prioLabel(later);
+                const sugPOC =
+                  `Sugestão: Ajustar a regra ${earlier.num} para não remover "${x}" neste cenário, ` +
+                  `ou definir a prioridade da regra ${later.num} (${pLater}) para executar antes da regra ${earlier.num} (${pEarlier}).`;
 
                 upsert(later.num, earlier.num, 'Perda de Objeto Condicional', 'Alto',
                   `Mesmo Tipo de Controle / Critério; ${detalheOutros}. ` +
                   `Regra ${earlier.num} (prioridade ${pEarlier}) executa antes da regra ${later.num} (prioridade ${pLater}) ` +
                   `e remove "${x}" do Localizador REMOVER, enquanto a regra ${later.num} exige "${x}" E "${y}" (AND). ` +
-                  `Isso pode impedir o disparo da regra ${later.num} em parte dos casos.`);
+                  `Isso pode impedir o disparo da regra ${later.num} em parte dos casos. ` + sugPOC);
 
                 registeredPOC = true;
                 break;
