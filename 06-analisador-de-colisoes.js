@@ -175,6 +175,18 @@
       }
       return out;
     };
+    const removerTemAndNoMesmoRamo = (rule) => {
+      const clauses = Array.isArray(rule?.localizadorRemover?.clauses) ? rule.localizadorRemover.clauses : [];
+      for (const clause of clauses) {
+        if (!(clause instanceof Set)) continue;
+        const terms = Array.from(clause).filter(t => {
+          const tt = clean(t);
+          return tt && tt !== '[*]' && tt !== 'E' && tt !== 'OU';
+        });
+        if (terms.length >= 2) return true;
+      }
+      return false;
+    };
 
     const hasIntersection = (aSet, bSet) => {
       if (!aSet || !bSet || !aSet.size || !bSet.size) return false;
@@ -335,6 +347,8 @@ if (typeof ATP_CONFIG === 'undefined' || ATP_CONFIG?.analisarPerdaObjetoCondicio
 
             const behPOC = normMsg(exprCanon(earlier.comportamentoRemover, ''));
             if (behPOC !== MSG_PERDA_OBJETO) return;
+            // Para POC, a regra anterior só pode ser localizador simples ou ramos por OU.
+            if (removerTemAndNoMesmoRamo(earlier)) return;
 
             const earlierRem = exprTermsUnion(earlier.localizadorRemover);
             const laterRem = exprTermsUnion(later.localizadorRemover);
