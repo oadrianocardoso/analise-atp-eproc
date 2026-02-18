@@ -96,6 +96,24 @@
 
     const prioEq = (a, b) => prioKey(a) === prioKey(b);
     const prioNum = (r) => (Number.isFinite(r?.prioridade?.num) ? r.prioridade.num : null);
+    const prioIsTextoPrioridade = (r) => {
+      const txt = rmAcc(clean(r?.prioridade?.text || r?.prioridade?.raw || '')).toLowerCase();
+      return txt === 'prioridade';
+    };
+    const prioInferiorParaPOC = (a, b) => {
+      const aTxt = prioIsTextoPrioridade(a);
+      const bTxt = prioIsTextoPrioridade(b);
+
+      // Regra de negócio: 1..20 sempre é inferior a "Prioridade" (texto).
+      if (!aTxt && bTxt) return true;
+      if (aTxt && !bTxt) return false;
+
+      const na = prioNum(a);
+      const nb = prioNum(b);
+      if (na != null && nb != null) return na > nb;
+
+      return false;
+    };
     const prioLabel = (r) => {
       const n = prioNum(r);
       if (n != null) return `${n}ª`;
@@ -307,7 +325,7 @@ if (typeof ATP_CONFIG === 'undefined' || ATP_CONFIG?.analisarPerdaObjetoCondicio
           const oaPOC = (paPOC == null) ? Number.POSITIVE_INFINITY : paPOC;
           const obPOC = (pbPOC == null) ? Number.POSITIVE_INFINITY : pbPOC;
 
-          if (!(Number.isFinite(oaPOC) && Number.isFinite(obPOC) && oaPOC > obPOC)) {
+          if (prioInferiorParaPOC(A, B)) {
             const tA_POC = exprTermsUnion(A.tipoControleCriterio);
             const tB_POC = exprTermsUnion(B.tipoControleCriterio);
 
