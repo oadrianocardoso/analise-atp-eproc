@@ -323,56 +323,65 @@
 if (typeof ATP_CONFIG === 'undefined' || ATP_CONFIG?.analisarPerdaObjetoCondicional !== false) {
         try {
 
-          if (prioExecutaAntesPOC(A, B) && tipoEq && hasIntersection(Arem, Brem)) {
-            const behPOC = normMsg(exprCanon(A.comportamentoRemover, ''));
-            if (behPOC !== MSG_PERDA_OBJETO) continue;
+          const evalPerdaObjetoCondicional = (earlier, later) => {
+            if (!prioExecutaAntesPOC(earlier, later)) return;
 
-            if (outrosPossiblyOverlap(A, B)) {
+            const tipoEqPOC = (exprCanon(earlier.tipoControleCriterio, '') === exprCanon(later.tipoControleCriterio, ''));
+            if (!tipoEqPOC) return;
 
-              const clausesA_POC = Array.isArray(A.localizadorRemover?.clauses) ? A.localizadorRemover.clauses : [];
-              const aHasAndInRemover = clausesA_POC.some(cl => {
-                if (!(cl instanceof Set)) return false;
-                const meaningful = Array.from(cl).filter(t => {
-                  const tt = clean(t);
-                  return tt && tt !== '[*]' && tt !== 'E' && tt !== 'OU';
-                });
-                return meaningful.length >= 2;
-              });
-              if (aHasAndInRemover) continue;
+            const relEL = relationOutros(earlier, later);
+            const earlierCobreLater = (relEL === 'identicos' || relEL === 'A_mais_ampla');
+            if (!earlierCobreLater) return;
 
-              const clausesB_POC = Array.isArray(B.localizadorRemover?.clauses) ? B.localizadorRemover.clauses : [];
-              let registeredPOC = false;
+            const behPOC = normMsg(exprCanon(earlier.comportamentoRemover, ''));
+            if (behPOC !== MSG_PERDA_OBJETO) return;
 
-              for (const clause of clausesB_POC) {
-                if (registeredPOC) break;
-                if (!(clause instanceof Set)) continue;
+            const earlierRem = exprTermsUnion(earlier.localizadorRemover);
+            const laterRem = exprTermsUnion(later.localizadorRemover);
+            if (!hasIntersection(earlierRem, laterRem)) return;
 
-                const terms = Array.from(clause)
-                  .map(clean)
-                  .filter(x => x && x !== '[*]' && x !== 'E' && x !== 'OU');
+            const clausesLater = Array.isArray(later.localizadorRemover?.clauses) ? later.localizadorRemover.clauses : [];
+            let registeredPOC = false;
 
-                if (terms.length < 2) continue;
+            for (const clause of clausesLater) {
+              if (registeredPOC) break;
+              if (!(clause instanceof Set)) continue;
 
-                for (const x of terms) {
-                  if (!Arem.has(x)) continue;
+              const terms = Array.from(clause)
+                .map(clean)
+                .filter(x => x && x !== '[*]' && x !== 'E' && x !== 'OU');
 
-                  const y = terms.find(t => t !== x) || null;
-                  if (!y) continue;
+              // Perda condicional: regra posterior depende de combinação AND (X E Y ...).
+              if (terms.length < 2) continue;
 
-                  const pA = prioLabel(A);
-                  const pB = prioLabel(B);
-                  upsert(B.num, A.num, 'Perda de Objeto Condicional', 'Alto',
-                    `Há interseção no Localizador REMOVER e mesmo Tipo de Controle / Critério. ` +
-                    `Regra ${A.num} (prioridade ${pA}) executa antes da regra ${B.num} (prioridade ${pB}) e remove "${x}", ` +
-                    `enquanto a regra ${B.num} exige "${x}" E "${y}" ao mesmo tempo (AND) no Localizador REMOVER. ` +
-                    `Isso pode impedir o disparo da regra ${B.num} em parte dos casos.`);
+              for (const x of terms) {
+                if (!earlierRem.has(x)) continue;
 
-                  registeredPOC = true;
-                  break;
-                }
+                const y = terms.find(t => t !== x) || null;
+                if (!y) continue;
+
+                const detalheOutros = (relEL === 'identicos')
+                  ? 'Outros idênticos'
+                  : 'Regra anterior é mais ampla em "Outros Critérios"';
+                const pEarlier = prioLabel(earlier);
+                const pLater = prioLabel(later);
+
+                upsert(later.num, earlier.num, 'Perda de Objeto Condicional', 'Alto',
+                  `Mesmo Tipo de Controle / Critério; ${detalheOutros}. ` +
+                  `Regra ${earlier.num} (prioridade ${pEarlier}) executa antes da regra ${later.num} (prioridade ${pLater}) ` +
+                  `e remove "${x}" do Localizador REMOVER, enquanto a regra ${later.num} exige "${x}" E "${y}" (AND). ` +
+                  `Isso pode impedir o disparo da regra ${later.num} em parte dos casos.`);
+
+                registeredPOC = true;
+                break;
               }
             }
-          }
+          };
+
+          const aAntes = prioExecutaAntesPOC(A, B);
+          const bAntes = prioExecutaAntesPOC(B, A);
+          if (aAntes) evalPerdaObjetoCondicional(A, B);
+          else if (bAntes) evalPerdaObjetoCondicional(B, A);
         } catch (e) {}
         }
 
