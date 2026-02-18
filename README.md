@@ -17,7 +17,7 @@ Quando você abre a tela **Automatização de Localizadores** no eProc, o script
 
 ---
 
-## ⚠️ O que são “conflitos”?
+## ⚠️ O que são “Conflitos”?
 
 Conflitos são situações em que regras podem se atrapalhar, por exemplo:
 
@@ -29,12 +29,31 @@ Conflitos são situações em que regras podem se atrapalhar, por exemplo:
 
 ---
 
-## 🖥️ Exemplo de alerta de conflitos
+## 🖥️ Exemplo de Alerta de Conflitos
 
 <img width="1228" height="813" alt="image" src="https://github.com/user-attachments/assets/1b188ec4-3882-4fa9-aec2-a699b8f104c4"  />
 *Exemplo da coluna “Conflitos” mostrando conflitos detectados entre as regras.*
 
 ---
+
+## 🖥️ Relatório de Colisões
+
+Gera um relatório técnico em .txt com todas as colisões identificadas entre as regras de ATP, pronto para auditoria e revisão.
+
+* Consolida os conflitos detectados na análise (ex.: Colisão Total, Colisão Parcial, Sobreposição, Perda de Objeto, Perda de Objeto Condicional, Contradição, Quebra de Fluxo e Looping Potencial).
+* Exibe resumo por tipo de colisão e total de ocorrências.
+* Lista cada caso com:
+* regra A x regra B (ou própria regra, quando aplicável),
+* tipo da colisão,
+* motivo técnico (Por quê),
+* sugestão de correção (Sugestão).
+* Padroniza a descrição para facilitar triagem, validação com equipe de negócio e priorização de ajustes.
+* Inclui mini-guia de referência no final para interpretação rápida dos tipos de conflito.
+
+<img width="1045" height="494" alt="image" src="https://github.com/user-attachments/assets/11874819-6ea4-4a11-a591-f6434cf1dbbc" />
+
+---
+
 ## 🖥️ Visualizar Fluxo BPMN
 
 Abre um visualizador interativo do fluxo da regra selecionada, convertido para BPMN, sem sair da tela do eProc.
@@ -102,9 +121,10 @@ https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmp
 ### 3️⃣ Usar no dia a dia
 
 1. Entre no eProc
-2. Abra **Automatização de Localizadores**
+2. Abra a tela **Automatizar Tramitação Processual**
 3. Aguarde alguns segundos
-4. Os conflitos e botões do script aparecerão na tela
+4. Os botões do script aparecerão na tela
+5. <img width="895" height="85" alt="image" src="https://github.com/user-attachments/assets/6d534fc7-48c2-488e-bb46-99be02a2075a" />
 
 ---
 
