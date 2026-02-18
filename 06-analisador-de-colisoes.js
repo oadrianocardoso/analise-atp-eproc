@@ -422,74 +422,76 @@ if (typeof ATP_CONFIG === 'undefined' || ATP_CONFIG?.analisarPerdaObjetoCondicio
       } catch (e) {}
     }
 
-    for (const r of (rules || [])) {
-      try {
-        const acoesAll = (r?.localizadorIncluirAcao && Array.isArray(r.localizadorIncluirAcao.acoes))
-          ? r.localizadorIncluirAcao.acoes : [];
-        if (!acoesAll.length) continue;
+    if (typeof ATP_CONFIG === 'undefined' || ATP_CONFIG?.analisarQuebraFluxo !== false) {
+      for (const r of (rules || [])) {
+        try {
+          const acoesAll = (r?.localizadorIncluirAcao && Array.isArray(r.localizadorIncluirAcao.acoes))
+            ? r.localizadorIncluirAcao.acoes : [];
+          if (!acoesAll.length) continue;
 
-        const normKey = (s) => clean(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+          const normKey = (s) => clean(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
 
-        const IGNORE_ACOES = new Set([
-          'ALTERAR SITUACAO AUTOMATICAMENTE',
-          'ALTERAR SITUACAO DA JUSTICA GRATUITA DA PARTE',
-          'INSERIR DADO COMPLEMENTAR NO PROCESSO',
-          'RETIFICAR AUTUACAO',
-          'VERIFICACAO DE DADOS PROCESSUAIS'
-        ]);
+          const IGNORE_ACOES = new Set([
+            'ALTERAR SITUACAO AUTOMATICAMENTE',
+            'ALTERAR SITUACAO DA JUSTICA GRATUITA DA PARTE',
+            'INSERIR DADO COMPLEMENTAR NO PROCESSO',
+            'RETIFICAR AUTUACAO',
+            'VERIFICACAO DE DADOS PROCESSUAIS'
+          ]);
 
-        const acoes = acoesAll.filter(a => {
-          const nome = normKey(a?.acao || '');
-          if (!nome) return false;
-          if (IGNORE_ACOES.has(nome)) return false;
+          const acoes = acoesAll.filter(a => {
+            const nome = normKey(a?.acao || '');
+            if (!nome) return false;
+            if (IGNORE_ACOES.has(nome)) return false;
 
-          if (nome === 'LANCAR EVENTO AUTOMATIZADO') {
-            const vars = Array.isArray(a?.vars) ? a.vars : [];
-            const temConclusos = vars.some(v => normKey(v?.valor || '').includes('CONCLUSOS'));
-            if (temConclusos) return false;
-          }
-          return true;
-        });
-
-        if (!acoes.length) continue;
-
-        const remSet = exprTermsUnion(r.localizadorRemover);
-        const incSet = exprTermsUnion(r.localizadorIncluirAcao);
-
-        const remClauses = Array.isArray(r?.localizadorRemover?.clauses) ? r.localizadorRemover.clauses : [];
-        const remIsOr = remClauses.length > 1;
-
-        const incHas = incSet.size > 0;
-
-        const matchAnyRemBranch = (() => {
-          if (!remIsOr || !incHas) return false;
-
-          for (const clause of remClauses) {
-            if (!(clause instanceof Set)) continue;
-            const branch = new Set();
-            for (const t of clause) {
-              const tt = clean(t);
-              if (!tt) continue;
-              if (tt === '[*]' || tt === 'E' || tt === 'OU') continue;
-              branch.add(tt);
+            if (nome === 'LANCAR EVENTO AUTOMATIZADO') {
+              const vars = Array.isArray(a?.vars) ? a.vars : [];
+              const temConclusos = vars.some(v => normKey(v?.valor || '').includes('CONCLUSOS'));
+              if (temConclusos) return false;
             }
-            if (branch.size && setsEqual(branch, incSet)) return true;
+            return true;
+          });
+
+          if (!acoes.length) continue;
+
+          const remSet = exprTermsUnion(r.localizadorRemover);
+          const incSet = exprTermsUnion(r.localizadorIncluirAcao);
+
+          const remClauses = Array.isArray(r?.localizadorRemover?.clauses) ? r.localizadorRemover.clauses : [];
+          const remIsOr = remClauses.length > 1;
+
+          const incHas = incSet.size > 0;
+
+          const matchAnyRemBranch = (() => {
+            if (!remIsOr || !incHas) return false;
+
+            for (const clause of remClauses) {
+              if (!(clause instanceof Set)) continue;
+              const branch = new Set();
+              for (const t of clause) {
+                const tt = clean(t);
+                if (!tt) continue;
+                if (tt === '[*]' || tt === 'E' || tt === 'OU') continue;
+                branch.add(tt);
+              }
+              if (branch.size && setsEqual(branch, incSet)) return true;
+            }
+            return false;
+          })();
+
+          if (incHas && (setsEqual(remSet, incSet) || matchAnyRemBranch)) {
+
+            const titulos = [...new Set(acoes.map(a => clean(a?.acao || '')).filter(Boolean))];
+            const resumoAcoes = titulos.length
+              ? (titulos.slice(0, 4).join(' | ') + (titulos.length > 4 ? ' | …' : ''))
+              : '(ação programada)';
+
+            const sug = 'Sugestão: Defina um Localizador INCLUIR diferente do Localizador REMOVER (próximo passo do fluxo) após executar a ação, evitando reexecução no ciclo seguinte.';
+            upsert(r.num, -1, 'Quebra de Fluxo', 'Alto',
+              `A regra executa Ação Programada (${resumoAcoes}), mas mantém exatamente os mesmos Localizadores (INCLUIR == REMOVER). Isso pode fazer a regra rodar novamente em novo ciclo e gerar erro/duplicidade.\n` + sug);
           }
-          return false;
-        })();
-
-        if (incHas && (setsEqual(remSet, incSet) || matchAnyRemBranch)) {
-
-          const titulos = [...new Set(acoes.map(a => clean(a?.acao || '')).filter(Boolean))];
-          const resumoAcoes = titulos.length
-            ? (titulos.slice(0, 4).join(' | ') + (titulos.length > 4 ? ' | …' : ''))
-            : '(ação programada)';
-
-          const sug = 'Sugestão: Defina um Localizador INCLUIR diferente do Localizador REMOVER (próximo passo do fluxo) após executar a ação, evitando reexecução no ciclo seguinte.';
-          upsert(r.num, -1, 'Quebra de Fluxo', 'Alto',
-            `A regra executa Ação Programada (${resumoAcoes}), mas mantém exatamente os mesmos Localizadores (INCLUIR == REMOVER). Isso pode fazer a regra rodar novamente em novo ciclo e gerar erro/duplicidade.\n` + sug);
-        }
-      } catch (e) {}
+        } catch (e) {}
+      }
     }
     return conflictsByRule;
   }

@@ -28,7 +28,8 @@ const impactoRank = {
 
 const ATP_CONFIG = {
   analisarLooping: false,
-  analisarPerdaObjetoCondicional: false,
+  analisarPerdaObjetoCondicional: true,
+  analisarQuebraFluxo: true,
 };
 
 try { console.log('[ATP][OK] config.js inicializado'); } catch (e) { }
