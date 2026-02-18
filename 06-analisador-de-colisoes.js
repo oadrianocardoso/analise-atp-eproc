@@ -100,17 +100,20 @@
       const txt = rmAcc(clean(r?.prioridade?.text || r?.prioridade?.raw || '')).toLowerCase();
       return txt === 'prioridade';
     };
-    const prioInferiorParaPOC = (a, b) => {
-      const aTxt = prioIsTextoPrioridade(a);
-      const bTxt = prioIsTextoPrioridade(b);
-
-      // Regra de negócio: 1..20 sempre é inferior a "Prioridade" (texto).
-      if (!aTxt && bTxt) return true;
-      if (aTxt && !bTxt) return false;
-
+    const prioExecutaAntesPOC = (a, b) => {
       const na = prioNum(a);
       const nb = prioNum(b);
-      if (na != null && nb != null) return na > nb;
+      if (na != null && nb != null) return na < nb;
+
+      // Regra de negócio: qualquer 1..20 executa antes de "Prioridade" (texto).
+      const aTxt = prioIsTextoPrioridade(a);
+      const bTxt = prioIsTextoPrioridade(b);
+      if (na != null && bTxt) return true;
+      if (aTxt && nb != null) return false;
+
+      // Mantém a semântica geral: prioridade numérica executa antes de não-numérica.
+      if (na != null && nb == null) return true;
+      if (na == null && nb != null) return false;
 
       return false;
     };
@@ -320,58 +323,52 @@
 if (typeof ATP_CONFIG === 'undefined' || ATP_CONFIG?.analisarPerdaObjetoCondicional !== false) {
         try {
 
-          const paPOC = prioNum(A);
-          const pbPOC = prioNum(B);
-          const oaPOC = (paPOC == null) ? Number.POSITIVE_INFINITY : paPOC;
-          const obPOC = (pbPOC == null) ? Number.POSITIVE_INFINITY : pbPOC;
+          if (prioExecutaAntesPOC(A, B) && tipoEq && hasIntersection(Arem, Brem)) {
+            const behPOC = normMsg(exprCanon(A.comportamentoRemover, ''));
+            if (behPOC !== MSG_PERDA_OBJETO) continue;
 
-          if (prioInferiorParaPOC(A, B)) {
-            const tA_POC = exprTermsUnion(A.tipoControleCriterio);
-            const tB_POC = exprTermsUnion(B.tipoControleCriterio);
+            if (outrosPossiblyOverlap(A, B)) {
 
-            if (hasIntersection(tA_POC, tB_POC)) {
-
-              if (outrosPossiblyOverlap(A, B)) {
-
-                const clausesA_POC = Array.isArray(A.localizadorRemover?.clauses) ? A.localizadorRemover.clauses : [];
-                const aHasAndInRemover = clausesA_POC.some(cl => {
-                  if (!(cl instanceof Set)) return false;
-                  const meaningful = Array.from(cl).filter(t => {
-                    const tt = clean(t);
-                    return tt && tt !== '[*]' && tt !== 'E' && tt !== 'OU';
-                  });
-                  return meaningful.length >= 2;
+              const clausesA_POC = Array.isArray(A.localizadorRemover?.clauses) ? A.localizadorRemover.clauses : [];
+              const aHasAndInRemover = clausesA_POC.some(cl => {
+                if (!(cl instanceof Set)) return false;
+                const meaningful = Array.from(cl).filter(t => {
+                  const tt = clean(t);
+                  return tt && tt !== '[*]' && tt !== 'E' && tt !== 'OU';
                 });
-                if (aHasAndInRemover) continue;
+                return meaningful.length >= 2;
+              });
+              if (aHasAndInRemover) continue;
 
-                const clausesB_POC = Array.isArray(B.localizadorRemover?.clauses) ? B.localizadorRemover.clauses : [];
-                let registeredPOC = false;
+              const clausesB_POC = Array.isArray(B.localizadorRemover?.clauses) ? B.localizadorRemover.clauses : [];
+              let registeredPOC = false;
 
-                for (const clause of clausesB_POC) {
-                  if (registeredPOC) break;
-                  if (!(clause instanceof Set)) continue;
+              for (const clause of clausesB_POC) {
+                if (registeredPOC) break;
+                if (!(clause instanceof Set)) continue;
 
-                  const terms = Array.from(clause)
-                    .map(clean)
-                    .filter(x => x && x !== '[*]' && x !== 'E' && x !== 'OU');
+                const terms = Array.from(clause)
+                  .map(clean)
+                  .filter(x => x && x !== '[*]' && x !== 'E' && x !== 'OU');
 
-                  if (terms.length < 2) continue;
+                if (terms.length < 2) continue;
 
-                  for (const x of terms) {
-                    if (!Arem.has(x)) continue;
+                for (const x of terms) {
+                  if (!Arem.has(x)) continue;
 
-                    const y = terms.find(t => t !== x) || null;
-                    if (!y) continue;
+                  const y = terms.find(t => t !== x) || null;
+                  if (!y) continue;
 
-                    const impactoPOC = (oaPOC < obPOC) ? 'Alto' : 'Médio';
+                  const pA = prioLabel(A);
+                  const pB = prioLabel(B);
+                  upsert(B.num, A.num, 'Perda de Objeto Condicional', 'Alto',
+                    `Há interseção no Localizador REMOVER e mesmo Tipo de Controle / Critério. ` +
+                    `Regra ${A.num} (prioridade ${pA}) executa antes da regra ${B.num} (prioridade ${pB}) e remove "${x}", ` +
+                    `enquanto a regra ${B.num} exige "${x}" E "${y}" ao mesmo tempo (AND) no Localizador REMOVER. ` +
+                    `Isso pode impedir o disparo da regra ${B.num} em parte dos casos.`);
 
-                    upsert(B.num, A.num, 'Perda de Objeto Condicional', impactoPOC,
-                      `A regra ${A.num} remove "${x}" e a regra ${B.num} exige "${x}" E "${y}" ao mesmo tempo (AND) no Localizador REMOVER. ` +
-                      `Como há interseção possível entre os critérios das regras, a regra ${A.num} pode consumir "${x}" antes, impedindo o disparo da regra ${B.num} (ao menos em parte dos casos).`);
-
-                    registeredPOC = true;
-                    break;
-                  }
+                  registeredPOC = true;
+                  break;
                 }
               }
             }
