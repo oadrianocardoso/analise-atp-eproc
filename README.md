@@ -35,6 +35,32 @@ Conflitos são situações em que regras podem se atrapalhar, por exemplo:
 *Exemplo da coluna “Conflitos” mostrando conflitos detectados entre as regras.*
 
 ---
+## 🖥️ Visualizar Fluxo BPMN
+
+Abre um visualizador interativo do fluxo da regra selecionada, convertido para BPMN, sem sair da tela do eProc.
+* Mostra o fluxo em diagrama (eventos, decisões e tarefas) para leitura rápida da lógica da regra.
+* Destaca visualmente a regra/passo atual no mapa, facilitando auditoria e depuração.
+* Permite comparar a sequência de execução entre regras e identificar gargalos, sobreposições e quebras de fluxo.
+* Usa os dados já extraídos pelo script (REMOVER, INCLUIR/Ação, Tipo de Controle e Outros Critérios) para montar o desenho do processo.
+
+<img width="1795" height="848" alt="fluxo_correto" src="https://github.com/user-attachments/assets/10058f0c-3043-430f-80b9-d618c3ab7aaf" />
+
+---
+
+## 🔄 Exportar fluxo em BPMN (para Bizagi)
+
+O script também pode exportar um **arquivo BPMN** para abrir no Bizagi (ou outra ferramenta), para visualizar o fluxo como diagrama.
+
+Útil para:
+
+* enxergar o processo “andando” entre localizadores
+* apresentar o fluxo para equipe/gestão
+* identificar pontos onde o fluxo quebra ou volta
+
+<img width="2188" height="812" alt="image" src="https://github.com/user-attachments/assets/0ae9bbe5-2570-4aec-8025-9d697aeab3f4" />
+*Exemplo do BPMN aberto no Bizagi.*
+
+---
 
 ## 🧾 Exportar “Extrato do Fluxo” em TXT
 
@@ -54,21 +80,6 @@ O TXT normalmente inclui:
 
 <img width="947" height="644" alt="image" src="https://github.com/user-attachments/assets/6e222bcf-bb2f-4003-9038-cde01470944d" />
 *Exemplo do arquivo TXT exportado (abrindo no Bloco de Notas).*
-
----
-
-## 🔄 Exportar fluxo em BPMN (para Bizagi)
-
-O script também pode exportar um **arquivo BPMN** para abrir no Bizagi (ou outra ferramenta), para visualizar o fluxo como diagrama.
-
-Útil para:
-
-* enxergar o processo “andando” entre localizadores
-* apresentar o fluxo para equipe/gestão
-* identificar pontos onde o fluxo quebra ou volta
-
-<img width="2188" height="812" alt="image" src="https://github.com/user-attachments/assets/0ae9bbe5-2570-4aec-8025-9d697aeab3f4" />
-*Exemplo do BPMN aberto no Bizagi.*
 
 ---
 
