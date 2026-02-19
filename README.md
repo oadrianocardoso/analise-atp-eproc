@@ -126,6 +126,11 @@ https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmp
 4. Os botões do script aparecerão na tela
 5. <img width="895" height="85" alt="image" src="https://github.com/user-attachments/assets/6d534fc7-48c2-488e-bb46-99be02a2075a" />
 
+Atenção: o script avalia apenas as regras da unidade logada pelo usuário, não sendo possível analisar regras de outras unidades porque o sistema não informa a prioridade defenida. Desta forma, deve-se utilizar a troca de unidade, não sendo possível utilizar apenas alterar apenas o orgão:
+
+<img width="1029" height="174" alt="image" src="https://github.com/user-attachments/assets/f0a80859-9fe5-4800-8bc1-ee51446f3908" />
+
+
 ---
 
 ## 🔒 É seguro?
