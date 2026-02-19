@@ -1,6 +1,7 @@
 ﻿try { console.log('[ATP][LOAD] 06-analisador-de-colisoes.js carregado com sucesso'); } catch (e) {}
 
   function parseRules(table, cols) {
+    cols = cols || {};
     const list = [];
     const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector("tbody")].filter(Boolean);
     const rows = tbodys.flatMap(tb => Array.from(tb.rows));

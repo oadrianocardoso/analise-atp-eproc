@@ -45,13 +45,17 @@ function extrairLocalizadorIncluirAcao(tdIncluir) {
 
       const divs = Array.from(root.querySelectorAll('div'));
 
+      const hasBold = (st) => /font-weight\s*:\s*(bold|[6-9]00)\b/.test(st);
+      const hasBlue = (st) => /color\s*:\s*(blue|rgb\s*\(\s*0\s*,\s*0\s*,\s*255\s*\)|#0000ff)\b/.test(st);
+      const hasBlack = (st) => /color\s*:\s*(black|rgb\s*\(\s*0\s*,\s*0\s*,\s*0\s*\)|#000)\b/.test(st);
+
       const isBlue = (d) => {
         const st = String(d.getAttribute('style') || '').toLowerCase();
-        return st.includes('color: blue') && st.includes('font-weight: bold');
+        return hasBlue(st) && hasBold(st);
       };
       const isBlackStage = (d) => {
         const st = String(d.getAttribute('style') || '').toLowerCase();
-        if (!(st.includes('color: black') && st.includes('font-weight: bold'))) return false;
+        if (!(hasBlack(st) && hasBold(st))) return false;
         const t = clean(d.textContent || '');
         return /^#\d+\s*-\s*/.test(t) || /^#\d+\b/.test(t);
       };
@@ -236,9 +240,15 @@ function extrairComportamentoRemover(tdRemover) {
   if (idx === -1) return { canonical: '', clauses: [] };
 
   const slice = om.slice(idx);
-  const m = slice.match(/infraTooltipMostrar\(\s*'([^']*)'/);
-  const msg = m ? (m[1] || '') : '';
-  const canonical = clean(msg);
+  let canonical = '';
+  try {
+    if (typeof parseTooltipMsg === 'function') canonical = clean(parseTooltipMsg(om));
+  } catch (_) { }
+  if (!canonical) {
+    const m = slice.match(/infraTooltipMostrar\(\s*(?:'([^']*)'|"([^"]*)")/);
+    const msg = m ? (m[1] || m[2] || '') : '';
+    canonical = clean(msg);
+  }
 
   if (!canonical) return { canonical: '', clauses: [] };
   return { canonical, clauses: [new Set([canonical])] }; // Cláusula única (comportamento não tem E/OU)
@@ -272,7 +282,7 @@ function extrairTipoControleCriterio(td) { // Extrai pares "Por X: criterio" e d
   const body = clean(full.slice(slash + 1));
 
   // Termos separados por OU (sempre OR)
-  const rawTerms = body.split(/\s+OU\s+/).map(s => clean(s)).filter(Boolean);
+  const rawTerms = body.split(/\s+OU\s+/i).map(s => clean(s)).filter(Boolean);
 
   // Função: normaliza controle com base em um rótulo (EVENTO/PETIÇÃO/DOCUMENTO...) se existir
   const mapControleByLabel = (label) => { // Executa map controle by label.
@@ -318,10 +328,12 @@ function extrairTipoControleCriterio(td) { // Extrai pares "Por X: criterio" e d
       }
     }
 
-    // Restante sem rótulo: distribui por ordem 1:1
-    const n = Math.min(byOrder.length, controles.length);
-    for (let i = 0; i < n; i++) {
-      if (byOrder[i]) pares.push({ controle: controles[i], criterio: byOrder[i] });
+    // Restante sem rótulo: distribui por ordem; se houver excesso, mantém no último controle.
+    if (controles.length) {
+      for (let i = 0; i < byOrder.length; i++) {
+        const ctrl = controles[Math.min(i, controles.length - 1)];
+        if (byOrder[i]) pares.push({ controle: ctrl, criterio: byOrder[i] });
+      }
     }
   }
 
