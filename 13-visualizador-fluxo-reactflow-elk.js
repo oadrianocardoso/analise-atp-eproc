@@ -50,13 +50,12 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     }
   }
 
-  function atpEnsureReactFlowElkLoaded() {
-    if (window.React && window.ReactDOM && window.ReactFlow && window.ELK) {
+  function atpEnsureReactFlowLoaded() {
+    if (window.React && window.ReactDOM && window.ReactFlow) {
       return Promise.resolve({
         React: window.React,
         ReactDOM: window.ReactDOM,
-        ReactFlow: window.ReactFlow,
-        ELK: window.ELK
+        ReactFlow: window.ReactFlow
       });
     }
     if (ATP_RF_LIBS_PROMISE) return ATP_RF_LIBS_PROMISE;
@@ -66,16 +65,14 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       .then(() => atpLoadScriptOnce('https://unpkg.com/react@18/umd/react.production.min.js', 'react-18'))
       .then(() => atpLoadScriptOnce('https://unpkg.com/react-dom@18/umd/react-dom.production.min.js', 'react-dom-18'))
       .then(() => atpLoadScriptOnce('https://unpkg.com/reactflow@11.11.4/dist/umd/index.js', 'reactflow-11'))
-      .then(() => atpLoadScriptOnce('https://unpkg.com/elkjs@0.9.3/lib/elk.bundled.js', 'elk-093'))
       .then(() => {
-        if (!window.React || !window.ReactDOM || !window.ReactFlow || !window.ELK) {
-          throw new Error('Bibliotecas React Flow/ELK nao carregadas.');
+        if (!window.React || !window.ReactDOM || !window.ReactFlow) {
+          throw new Error('Bibliotecas React/ReactDOM/React Flow nao carregadas.');
         }
         return {
           React: window.React,
           ReactDOM: window.ReactDOM,
-          ReactFlow: window.ReactFlow,
-          ELK: window.ELK
+          ReactFlow: window.ReactFlow
         };
       });
 
@@ -212,7 +209,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     for (const local of orderedLocals) {
       nodes.push({
         id: local,
-        type: 'atpLocal',
+        type: 'atpNode',
         data: {
           label: atpShortText(local, 70),
           fullLabel: local,
@@ -234,7 +231,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         const decisionId = `dec_${++seq}`;
         nodes.push({
           id: decisionId,
-          type: 'atpDecision',
+          type: 'atpDecisao',
           data: { label: 'Decisao' },
           position: { x: 0, y: 0 },
           draggable: false
@@ -294,8 +291,11 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     }
 
     nodes.forEach((n) => {
-      if (n.type !== 'atpLocal') return;
+      if (n.type !== 'atpNode') return;
       n.data.isEnd = !hasOutgoing.has(n.id);
+      if (n.data.isStart) n.type = 'atpEntrada';
+      else if (n.data.isEnd) n.type = 'atpSaida';
+      else n.type = 'atpNode';
     });
 
     const fallbackStart = starts.find(k => orderedLocals.includes(k)) || orderedLocals[0] || null;
@@ -356,54 +356,91 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     return { steps, endReason };
   }
 
-  async function atpApplyElkLayout(nodes, edges, ELKClass) {
-    const elk = new ELKClass();
-    const dims = (n) => {
-      if (n.type === 'atpDecision') return { width: 140, height: 140 };
-      return { width: 320, height: 88 };
-    };
-
-    const graph = {
-      id: 'atp-root',
-      layoutOptions: {
-        'elk.algorithm': 'layered',
-        'elk.direction': 'RIGHT',
-        'elk.spacing.nodeNode': '90',
-        'elk.layered.spacing.nodeNodeBetweenLayers': '160',
-        'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
-        'elk.edgeRouting': 'ORTHOGONAL'
-      },
-      children: nodes.map((n) => {
-        const d = dims(n);
-        return { id: n.id, width: d.width, height: d.height };
-      }),
-      edges: edges.map((e) => ({
-        id: e.id,
-        sources: [e.source],
-        targets: [e.target]
-      }))
-    };
-
-    try {
-      const out = await elk.layout(graph);
-      const posMap = new Map();
-      for (const c of (out.children || [])) {
-        posMap.set(c.id, { x: Number(c.x) || 0, y: Number(c.y) || 0 });
-      }
-      return nodes.map((n) => {
-        const p = posMap.get(n.id) || { x: 0, y: 0 };
-        return { ...n, position: { x: p.x, y: p.y } };
-      });
-    } catch (e) {
-      try { console.warn(LOG, 'Falha no ELK layout, fallback linear:', e); } catch (_) {}
-      let y = 0;
-      return nodes.map((n, idx) => {
-        const isDecision = n.type === 'atpDecision';
-        const x = isDecision ? 400 : (idx * 250);
-        y += isDecision ? 60 : 110;
-        return { ...n, position: { x, y } };
-      });
+  function atpApplyHorizontalFlowLayout(nodes, edges) {
+    const nodeIds = nodes.map((n) => n.id);
+    const out = new Map();
+    const inc = new Map();
+    for (const id of nodeIds) {
+      out.set(id, []);
+      inc.set(id, []);
     }
+
+    for (const e of (edges || [])) {
+      if (!out.has(e.source)) out.set(e.source, []);
+      if (!inc.has(e.target)) inc.set(e.target, []);
+      out.get(e.source).push(e.target);
+      inc.get(e.target).push(e.source);
+    }
+
+    const indeg = new Map();
+    for (const id of nodeIds) indeg.set(id, (inc.get(id) || []).length);
+
+    const depth = new Map();
+    const queue = [];
+    for (const n of nodes) {
+      if ((indeg.get(n.id) || 0) === 0) {
+        depth.set(n.id, 0);
+        queue.push(n.id);
+      }
+    }
+
+    while (queue.length) {
+      const cur = queue.shift();
+      const d = depth.get(cur) || 0;
+      for (const nx of (out.get(cur) || [])) {
+        const old = depth.get(nx);
+        if (!Number.isFinite(old) || (d + 1) > old) depth.set(nx, d + 1);
+        indeg.set(nx, (indeg.get(nx) || 0) - 1);
+        if ((indeg.get(nx) || 0) === 0) queue.push(nx);
+      }
+    }
+
+    for (const n of nodes) {
+      if (depth.has(n.id)) continue;
+      let d = 0;
+      for (const p of (inc.get(n.id) || [])) {
+        if (depth.has(p)) d = Math.max(d, (depth.get(p) || 0) + 1);
+      }
+      depth.set(n.id, d);
+    }
+
+    const col = new Map();
+    for (const n of nodes) {
+      const d = depth.get(n.id) || 0;
+      if (!col.has(d)) col.set(d, []);
+      col.get(d).push(n);
+    }
+
+    const typeOrder = { atpEntrada: 1, atpDecisao: 2, atpNode: 3, atpSaida: 4 };
+    const sortedCols = Array.from(col.keys()).sort((a, b) => a - b);
+    const X_GAP = 360;
+    const Y_GAP = 170;
+    const X_PAD = 80;
+    const Y_PAD = 80;
+    const outNodes = [];
+
+    for (const d of sortedCols) {
+      const arr = col.get(d).slice().sort((a, b) => {
+        const oa = typeOrder[a.type] || 9;
+        const ob = typeOrder[b.type] || 9;
+        if (oa !== ob) return oa - ob;
+        const ta = String((a.data && a.data.fullLabel) || a.id || '');
+        const tb = String((b.data && b.data.fullLabel) || b.id || '');
+        return ta.localeCompare(tb, 'pt-BR');
+      });
+      for (let i = 0; i < arr.length; i += 1) {
+        const n = arr[i];
+        outNodes.push({
+          ...n,
+          position: {
+            x: X_PAD + (d * X_GAP),
+            y: Y_PAD + (i * Y_GAP)
+          }
+        });
+      }
+    }
+
+    return outNodes;
   }
 
   function atpBuildExecStateEdges(baseEdges, plan, stepIndex, running) {
@@ -463,7 +500,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       const classes = ['atp-rf-node'];
       if (visitedNodes.has(n.id)) classes.push('atp-rf-node-visited');
       if (n.id === cur) classes.push('atp-rf-node-current');
-      if (n.type === 'atpDecision') classes.push('atp-rf-node-decision-wrapper');
+      if (n.type === 'atpDecisao') classes.push('atp-rf-node-decision-wrapper');
       return {
         ...n,
         className: classes.join(' ')
@@ -489,9 +526,9 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     try { if (typeof atpCloseRuleMapModal === 'function') atpCloseRuleMapModal(); } catch (_) {}
     atpCloseFlowReactModal();
 
-    const libs = await atpEnsureReactFlowElkLoaded();
+    const libs = await atpEnsureReactFlowLoaded();
     const model = atpFlowModelFromRules(rules, flowIdx);
-    const layoutNodes = await atpApplyElkLayout(model.nodes, model.edges, libs.ELK);
+    const layoutNodes = atpApplyHorizontalFlowLayout(model.nodes, model.edges);
 
     const overlay = document.createElement('div');
     overlay.id = 'atpFlowReactModal';
@@ -505,7 +542,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
     const top = document.createElement('div');
     top.className = 'atp-map-top';
-    top.innerHTML = `<div><div class="atp-map-title">Visualizar Fluxo ${String(flowIdx + 1).padStart(2, '0')} (React Flow + ELK)</div><div class="atp-map-sub">Modo Execucao simula a primeira regra por prioridade em cada decisao.</div></div>`;
+    top.innerHTML = `<div><div class="atp-map-title">Visualizar Fluxo ${String(flowIdx + 1).padStart(2, '0')} (React Flow | Horizontal Flow)</div><div class="atp-map-sub">Modo Execucao simula a primeira regra por prioridade em cada decisao.</div></div>`;
 
     const actions = document.createElement('div');
     actions.className = 'atp-map-actions';
@@ -557,38 +594,49 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       animated: false
     }));
 
-    function ATPNodeLocal(props) {
+    function ATPNodeBox(props, kindLabel, cssKind) {
       const data = props && props.data ? props.data : {};
       const title = String(data.fullLabel || data.label || '');
-      const badges = [];
-      if (data.isStart) badges.push('INICIO');
-      if (data.isEnd) badges.push('FIM');
       const hStyle = { width: 8, height: 8, opacity: 0, border: 0 };
       return React.createElement(
         'div',
-        { className: 'atp-rf-local-node', title },
+        { className: `atp-rf-node-box atp-rf-kind-${cssKind}`, title },
         React.createElement(Handle, { type: 'target', position: Position.Left, isConnectable: false, style: hStyle }),
-        React.createElement('div', { className: 'atp-rf-local-head' }, badges.map((b, i) => React.createElement('span', { className: 'atp-rf-badge', key: `${b}_${i}` }, b))),
-        React.createElement('div', { className: 'atp-rf-local-title' }, String(data.label || 'Localizador')),
+        React.createElement('div', { className: 'atp-rf-node-kind' }, kindLabel),
+        React.createElement('div', { className: 'atp-rf-node-title' }, String(data.label || 'Localizador')),
         React.createElement(Handle, { type: 'source', position: Position.Right, isConnectable: false, style: hStyle })
       );
     }
 
-    function ATPNodeDecision() {
+    function ATPNodeEntrada(props) {
+      return ATPNodeBox(props, 'ENTRADA', 'entrada');
+    }
+
+    function ATPNodePadrao(props) {
+      return ATPNodeBox(props, 'NODE', 'node');
+    }
+
+    function ATPNodeSaida(props) {
+      return ATPNodeBox(props, 'SAIDA', 'saida');
+    }
+
+    function ATPNodeDecisao() {
       const hStyle = { width: 8, height: 8, opacity: 0, border: 0 };
       return React.createElement(
         'div',
         { className: 'atp-rf-decision-node' },
         React.createElement(Handle, { type: 'target', position: Position.Left, isConnectable: false, style: hStyle }),
         React.createElement('div', { className: 'atp-rf-decision-diamond' }),
-        React.createElement('div', { className: 'atp-rf-decision-label' }, 'Decisao'),
+        React.createElement('div', { className: 'atp-rf-decision-label' }, 'DECISAO'),
         React.createElement(Handle, { type: 'source', position: Position.Right, isConnectable: false, style: hStyle })
       );
     }
 
     const nodeTypes = {
-      atpLocal: ATPNodeLocal,
-      atpDecision: ATPNodeDecision
+      atpEntrada: ATPNodeEntrada,
+      atpNode: ATPNodePadrao,
+      atpSaida: ATPNodeSaida,
+      atpDecisao: ATPNodeDecisao
     };
 
     function ATPFlowApp() {
