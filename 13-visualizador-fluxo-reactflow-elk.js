@@ -453,6 +453,59 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       for (const c of (out.children || [])) {
         posMap.set(c.id, { x: Number(c.x) || 0, y: Number(c.y) || 0 });
       }
+      const inc = new Map();
+      const outg = new Map();
+      for (const n of nodes) {
+        inc.set(n.id, []);
+        outg.set(n.id, []);
+      }
+      for (const e of (edges || [])) {
+        if (outg.has(e.source)) outg.get(e.source).push(e.target);
+        if (inc.has(e.target)) inc.get(e.target).push(e.source);
+      }
+
+      const centerY = (id) => {
+        const p = posMap.get(id) || { x: 0, y: 0 };
+        const n = nodes.find((x) => x.id === id);
+        const d = dims(n || {});
+        return p.y + (d.height / 2);
+      };
+      const setCenterY = (id, cy) => {
+        const p = posMap.get(id);
+        if (!p) return;
+        const n = nodes.find((x) => x.id === id);
+        const d = dims(n || {});
+        p.y = cy - (d.height / 2);
+      };
+
+      // n:1 => o "1" (target) fica alinhado ao centro do conjunto de n.
+      for (const n of nodes) {
+        const incoming = inc.get(n.id) || [];
+        if (incoming.length <= 1) continue;
+        const ys = incoming.map((sid) => centerY(sid)).filter((v) => Number.isFinite(v));
+        if (!ys.length) continue;
+        const avg = ys.reduce((a, b) => a + b, 0) / ys.length;
+        setCenterY(n.id, avg);
+      }
+
+      // 1:1 => alinhamento vertical entre origem e destino.
+      const ordered = nodes.slice().sort((a, b) => {
+        const pa = posMap.get(a.id) || { x: 0, y: 0 };
+        const pb = posMap.get(b.id) || { x: 0, y: 0 };
+        if (pa.x !== pb.x) return pa.x - pb.x;
+        return pa.y - pb.y;
+      });
+      for (let pass = 0; pass < 3; pass += 1) {
+        for (const n of ordered) {
+          const outs = outg.get(n.id) || [];
+          if (outs.length !== 1) continue;
+          const dst = outs[0];
+          const insDst = inc.get(dst) || [];
+          if (insDst.length !== 1) continue;
+          setCenterY(dst, centerY(n.id));
+        }
+      }
+
       return nodes.map((n) => {
         const p = posMap.get(n.id) || { x: 0, y: 0 };
         return { ...n, position: { x: p.x, y: p.y } };
@@ -631,15 +684,16 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     function ATPNodeBox(props, kindLabel, cssKind) {
       const data = props && props.data ? props.data : {};
       const title = String(data.fullLabel || data.label || '');
-      const hStyle = { width: 8, height: 8, opacity: 0, border: 0 };
+      const hStyleL = { width: 0, height: 0, minWidth: 0, minHeight: 0, opacity: 0, border: 0, background: 'transparent', pointerEvents: 'none', transform: 'translate(0,-50%)' };
+      const hStyleR = { width: 0, height: 0, minWidth: 0, minHeight: 0, opacity: 0, border: 0, background: 'transparent', pointerEvents: 'none', transform: 'translate(0,-50%)' };
       return React.createElement(
         'div',
         { className: `atp-rf-node-box atp-rf-kind-${cssKind}`, title },
-        React.createElement(Handle, { type: 'target', position: Position.Left, isConnectable: false, style: hStyle }),
+        React.createElement(Handle, { type: 'target', position: Position.Left, isConnectable: false, className: 'atp-rf-handle atp-rf-handle-left', style: hStyleL }),
         React.createElement('div', { className: 'atp-rf-node-kind' }, kindLabel),
         React.createElement('div', { className: 'atp-rf-node-title' }, String(data.label || 'Localizador')),
         data.subtitle ? React.createElement('div', { className: 'atp-rf-node-sub' }, String(data.subtitle || '')) : null,
-        React.createElement(Handle, { type: 'source', position: Position.Right, isConnectable: false, style: hStyle })
+        React.createElement(Handle, { type: 'source', position: Position.Right, isConnectable: false, className: 'atp-rf-handle atp-rf-handle-right', style: hStyleR })
       );
     }
 
@@ -660,14 +714,15 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     }
 
     function ATPNodeDecisao() {
-      const hStyle = { width: 8, height: 8, opacity: 0, border: 0 };
+      const hStyleL = { width: 0, height: 0, minWidth: 0, minHeight: 0, opacity: 0, border: 0, background: 'transparent', pointerEvents: 'none', transform: 'translate(0,-50%)' };
+      const hStyleR = { width: 0, height: 0, minWidth: 0, minHeight: 0, opacity: 0, border: 0, background: 'transparent', pointerEvents: 'none', transform: 'translate(0,-50%)' };
       return React.createElement(
         'div',
         { className: 'atp-rf-decision-node' },
-        React.createElement(Handle, { type: 'target', position: Position.Left, isConnectable: false, style: hStyle }),
+        React.createElement(Handle, { type: 'target', position: Position.Left, isConnectable: false, className: 'atp-rf-handle atp-rf-handle-left', style: hStyleL }),
         React.createElement('div', { className: 'atp-rf-decision-diamond' }),
         React.createElement('div', { className: 'atp-rf-decision-label' }, 'DECISAO'),
-        React.createElement(Handle, { type: 'source', position: Position.Right, isConnectable: false, style: hStyle })
+        React.createElement(Handle, { type: 'source', position: Position.Right, isConnectable: false, className: 'atp-rf-handle atp-rf-handle-right', style: hStyleR })
       );
     }
 

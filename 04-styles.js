@@ -45,6 +45,9 @@ function injectStyle() {
 
       .atp-rf-canvas{width:100%;height:100%;background:transparent;}
       .atp-rf-canvas .react-flow{background:transparent !important;}
+      .atp-rf-canvas .react-flow__handle.atp-rf-handle{width:0 !important;height:0 !important;min-width:0 !important;min-height:0 !important;border:0 !important;background:transparent !important;opacity:0 !important;pointer-events:none !important;}
+      .atp-rf-canvas .react-flow__handle.atp-rf-handle-left{left:0 !important;transform:translate(0,-50%) !important;}
+      .atp-rf-canvas .react-flow__handle.atp-rf-handle-right{right:0 !important;transform:translate(0,-50%) !important;}
       .atp-rf-panel-left{background:#ffffff;border:1px solid #d1d5db;border-radius:12px;padding:10px;max-width:min(650px,58vw);box-shadow:0 8px 26px rgba(15,23,42,.15);}
       .atp-rf-panel-right{display:flex;align-items:center;gap:8px;}
       .atp-rf-status-title{font-size:12px;font-weight:800;color:#0f172a;margin-bottom:4px;}
@@ -63,10 +66,10 @@ function injectStyle() {
       .atp-rf-kind-saida .atp-rf-node-kind{background:#e5e7eb;border-color:#cbd5e1;color:#111827;}
       .atp-rf-kind-saida{border-color:#cbd5e1;background:#f8fafc;}
 
-      .atp-rf-decision-node{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;width:128px;height:128px;}
+      .atp-rf-decision-node{position:relative;display:flex;align-items:center;justify-content:center;width:92px;height:92px;}
       .atp-rf-decision-diamond{width:76px;height:76px;transform:rotate(45deg);background:#ffedd5;border:2px solid #fb923c;border-radius:14px;display:flex;align-items:center;justify-content:center;color:#9a3412;font-size:24px;font-weight:800;box-shadow:0 8px 18px rgba(249,115,22,.25);}
       .atp-rf-decision-diamond::before{content:'?';transform:rotate(-45deg);}
-      .atp-rf-decision-label{font-size:11px;font-weight:800;letter-spacing:.4px;color:#9a3412;text-transform:uppercase;}
+      .atp-rf-decision-label{position:absolute;left:50%;top:calc(100% + 6px);transform:translateX(-50%);font-size:11px;font-weight:800;letter-spacing:.4px;color:#9a3412;text-transform:uppercase;white-space:nowrap;}
 
       .atp-rf-node-visited .atp-rf-node-box{border-color:#16a34a;box-shadow:0 0 0 2px rgba(34,197,94,.20);}
       .atp-rf-node-current .atp-rf-node-box{border-color:#d97706;box-shadow:0 0 0 3px rgba(245,158,11,.24);}
