@@ -801,7 +801,7 @@ function disableAlterarPreferenciaNumRegistros() {
         btn.type = 'button';
         btn.className = 'infraButton';
         btn.id = 'btnVisualizarFluxoATP';
-        btn.textContent = 'Visualizar Fluxo';
+        btn.textContent = 'Visualizar Fluxo (n8n)';
 
         sel.addEventListener('mousedown', () => {
           try { atpRefreshFluxosPickerOptions(table); } catch (e) {}
@@ -820,15 +820,20 @@ function disableAlterarPreferenciaNumRegistros() {
               alert('Não foi possível obter as regras (tabela vazia ou não carregada).');
               return;
             }
-            const files = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getBpmnFilesForRules === 'function')
-              ? window.ATP.extract.getBpmnFilesForRules(rules)
-              : atpGetBpmnSplitFilesForRules(rules);
-            const f = files && files[idx];
-            if (!f || !f.xml) {
-              alert('Fluxo selecionado não possui BPMN gerado.');
+
+            const data = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getFluxosData === 'function')
+              ? window.ATP.extract.getFluxosData(rules)
+              : atpComputeFluxosData(rules);
+            const fluxos = (data && data.fluxos) ? data.fluxos : [];
+            if (!Array.isArray(fluxos) || !fluxos[idx]) {
+              alert('Fluxo selecionado não está disponível.');
               return;
             }
-            atpOpenFlowBpmnModal(f, idx);
+            if (typeof atpOpenFlowN8nModal !== 'function') {
+              alert('Visualizador n8n-like indisponível.');
+              return;
+            }
+            atpOpenFlowN8nModal({ rules, flowIdx: idx, data });
           } catch (e) {
             try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao visualizar fluxo:', e); } catch(_) {}
           }
