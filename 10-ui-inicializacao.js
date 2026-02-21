@@ -280,6 +280,219 @@ function atpEnsureDashboardIcon(host, refEl) {
   } catch (_) { }
 }
 
+let ATP_UI_ELK_PROMISE = null;
+function atpEnsureElkLoadedForBpmn() {
+  if (window.ELK) return Promise.resolve(window.ELK);
+  if (ATP_UI_ELK_PROMISE) return ATP_UI_ELK_PROMISE;
+
+  ATP_UI_ELK_PROMISE = new Promise((resolve, reject) => {
+    try {
+      const url = 'https://unpkg.com/elkjs@0.9.3/lib/elk.bundled.js';
+      const found = document.querySelector('script[data-atp-lib="elk-093"]') || document.querySelector('script[data-atp-lib="elk-ui-093"]');
+      if (found) {
+        if (window.ELK) { resolve(window.ELK); return; }
+        found.addEventListener('load', () => window.ELK ? resolve(window.ELK) : reject(new Error('ELK não carregou.')), { once: true });
+        found.addEventListener('error', (e) => reject(e), { once: true });
+        return;
+      }
+      const s = document.createElement('script');
+      s.src = url;
+      s.async = true;
+      s.setAttribute('data-atp-lib', 'elk-ui-093');
+      s.onload = () => {
+        if (!window.ELK) { reject(new Error('ELK indisponível após load.')); return; }
+        resolve(window.ELK);
+      };
+      s.onerror = (e) => reject(e);
+      document.head.appendChild(s);
+    } catch (e) {
+      reject(e);
+    }
+  });
+
+  return ATP_UI_ELK_PROMISE;
+}
+
+function atpBpmnGetEls(doc, tag, scope) {
+  const NS_BPMN = 'http://www.omg.org/spec/BPMN/20100524/MODEL';
+  const root = scope || doc;
+  let out = [];
+  try { out = Array.from(root.getElementsByTagNameNS(NS_BPMN, tag)); } catch (_) {}
+  if (out.length) return out;
+  try { out = Array.from(root.getElementsByTagName(tag)); } catch (_) {}
+  if (out.length) return out;
+  try { out = Array.from(root.querySelectorAll(tag + ', bpmn\\:' + tag)); } catch (_) {}
+  return out;
+}
+
+function atpBpmnDimsByType(type) {
+  const t = String(type || '').toLowerCase();
+  if (t === 'startevent' || t === 'endevent') return { width: 36, height: 36 };
+  if (t.includes('gateway')) return { width: 60, height: 60 };
+  if (t === 'servicetask') return { width: 260, height: 92 };
+  return { width: 220, height: 86 };
+}
+
+async function atpApplyElkLayoutToBpmnXml(xml) {
+  const ELKClass = await atpEnsureElkLoadedForBpmn();
+  const elk = new ELKClass();
+
+  const NS = {
+    bpmn: 'http://www.omg.org/spec/BPMN/20100524/MODEL',
+    bpmndi: 'http://www.omg.org/spec/BPMN/20100524/DI',
+    dc: 'http://www.omg.org/spec/DD/20100524/DC',
+    di: 'http://www.omg.org/spec/DD/20100524/DI'
+  };
+
+  const doc = new DOMParser().parseFromString(String(xml || ''), 'application/xml');
+  if (!doc || doc.getElementsByTagName('parsererror').length) {
+    throw new Error('XML BPMN inválido para layout ELK.');
+  }
+
+  const proc = atpBpmnGetEls(doc, 'process')[0] || null;
+  if (!proc) throw new Error('Process BPMN não encontrado.');
+  const processId = String(proc.getAttribute('id') || 'Process_1');
+
+  const nodeTags = ['startEvent', 'endEvent', 'task', 'serviceTask', 'userTask', 'scriptTask', 'exclusiveGateway', 'parallelGateway'];
+  const nodeMap = new Map();
+  for (const tag of nodeTags) {
+    const els = atpBpmnGetEls(doc, tag, proc);
+    for (const el of els) {
+      const id = String(el.getAttribute('id') || '');
+      if (!id || nodeMap.has(id)) continue;
+      nodeMap.set(id, { id, type: tag, name: String(el.getAttribute('name') || '') });
+    }
+  }
+
+  const flows = atpBpmnGetEls(doc, 'sequenceFlow', proc);
+  const edges = [];
+  for (const sf of flows) {
+    const id = String(sf.getAttribute('id') || ('Flow_' + Math.random().toString(36).slice(2)));
+    const source = String(sf.getAttribute('sourceRef') || '');
+    const target = String(sf.getAttribute('targetRef') || '');
+    if (!source || !target) continue;
+    if (!nodeMap.has(source)) nodeMap.set(source, { id: source, type: 'task', name: source });
+    if (!nodeMap.has(target)) nodeMap.set(target, { id: target, type: 'task', name: target });
+    edges.push({ id, source, target });
+  }
+
+  const nodes = Array.from(nodeMap.values());
+  if (!nodes.length) throw new Error('Sem nós BPMN para layout.');
+
+  const graph = {
+    id: 'atp-bpmn-root',
+    layoutOptions: {
+      'elk.algorithm': 'layered',
+      'elk.direction': 'RIGHT',
+      'elk.edgeRouting': 'ORTHOGONAL',
+      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+      'elk.spacing.nodeNode': '70',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '160'
+    },
+    children: nodes.map((n) => {
+      const d = atpBpmnDimsByType(n.type);
+      return { id: n.id, width: d.width, height: d.height };
+    }),
+    edges: edges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] }))
+  };
+
+  const laid = await elk.layout(graph);
+  const posMap = new Map();
+  for (const ch of (laid.children || [])) {
+    const base = nodeMap.get(ch.id) || { id: ch.id, type: 'task' };
+    const d = atpBpmnDimsByType(base.type);
+    posMap.set(ch.id, {
+      x: Number(ch.x) || 0,
+      y: Number(ch.y) || 0,
+      w: Number(ch.width) || d.width,
+      h: Number(ch.height) || d.height
+    });
+  }
+
+  const edgeWps = new Map();
+  for (const e of (laid.edges || [])) {
+    const sec = e && Array.isArray(e.sections) ? e.sections[0] : null;
+    if (!sec || !sec.startPoint || !sec.endPoint) continue;
+    const wps = [];
+    wps.push({ x: Number(sec.startPoint.x) || 0, y: Number(sec.startPoint.y) || 0 });
+    for (const bp of (sec.bendPoints || [])) {
+      wps.push({ x: Number(bp.x) || 0, y: Number(bp.y) || 0 });
+    }
+    wps.push({ x: Number(sec.endPoint.x) || 0, y: Number(sec.endPoint.y) || 0 });
+    edgeWps.set(String(e.id || ''), wps);
+  }
+
+  let diagram = null;
+  try { diagram = doc.getElementsByTagNameNS(NS.bpmndi, 'BPMNDiagram')[0] || null; } catch (_) {}
+  if (!diagram) {
+    diagram = doc.createElementNS(NS.bpmndi, 'bpmndi:BPMNDiagram');
+    diagram.setAttribute('id', 'BPMNDiagram_' + processId);
+    doc.documentElement.appendChild(diagram);
+  }
+
+  let plane = null;
+  try { plane = diagram.getElementsByTagNameNS(NS.bpmndi, 'BPMNPlane')[0] || null; } catch (_) {}
+  if (!plane) {
+    plane = doc.createElementNS(NS.bpmndi, 'bpmndi:BPMNPlane');
+    plane.setAttribute('id', 'BPMNPlane_' + processId);
+    plane.setAttribute('bpmnElement', processId);
+    diagram.appendChild(plane);
+  } else if (!plane.getAttribute('bpmnElement')) {
+    plane.setAttribute('bpmnElement', processId);
+  }
+
+  for (const ch of Array.from(plane.childNodes || [])) {
+    const ln = (ch && ch.localName) ? String(ch.localName) : '';
+    if (ln === 'BPMNShape' || ln === 'BPMNEdge') {
+      try { plane.removeChild(ch); } catch (_) {}
+    }
+  }
+
+  for (const n of nodes) {
+    const b = posMap.get(n.id);
+    if (!b) continue;
+    const sh = doc.createElementNS(NS.bpmndi, 'bpmndi:BPMNShape');
+    sh.setAttribute('id', 'DI_' + n.id);
+    sh.setAttribute('bpmnElement', n.id);
+    const bo = doc.createElementNS(NS.dc, 'dc:Bounds');
+    bo.setAttribute('x', String(Math.round(b.x)));
+    bo.setAttribute('y', String(Math.round(b.y)));
+    bo.setAttribute('width', String(Math.round(b.w)));
+    bo.setAttribute('height', String(Math.round(b.h)));
+    sh.appendChild(bo);
+    plane.appendChild(sh);
+  }
+
+  for (const e of edges) {
+    const ed = doc.createElementNS(NS.bpmndi, 'bpmndi:BPMNEdge');
+    ed.setAttribute('id', 'DI_' + e.id);
+    ed.setAttribute('bpmnElement', e.id);
+
+    let wps = edgeWps.get(e.id) || null;
+    if (!wps || wps.length < 2) {
+      const s = posMap.get(e.source);
+      const t = posMap.get(e.target);
+      if (s && t) {
+        const p1 = { x: s.x + s.w, y: s.y + s.h / 2 };
+        const p2 = { x: t.x, y: t.y + t.h / 2 };
+        wps = [p1, { x: (p1.x + p2.x) / 2, y: p1.y }, { x: (p1.x + p2.x) / 2, y: p2.y }, p2];
+      } else {
+        wps = [];
+      }
+    }
+
+    for (const p of wps) {
+      const wp = doc.createElementNS(NS.di, 'di:waypoint');
+      wp.setAttribute('x', String(Math.round(Number(p.x) || 0)));
+      wp.setAttribute('y', String(Math.round(Number(p.y) || 0)));
+      ed.appendChild(wp);
+    }
+    plane.appendChild(ed);
+  }
+
+  return new XMLSerializer().serializeToString(doc);
+}
+
 function recalc(table) {
     if (!document.body.contains(table)) return;
 
@@ -803,6 +1016,12 @@ function disableAlterarPreferenciaNumRegistros() {
         btn.id = 'btnVisualizarFluxoATP';
         btn.textContent = 'Visualizar Fluxo';
 
+        const btnBpmnElk = document.createElement('button');
+        btnBpmnElk.type = 'button';
+        btnBpmnElk.className = 'infraButton';
+        btnBpmnElk.id = 'btnVisualizarFluxoBpmnElkATP';
+        btnBpmnElk.textContent = 'Visualizar Fluxo BPMN (ELK)';
+
         sel.addEventListener('mousedown', () => {
           try { atpRefreshFluxosPickerOptions(table); } catch (e) {}
         }, true);
@@ -847,9 +1066,52 @@ function disableAlterarPreferenciaNumRegistros() {
           }
         });
 
+        btnBpmnElk.addEventListener('click', () => {
+          try {
+            atpRefreshFluxosPickerOptions(table);
+            const idx = parseInt(String(sel.value || '-1'), 10);
+            if (!Number.isFinite(idx) || idx < 0) {
+              alert('Selecione um fluxo.');
+              return;
+            }
+
+            const rules = atpGetRulesState();
+            if (!rules.length) {
+              alert('Não foi possível obter as regras (tabela vazia ou não carregada).');
+              return;
+            }
+
+            const files = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getBpmnFilesForRules === 'function')
+              ? window.ATP.extract.getBpmnFilesForRules(rules)
+              : atpGetBpmnSplitFilesForRules(rules);
+            const f = files && files[idx];
+            if (!f || !f.xml) {
+              alert('Fluxo selecionado não possui BPMN gerado.');
+              return;
+            }
+
+            atpApplyElkLayoutToBpmnXml(String(f.xml || ''))
+              .then((xmlElk) => {
+                const fileObj = {
+                  ...f,
+                  xml: String(xmlElk || f.xml || ''),
+                  filename: String(f.filename || ('fluxo_' + String(idx + 1).padStart(2, '0') + '.bpmn'))
+                };
+                atpOpenFlowBpmnModal(fileObj, idx);
+              })
+              .catch((err) => {
+                try { console.warn(LOG_PREFIX, '[Fluxos/UI] ELK no BPMN falhou; abrindo BPMN original:', err); } catch (_) {}
+                atpOpenFlowBpmnModal(f, idx);
+              });
+          } catch (e) {
+            try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao visualizar BPMN com ELK:', e); } catch (_) {}
+          }
+        });
+
         wrap.appendChild(title);
         wrap.appendChild(sel);
         wrap.appendChild(btn);
+        wrap.appendChild(btnBpmnElk);
 
         host.insertAdjacentElement('afterend', wrap);
       }
