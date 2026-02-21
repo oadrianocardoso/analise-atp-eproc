@@ -820,15 +820,28 @@ function disableAlterarPreferenciaNumRegistros() {
               alert('Não foi possível obter as regras (tabela vazia ou não carregada).');
               return;
             }
-            const files = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getBpmnFilesForRules === 'function')
-              ? window.ATP.extract.getBpmnFilesForRules(rules)
-              : atpGetBpmnSplitFilesForRules(rules);
-            const f = files && files[idx];
-            if (!f || !f.xml) {
-              alert('Fluxo selecionado não possui BPMN gerado.');
+            const openLegacyBpmn = () => {
+              const files = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getBpmnFilesForRules === 'function')
+                ? window.ATP.extract.getBpmnFilesForRules(rules)
+                : atpGetBpmnSplitFilesForRules(rules);
+              const f = files && files[idx];
+              if (!f || !f.xml) {
+                alert('Fluxo selecionado não possui BPMN gerado.');
+                return;
+              }
+              atpOpenFlowBpmnModal(f, idx);
+            };
+
+            if (typeof window.atpOpenFlowReactModal === 'function') {
+              Promise.resolve(window.atpOpenFlowReactModal({ flowIdx: idx, rules }))
+                .catch((err) => {
+                  try { console.warn(LOG_PREFIX, '[Fluxos/UI] Fallback para BPMN legado (React Flow indisponível):', err); } catch(_) {}
+                  openLegacyBpmn();
+                });
               return;
             }
-            atpOpenFlowBpmnModal(f, idx);
+
+            openLegacyBpmn();
           } catch (e) {
             try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao visualizar fluxo:', e); } catch(_) {}
           }
