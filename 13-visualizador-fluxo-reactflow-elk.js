@@ -631,8 +631,8 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     function ATPNodeBox(props, kindLabel, cssKind) {
       const data = props && props.data ? props.data : {};
       const title = String(data.fullLabel || data.label || '');
-      const hStyleL = { width: 0, height: 0, minWidth: 0, minHeight: 0, opacity: 0, border: 0, background: 'transparent', pointerEvents: 'none', transform: 'translate(0,-50%)', left: 0 };
-      const hStyleR = { width: 0, height: 0, minWidth: 0, minHeight: 0, opacity: 0, border: 0, background: 'transparent', pointerEvents: 'none', transform: 'translate(0,-50%)', right: 0 };
+      const hStyleL = { width: 8, height: 8, opacity: 0, border: 0, background: 'transparent', left: 2 };
+      const hStyleR = { width: 8, height: 8, opacity: 0, border: 0, background: 'transparent', right: 2 };
       return React.createElement(
         'div',
         { className: `atp-rf-node-box atp-rf-kind-${cssKind}`, title },
@@ -661,8 +661,8 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     }
 
     function ATPNodeDecisao() {
-      const hStyleL = { width: 0, height: 0, minWidth: 0, minHeight: 0, opacity: 0, border: 0, background: 'transparent', pointerEvents: 'none', transform: 'translate(0,-50%)', left: 0 };
-      const hStyleR = { width: 0, height: 0, minWidth: 0, minHeight: 0, opacity: 0, border: 0, background: 'transparent', pointerEvents: 'none', transform: 'translate(0,-50%)', right: 0 };
+      const hStyleL = { width: 8, height: 8, opacity: 0, border: 0, background: 'transparent', left: 2 };
+      const hStyleR = { width: 8, height: 8, opacity: 0, border: 0, background: 'transparent', right: 2 };
       return React.createElement(
         'div',
         { className: 'atp-rf-decision-node' },
