@@ -5,7 +5,7 @@
 const LOG_PREFIX = '[ATP]';
 const TABLE_ID = 'tableAutomatizacaoLocalizadores';
 let onlyConflicts = false;
-const ATP_VERSION = '10.9';
+const ATP_VERSION = '10.1';
 
 const tipoRank = {
   'Colisão Total': 5,
