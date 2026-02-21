@@ -43,7 +43,8 @@ function injectStyle() {
       .atp-map-canvas svg{display:block;}
       .atp-map-canvas .djs-container{min-height:100%;}
 
-      .atp-rf-canvas{width:100%;height:100%;background:radial-gradient(circle at 20% 20%, #f8fafc 0%, #eef2ff 48%, #ecfeff 100%);}
+      .atp-rf-canvas{width:100%;height:100%;background:transparent;}
+      .atp-rf-canvas .react-flow{background:transparent !important;}
       .atp-rf-panel-left{background:#ffffff;border:1px solid #d1d5db;border-radius:12px;padding:10px;max-width:min(650px,58vw);box-shadow:0 8px 26px rgba(15,23,42,.15);}
       .atp-rf-panel-right{display:flex;align-items:center;gap:8px;}
       .atp-rf-status-title{font-size:12px;font-weight:800;color:#0f172a;margin-bottom:4px;}
@@ -53,9 +54,12 @@ function injectStyle() {
       .atp-rf-node-box{min-width:240px;max-width:320px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:14px;background:#ffffff;box-shadow:0 10px 24px rgba(15,23,42,.08);}
       .atp-rf-node-kind{display:inline-flex;align-items:center;justify-content:center;padding:2px 8px;border-radius:999px;border:1px solid #c7d2fe;font-size:10px;font-weight:800;letter-spacing:.3px;margin-bottom:6px;width:max-content;}
       .atp-rf-node-title{font-size:12px;font-weight:700;color:#111827;line-height:1.35;word-break:break-word;}
+      .atp-rf-node-sub{font-size:11px;color:#475569;line-height:1.3;margin-top:4px;word-break:break-word;}
       .atp-rf-kind-node .atp-rf-node-kind{background:#e0f2fe;border-color:#bae6fd;color:#0c4a6e;}
       .atp-rf-kind-entrada .atp-rf-node-kind{background:#dcfce7;border-color:#86efac;color:#14532d;}
       .atp-rf-kind-entrada{border-color:#86efac;}
+      .atp-rf-kind-regra .atp-rf-node-kind{background:#ffedd5;border-color:#fdba74;color:#9a3412;}
+      .atp-rf-kind-regra{border-color:#fdba74;background:#fffaf0;}
       .atp-rf-kind-saida .atp-rf-node-kind{background:#e5e7eb;border-color:#cbd5e1;color:#111827;}
       .atp-rf-kind-saida{border-color:#cbd5e1;background:#f8fafc;}
 
@@ -66,6 +70,7 @@ function injectStyle() {
 
       .atp-rf-node-visited .atp-rf-node-box{border-color:#16a34a;box-shadow:0 0 0 2px rgba(34,197,94,.20);}
       .atp-rf-node-current .atp-rf-node-box{border-color:#d97706;box-shadow:0 0 0 3px rgba(245,158,11,.24);}
+      .atp-rf-node-skip .atp-rf-node-box{border-color:#dc2626;box-shadow:0 0 0 2px rgba(220,38,38,.2);}
       .atp-rf-node-current .atp-rf-decision-diamond{border-color:#d97706;box-shadow:0 0 0 3px rgba(245,158,11,.24);}
 
       .atp-rf-edge .react-flow__edge-path{transition:stroke .25s ease, stroke-width .25s ease, stroke-dasharray .25s ease;}

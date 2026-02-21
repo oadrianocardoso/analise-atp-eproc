@@ -50,12 +50,13 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     }
   }
 
-  function atpEnsureReactFlowLoaded() {
-    if (window.React && window.ReactDOM && window.ReactFlow) {
+  function atpEnsureReactFlowElkLoaded() {
+    if (window.React && window.ReactDOM && window.ReactFlow && window.ELK) {
       return Promise.resolve({
         React: window.React,
         ReactDOM: window.ReactDOM,
-        ReactFlow: window.ReactFlow
+        ReactFlow: window.ReactFlow,
+        ELK: window.ELK
       });
     }
     if (ATP_RF_LIBS_PROMISE) return ATP_RF_LIBS_PROMISE;
@@ -65,14 +66,16 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       .then(() => atpLoadScriptOnce('https://unpkg.com/react@18/umd/react.production.min.js', 'react-18'))
       .then(() => atpLoadScriptOnce('https://unpkg.com/react-dom@18/umd/react-dom.production.min.js', 'react-dom-18'))
       .then(() => atpLoadScriptOnce('https://unpkg.com/reactflow@11.11.4/dist/umd/index.js', 'reactflow-11'))
+      .then(() => atpLoadScriptOnce('https://unpkg.com/elkjs@0.9.3/lib/elk.bundled.js', 'elk-093'))
       .then(() => {
-        if (!window.React || !window.ReactDOM || !window.ReactFlow) {
-          throw new Error('Bibliotecas React/ReactDOM/React Flow nao carregadas.');
+        if (!window.React || !window.ReactDOM || !window.ReactFlow || !window.ELK) {
+          throw new Error('Bibliotecas React Flow/ELK nao carregadas.');
         }
         return {
           React: window.React,
           ReactDOM: window.ReactDOM,
-          ReactFlow: window.ReactFlow
+          ReactFlow: window.ReactFlow,
+          ELK: window.ELK
         };
       });
 
@@ -143,6 +146,23 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     return `Regra ${item.rule.num} | Prio ${atpRulePriorityLabel(item.rule)} | ${atpShortText(tipo, 80)}`;
   }
 
+  function atpBuildRuleNodeMeta(item) {
+    if (!item || item.__implied || !item.rule) {
+      return {
+        label: 'REGRA REFINAMENTO',
+        subtitle: 'Regra implicita (E/&&)',
+        fullLabel: atpBuildBranchDetails(item)
+      };
+    }
+    const num = String(item.rule.num || '?');
+    const pr = atpRulePriorityLabel(item.rule);
+    return {
+      label: `REGRA ${num}`,
+      subtitle: `Prio ${pr}`,
+      fullLabel: atpBuildBranchDetails(item)
+    };
+  }
+
   function atpFlowModelFromRules(rules, flowIdx) {
     let data = null;
     if (window.ATP && window.ATP.extract && typeof window.ATP.extract.getFluxosData === 'function') {
@@ -204,13 +224,19 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     const edges = [];
     const outgoingForExec = new Map();
     const startSet = new Set(starts);
+    const hasOutgoing = new Set();
+    const localNodeIdByKey = new Map();
     let seq = 0;
 
     for (const local of orderedLocals) {
+      const localId = `loc_${++seq}`;
+      localNodeIdByKey.set(local, localId);
       nodes.push({
-        id: local,
+        id: localId,
         type: 'atpNode',
         data: {
+          kind: 'local',
+          localKey: local,
           label: atpShortText(local, 70),
           fullLabel: local,
           isStart: startSet.has(local),
@@ -221,132 +247,168 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       });
     }
 
-    const hasOutgoing = new Set();
     for (const local of orderedLocals) {
+      const fromLocalId = localNodeIdByKey.get(local);
       const branches = (branchesByLocal.get(local) || []).slice();
-      if (!branches.length) continue;
+      if (!branches.length || !fromLocalId) continue;
       hasOutgoing.add(local);
 
-      if (branches.length > 1) {
-        const decisionId = `dec_${++seq}`;
+      const hasDecision = branches.length > 1;
+      let decisionNodeId = null;
+      let edgeFromLocalId = null;
+
+      if (hasDecision) {
+        decisionNodeId = `dec_${++seq}`;
         nodes.push({
-          id: decisionId,
+          id: decisionNodeId,
           type: 'atpDecisao',
-          data: { label: 'Decisao' },
+          data: { label: 'DECISAO', fullLabel: 'No de decisao' },
           position: { x: 0, y: 0 },
           draggable: false
         });
 
-        const entryEdgeId = `edge_entry_${++seq}`;
+        edgeFromLocalId = `edge_ld_${++seq}`;
         edges.push({
-          id: entryEdgeId,
-          source: local,
-          target: decisionId,
+          id: edgeFromLocalId,
+          source: fromLocalId,
+          target: decisionNodeId,
           type: 'smoothstep',
-          label: 'Decisao',
           data: { structural: true }
         });
+      }
 
-        const list = [];
-        branches.forEach((br, i) => {
-          const edgeId = `edge_branch_${++seq}`;
+      const options = [];
+      for (const br of branches) {
+        const toLocalId = localNodeIdByKey.get(br.to);
+        if (!toLocalId) continue;
+
+        const ruleNodeId = `rule_${++seq}`;
+        const fakeItem = {
+          __implied: !!br.implied,
+          rule: br.rule || null
+        };
+        const meta = atpBuildRuleNodeMeta(fakeItem);
+        nodes.push({
+          id: ruleNodeId,
+          type: 'atpRegra',
+          data: {
+            kind: 'rule',
+            label: meta.label,
+            subtitle: meta.subtitle,
+            fullLabel: meta.fullLabel
+          },
+          position: { x: 0, y: 0 },
+          draggable: false
+        });
+
+        let edgeDecisionRuleId = null;
+        let edgeFromLocalRuleId = null;
+        if (hasDecision && decisionNodeId) {
+          edgeDecisionRuleId = `edge_dr_${++seq}`;
           edges.push({
-            id: edgeId,
-            source: decisionId,
-            target: br.to,
+            id: edgeDecisionRuleId,
+            source: decisionNodeId,
+            target: ruleNodeId,
             type: 'smoothstep',
-            label: br.label,
-            data: { details: br.details, structural: false }
+            data: { structural: false }
           });
-          list.push({
-            from: local,
-            to: br.to,
-            edgeId,
-            entryEdgeId,
-            label: br.label,
-            details: br.details
+        } else {
+          edgeFromLocalRuleId = `edge_lr_${++seq}`;
+          edges.push({
+            id: edgeFromLocalRuleId,
+            source: fromLocalId,
+            target: ruleNodeId,
+            type: 'smoothstep',
+            data: { structural: false }
           });
-        });
-        outgoingForExec.set(local, list);
-      } else {
-        const br = branches[0];
-        const edgeId = `edge_branch_${++seq}`;
+        }
+
+        const edgeRuleToDestId = `edge_rl_${++seq}`;
         edges.push({
-          id: edgeId,
-          source: local,
-          target: br.to,
+          id: edgeRuleToDestId,
+          source: ruleNodeId,
+          target: toLocalId,
           type: 'smoothstep',
-          label: br.label,
-          data: { details: br.details, structural: false }
+          data: { structural: false }
         });
-        outgoingForExec.set(local, [{
-          from: local,
-          to: br.to,
-          edgeId,
-          entryEdgeId: null,
+
+        options.push({
+          fromKey: local,
+          toKey: br.to,
+          fromNodeId: fromLocalId,
+          toNodeId: toLocalId,
+          decisionNodeId: hasDecision ? decisionNodeId : null,
+          ruleNodeId,
+          edgeFromLocalId: hasDecision ? edgeFromLocalId : edgeFromLocalRuleId,
+          edgeDecisionRuleId,
+          edgeRuleToDestId,
           label: br.label,
           details: br.details
-        }]);
+        });
       }
+
+      if (options.length) outgoingForExec.set(local, options);
     }
 
     nodes.forEach((n) => {
-      if (n.type !== 'atpNode') return;
-      n.data.isEnd = !hasOutgoing.has(n.id);
+      if (!(n && n.data && n.data.kind === 'local')) return;
+      const localKey = String(n.data.localKey || '');
+      n.data.isEnd = !hasOutgoing.has(localKey);
       if (n.data.isStart) n.type = 'atpEntrada';
       else if (n.data.isEnd) n.type = 'atpSaida';
       else n.type = 'atpNode';
     });
 
-    const fallbackStart = starts.find(k => orderedLocals.includes(k)) || orderedLocals[0] || null;
-    const execPlan = atpBuildExecutionPlan(outgoingForExec, fallbackStart);
+    const fallbackStartKey = starts.find(k => orderedLocals.includes(k)) || orderedLocals[0] || null;
+    const fallbackStartNodeId = fallbackStartKey ? (localNodeIdByKey.get(fallbackStartKey) || null) : null;
+    const execPlan = atpBuildExecutionPlan(outgoingForExec, fallbackStartKey);
     return {
       nodes,
       edges,
       starts,
-      startNode: fallbackStart,
+      startNode: fallbackStartNodeId,
       outgoingForExec,
       execPlan
     };
   }
 
-  function atpBuildExecutionPlan(outgoingForExec, startNode) {
+  function atpBuildExecutionPlan(outgoingForExec, startKey) {
     const steps = [];
-    let current = startNode || null;
+    let currentKey = startKey || null;
     const seenTransitions = new Map();
     const LIMIT = 220;
     let endReason = 'Fim do fluxo.';
 
     for (let i = 0; i < LIMIT; i += 1) {
-      if (!current) {
+      if (!currentKey) {
         endReason = 'Fluxo sem ponto inicial.';
         break;
       }
 
-      const options = Array.isArray(outgoingForExec.get(current)) ? outgoingForExec.get(current) : [];
+      const options = Array.isArray(outgoingForExec.get(currentKey)) ? outgoingForExec.get(currentKey) : [];
       if (!options.length) {
-        endReason = `Fim em "${current}".`;
+        endReason = `Fim em "${currentKey}".`;
         break;
       }
 
       const executed = options[0];
       const discarded = options.slice(1);
       steps.push({
-        from: current,
-        to: executed.to,
+        fromNodeId: executed.fromNodeId,
+        toNodeId: executed.toNodeId,
         executed,
         discarded
       });
 
-      const tk = `${current}>>${executed.to}`;
+      const tk = `${currentKey}>>${executed.toKey}`;
       const prev = seenTransitions.get(tk) || 0;
       seenTransitions.set(tk, prev + 1);
       if (prev >= 1) {
-        endReason = `Ciclo detectado em "${current}" -> "${executed.to}".`;
+        endReason = `Ciclo detectado em "${currentKey}" -> "${executed.toKey}".`;
         break;
       }
 
-      current = executed.to;
+      currentKey = executed.toKey;
     }
 
     if (steps.length >= LIMIT) {
@@ -356,108 +418,79 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     return { steps, endReason };
   }
 
-  function atpApplyHorizontalFlowLayout(nodes, edges) {
-    const nodeIds = nodes.map((n) => n.id);
-    const out = new Map();
-    const inc = new Map();
-    for (const id of nodeIds) {
-      out.set(id, []);
-      inc.set(id, []);
-    }
+  async function atpApplyElkLayout(nodes, edges, ELKClass) {
+    const elk = new ELKClass();
+    const dims = (n) => {
+      if (n.type === 'atpDecisao') return { width: 160, height: 150 };
+      if (n.type === 'atpRegra') return { width: 260, height: 100 };
+      return { width: 300, height: 96 };
+    };
 
-    for (const e of (edges || [])) {
-      if (!out.has(e.source)) out.set(e.source, []);
-      if (!inc.has(e.target)) inc.set(e.target, []);
-      out.get(e.source).push(e.target);
-      inc.get(e.target).push(e.source);
-    }
+    const graph = {
+      id: 'atp-root',
+      layoutOptions: {
+        'elk.algorithm': 'layered',
+        'elk.direction': 'RIGHT',
+        'elk.spacing.nodeNode': '70',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '150',
+        'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+        'elk.edgeRouting': 'ORTHOGONAL'
+      },
+      children: nodes.map((n) => {
+        const d = dims(n);
+        return { id: n.id, width: d.width, height: d.height };
+      }),
+      edges: edges.map((e) => ({
+        id: e.id,
+        sources: [e.source],
+        targets: [e.target]
+      }))
+    };
 
-    const indeg = new Map();
-    for (const id of nodeIds) indeg.set(id, (inc.get(id) || []).length);
-
-    const depth = new Map();
-    const queue = [];
-    for (const n of nodes) {
-      if ((indeg.get(n.id) || 0) === 0) {
-        depth.set(n.id, 0);
-        queue.push(n.id);
+    try {
+      const out = await elk.layout(graph);
+      const posMap = new Map();
+      for (const c of (out.children || [])) {
+        posMap.set(c.id, { x: Number(c.x) || 0, y: Number(c.y) || 0 });
       }
-    }
-
-    while (queue.length) {
-      const cur = queue.shift();
-      const d = depth.get(cur) || 0;
-      for (const nx of (out.get(cur) || [])) {
-        const old = depth.get(nx);
-        if (!Number.isFinite(old) || (d + 1) > old) depth.set(nx, d + 1);
-        indeg.set(nx, (indeg.get(nx) || 0) - 1);
-        if ((indeg.get(nx) || 0) === 0) queue.push(nx);
-      }
-    }
-
-    for (const n of nodes) {
-      if (depth.has(n.id)) continue;
-      let d = 0;
-      for (const p of (inc.get(n.id) || [])) {
-        if (depth.has(p)) d = Math.max(d, (depth.get(p) || 0) + 1);
-      }
-      depth.set(n.id, d);
-    }
-
-    const col = new Map();
-    for (const n of nodes) {
-      const d = depth.get(n.id) || 0;
-      if (!col.has(d)) col.set(d, []);
-      col.get(d).push(n);
-    }
-
-    const typeOrder = { atpEntrada: 1, atpDecisao: 2, atpNode: 3, atpSaida: 4 };
-    const sortedCols = Array.from(col.keys()).sort((a, b) => a - b);
-    const X_GAP = 360;
-    const Y_GAP = 170;
-    const X_PAD = 80;
-    const Y_PAD = 80;
-    const outNodes = [];
-
-    for (const d of sortedCols) {
-      const arr = col.get(d).slice().sort((a, b) => {
-        const oa = typeOrder[a.type] || 9;
-        const ob = typeOrder[b.type] || 9;
-        if (oa !== ob) return oa - ob;
-        const ta = String((a.data && a.data.fullLabel) || a.id || '');
-        const tb = String((b.data && b.data.fullLabel) || b.id || '');
-        return ta.localeCompare(tb, 'pt-BR');
+      return nodes.map((n) => {
+        const p = posMap.get(n.id) || { x: 0, y: 0 };
+        return { ...n, position: { x: p.x, y: p.y } };
       });
-      for (let i = 0; i < arr.length; i += 1) {
-        const n = arr[i];
-        outNodes.push({
-          ...n,
-          position: {
-            x: X_PAD + (d * X_GAP),
-            y: Y_PAD + (i * Y_GAP)
-          }
-        });
-      }
+    } catch (e) {
+      try { console.warn(LOG, 'Falha no ELK layout, fallback linear:', e); } catch (_) {}
+      let y = 80;
+      return nodes.map((n, i) => {
+        const x = 80 + ((i % 8) * 240);
+        if (i % 8 === 0 && i > 0) y += 130;
+        return { ...n, position: { x, y } };
+      });
     }
-
-    return outNodes;
   }
 
   function atpBuildExecStateEdges(baseEdges, plan, stepIndex, running) {
     const steps = (plan && Array.isArray(plan.steps)) ? plan.steps : [];
     const states = new Map();
     const visitedNodes = new Set();
+    const skippedNodes = new Set();
 
     for (let i = 0; i <= stepIndex && i < steps.length; i += 1) {
       const st = steps[i];
       if (!st || !st.executed) continue;
-      visitedNodes.add(st.from);
-      visitedNodes.add(st.to);
+      if (st.fromNodeId) visitedNodes.add(st.fromNodeId);
+      if (st.toNodeId) visitedNodes.add(st.toNodeId);
+      if (st.executed.decisionNodeId) visitedNodes.add(st.executed.decisionNodeId);
+      if (st.executed.ruleNodeId) visitedNodes.add(st.executed.ruleNodeId);
 
-      if (st.executed.entryEdgeId) states.set(st.executed.entryEdgeId, i === stepIndex && running ? 'active' : 'run');
-      states.set(st.executed.edgeId, i === stepIndex && running ? 'active' : 'run');
+      if (st.executed.edgeFromLocalId) states.set(st.executed.edgeFromLocalId, i === stepIndex && running ? 'active' : 'run');
+      if (st.executed.edgeDecisionRuleId) states.set(st.executed.edgeDecisionRuleId, i === stepIndex && running ? 'active' : 'run');
+      if (st.executed.edgeRuleToDestId) states.set(st.executed.edgeRuleToDestId, i === stepIndex && running ? 'active' : 'run');
       for (const dc of (st.discarded || [])) {
-        if (dc && dc.edgeId) states.set(dc.edgeId, 'skip');
+        if (!dc) continue;
+        if (dc.ruleNodeId) skippedNodes.add(dc.ruleNodeId);
+        if (dc.edgeFromLocalId) states.set(dc.edgeFromLocalId, 'skip');
+        if (dc.edgeDecisionRuleId) states.set(dc.edgeDecisionRuleId, 'skip');
+        if (dc.edgeRuleToDestId) states.set(dc.edgeRuleToDestId, 'skip');
       }
     }
 
@@ -491,15 +524,17 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       };
     });
 
-    return { edges, visitedNodes };
+    return { edges, visitedNodes, skippedNodes };
   }
 
-  function atpBuildExecStateNodes(baseNodes, visitedNodes, currentNode) {
+  function atpBuildExecStateNodes(baseNodes, visitedNodes, currentNode, skippedNodes) {
     const cur = String(currentNode || '');
+    const skip = skippedNodes instanceof Set ? skippedNodes : new Set();
     return baseNodes.map((n) => {
       const classes = ['atp-rf-node'];
       if (visitedNodes.has(n.id)) classes.push('atp-rf-node-visited');
       if (n.id === cur) classes.push('atp-rf-node-current');
+      if (skip.has(n.id)) classes.push('atp-rf-node-skip');
       if (n.type === 'atpDecisao') classes.push('atp-rf-node-decision-wrapper');
       return {
         ...n,
@@ -526,9 +561,9 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     try { if (typeof atpCloseRuleMapModal === 'function') atpCloseRuleMapModal(); } catch (_) {}
     atpCloseFlowReactModal();
 
-    const libs = await atpEnsureReactFlowLoaded();
+    const libs = await atpEnsureReactFlowElkLoaded();
     const model = atpFlowModelFromRules(rules, flowIdx);
-    const layoutNodes = atpApplyHorizontalFlowLayout(model.nodes, model.edges);
+    const layoutNodes = await atpApplyElkLayout(model.nodes, model.edges, libs.ELK);
 
     const overlay = document.createElement('div');
     overlay.id = 'atpFlowReactModal';
@@ -542,7 +577,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
     const top = document.createElement('div');
     top.className = 'atp-map-top';
-    top.innerHTML = `<div><div class="atp-map-title">Visualizar Fluxo ${String(flowIdx + 1).padStart(2, '0')} (React Flow | Horizontal Flow)</div><div class="atp-map-sub">Modo Execucao simula a primeira regra por prioridade em cada decisao.</div></div>`;
+    top.innerHTML = `<div><div class="atp-map-title">Visualizar Fluxo ${String(flowIdx + 1).padStart(2, '0')} (React Flow + ELK)</div><div class="atp-map-sub">Modo Execucao simula a primeira regra por prioridade em cada decisao.</div></div>`;
 
     const actions = document.createElement('div');
     actions.className = 'atp-map-actions';
@@ -571,7 +606,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     const RF = libs.ReactFlow;
 
     const ReactFlowComp = RF.ReactFlow || RF.default;
-    const Background = RF.Background;
     const Controls = RF.Controls;
     const MiniMap = RF.MiniMap;
     const Panel = RF.Panel;
@@ -604,6 +638,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         React.createElement(Handle, { type: 'target', position: Position.Left, isConnectable: false, style: hStyle }),
         React.createElement('div', { className: 'atp-rf-node-kind' }, kindLabel),
         React.createElement('div', { className: 'atp-rf-node-title' }, String(data.label || 'Localizador')),
+        data.subtitle ? React.createElement('div', { className: 'atp-rf-node-sub' }, String(data.subtitle || '')) : null,
         React.createElement(Handle, { type: 'source', position: Position.Right, isConnectable: false, style: hStyle })
       );
     }
@@ -618,6 +653,10 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
     function ATPNodeSaida(props) {
       return ATPNodeBox(props, 'SAIDA', 'saida');
+    }
+
+    function ATPNodeRegra(props) {
+      return ATPNodeBox(props, 'REGRA', 'regra');
     }
 
     function ATPNodeDecisao() {
@@ -636,6 +675,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       atpEntrada: ATPNodeEntrada,
       atpNode: ATPNodePadrao,
       atpSaida: ATPNodeSaida,
+      atpRegra: ATPNodeRegra,
       atpDecisao: ATPNodeDecisao
     };
 
@@ -658,9 +698,9 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         const plan = planRef.current || { steps: [] };
         const info = atpBuildExecStateEdges(baseEdgesRef.current, plan, idx, isRunning);
         const currentStep = (plan.steps && idx >= 0) ? plan.steps[idx] : null;
-        const currentNode = currentStep ? currentStep.to : model.startNode;
+        const currentNode = currentStep ? currentStep.executed.ruleNodeId : model.startNode;
         setEdges(info.edges);
-        setNodes(atpBuildExecStateNodes(baseNodesRef.current, info.visitedNodes, currentNode));
+        setNodes(atpBuildExecStateNodes(baseNodesRef.current, info.visitedNodes, currentNode, info.skippedNodes));
 
         if (customStatus) {
           setStatus(customStatus);
@@ -676,7 +716,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         const discarded = (currentStep.discarded || []).map(d => d.label).filter(Boolean);
         setStatus({
           title: `Etapa ${idx + 1} de ${plan.steps.length}`,
-          body: `Executou: ${currentStep.executed.label} -> ${currentStep.to}${discarded.length ? ` | Descartadas: ${discarded.join(' | ')}` : ' | Descartadas: nenhuma'}`
+          body: `Executou: ${currentStep.executed.label} -> ${currentStep.executed.toKey}${discarded.length ? ` | Descartadas: ${discarded.join(' | ')}` : ' | Descartadas: nenhuma'}`
         });
       }, [setEdges, setNodes]);
 
@@ -763,7 +803,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
           elementsSelectable: true,
           proOptions: { hideAttribution: true }
         },
-        React.createElement(Background, { variant: RF.BackgroundVariant ? RF.BackgroundVariant.Dots : 'dots', gap: 18, size: 1 }),
         React.createElement(MiniMap, { pannable: true, zoomable: true }),
         React.createElement(Controls, null),
         React.createElement(
