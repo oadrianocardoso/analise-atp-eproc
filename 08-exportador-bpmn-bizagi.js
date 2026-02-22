@@ -807,41 +807,55 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
       addEdgeMetaLabelUnique(key, 'REFINAMENTO (E/&&)');
     }
 
-    const allKeys = Array.from(allFrom).sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
-
-    let starts = allKeys.filter(k => !allTo.has(k));
-    if (!starts.length) starts = allKeys.slice();
-
-    const assigned = new Set();
-    const fluxos = [];
-    const expandFrom = (startKey) => {
-      const q = [startKey];
-      const vis = new Set([startKey]);
-      while (q.length) {
-        const u = q.shift();
-        const outs = outGlobal.get(u);
-        if (!outs) continue;
-        for (const v of outs) {
-
-          if (!v) continue;
-          if (!vis.has(v) && allFrom.has(v)) { vis.add(v); q.push(v); }
-        }
+    let fluxos = [];
+    try {
+      if (typeof atpComputeFluxosData === 'function') {
+        const data = atpComputeFluxosData(rules || []);
+        const list = (data && Array.isArray(data.fluxos)) ? data.fluxos : [];
+        fluxos = list.map((fl) => ({
+          starts: Array.isArray(fl && fl.starts) ? fl.starts.slice() : [],
+          nodes: Array.isArray(fl && fl.nodes) ? fl.nodes.slice() : Array.from(fl && fl.nodes || [])
+        }));
       }
-      return vis;
-    };
-
-    for (const st of starts) {
-      if (assigned.has(st)) continue;
-      const nodes = expandFrom(st);
-      for (const n of nodes) assigned.add(n);
-      fluxos.push({ starts: [st], nodes });
+    } catch (_) {
+      fluxos = [];
     }
 
-    for (const k of allKeys) {
-      if (assigned.has(k)) continue;
-      const nodes = expandFrom(k);
-      for (const n of nodes) assigned.add(n);
-      fluxos.push({ starts: [k], nodes });
+    if (!fluxos.length) {
+      const allKeys = Array.from(allFrom).sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
+      let starts = allKeys.filter(k => !allTo.has(k));
+      if (!starts.length) starts = allKeys.slice();
+
+      const assigned = new Set();
+      const expandFrom = (startKey) => {
+        const q = [startKey];
+        const vis = new Set([startKey]);
+        while (q.length) {
+          const u = q.shift();
+          const outs = outGlobal.get(u);
+          if (!outs) continue;
+          for (const v of outs) {
+
+            if (!v) continue;
+            if (!vis.has(v) && allFrom.has(v)) { vis.add(v); q.push(v); }
+          }
+        }
+        return vis;
+      };
+
+      for (const st of starts) {
+        if (assigned.has(st)) continue;
+        const nodes = expandFrom(st);
+        for (const n of nodes) assigned.add(n);
+        fluxos.push({ starts: [st], nodes });
+      }
+
+      for (const k of allKeys) {
+        if (assigned.has(k)) continue;
+        const nodes = expandFrom(k);
+        for (const n of nodes) assigned.add(n);
+        fluxos.push({ starts: [k], nodes });
+      }
     }
 
     for (const fl of fluxos) {

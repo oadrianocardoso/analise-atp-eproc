@@ -349,7 +349,6 @@ function atpComputeFluxosData(rules) {
   const allTo = new Set();
   const byFrom = new Map();
   const fluxos = [];
-  const assigned = new Set();
 
   for (const r of (rules || [])) {
     const fromKeys = atpClausesToKeys(r.localizadorRemover);
@@ -380,41 +379,111 @@ function atpComputeFluxosData(rules) {
     allTo.add(child);
   }
 
-  const startKeys = Array.from(allFrom).filter(k => !allTo.has(k)).sort((a,b)=>a.localeCompare(b));
-  const allKeys = Array.from(allFrom).sort((a,b)=>a.localeCompare(b));
+  const allNodes = new Set();
+  for (const k of allFrom) allNodes.add(k);
+  for (const k of allTo) allNodes.add(k);
 
-  function expandFrom(start) {
-    const q = [start];
-    const seen = new Set([start]);
-    while (q.length) {
-      const cur = q.shift();
-      const outs = byFrom.get(cur) || [];
-      for (const item of outs) {
-        for (const tk of (item.toKeys || [])) {
-          if (!tk) continue;
-          if (!seen.has(tk) && allFrom.has(tk)) {
-            seen.add(tk);
-            q.push(tk);
-          }
+  const outMap = new Map();
+  const inMap = new Map();
+  const undMap = new Map();
+  const edgeSeen = new Set();
+  const edgeMeta = [];
+
+  const ensureMapsFor = (k) => {
+    if (!outMap.has(k)) outMap.set(k, new Set());
+    if (!inMap.has(k)) inMap.set(k, new Set());
+    if (!undMap.has(k)) undMap.set(k, new Set());
+  };
+
+  for (const k of allNodes) ensureMapsFor(k);
+
+  for (const [from, items] of byFrom.entries()) {
+    ensureMapsFor(from);
+    const list = Array.isArray(items) ? items : [];
+    for (const it of list) {
+      const implied = !!(it && it.__implied);
+      const tos = Array.from(new Set((it && Array.isArray(it.toKeys) ? it.toKeys : []).filter(Boolean)));
+      for (const to of tos) {
+        allNodes.add(to);
+        ensureMapsFor(to);
+
+        const eKey = String(from) + '||' + String(to) + '||' + (implied ? '1' : '0');
+        if (!edgeSeen.has(eKey)) {
+          edgeSeen.add(eKey);
+          edgeMeta.push({ from, to, implied });
         }
+
+        outMap.get(from).add(to);
+        inMap.get(to).add(from);
+        undMap.get(from).add(to);
+        undMap.get(to).add(from);
       }
     }
-    return seen;
   }
 
-  for (const sk of ((startKeys.length ? startKeys : allKeys))) {
-    if (assigned.has(sk)) continue;
-    const comp = expandFrom(sk);
-    for (const n of comp) assigned.add(n);
-    fluxos.push({ starts: [sk], nodes: Array.from(comp).sort((a,b)=>a.localeCompare(b)) });
+  const nodesSorted = Array.from(allNodes).sort((a, b) => String(a).localeCompare(String(b)));
+  const seenComp = new Set();
+  const components = [];
+
+  for (const seed of nodesSorted) {
+    if (seenComp.has(seed)) continue;
+    const q = [seed];
+    const comp = new Set([seed]);
+    seenComp.add(seed);
+    while (q.length) {
+      const cur = q.shift();
+      const und = undMap.get(cur) || new Set();
+      for (const nb of und) {
+        if (seenComp.has(nb)) continue;
+        seenComp.add(nb);
+        comp.add(nb);
+        q.push(nb);
+      }
+    }
+    components.push(Array.from(comp).sort((a, b) => String(a).localeCompare(String(b))));
   }
 
-  for (const k of allKeys) {
-    if (assigned.has(k)) continue;
-    const comp = expandFrom(k);
-    for (const n of comp) assigned.add(n);
-    fluxos.push({ starts: [k], nodes: Array.from(comp).sort((a,b)=>a.localeCompare(b)) });
+  for (const compNodes of components) {
+    const compSet = new Set(compNodes);
+    const indegAll = new Map();
+    const indegReal = new Map();
+    for (const n of compNodes) {
+      indegAll.set(n, 0);
+      indegReal.set(n, 0);
+    }
+
+    for (const e of edgeMeta) {
+      if (!compSet.has(e.from) || !compSet.has(e.to)) continue;
+      indegAll.set(e.to, (indegAll.get(e.to) || 0) + 1);
+      if (!e.implied) indegReal.set(e.to, (indegReal.get(e.to) || 0) + 1);
+    }
+
+    let starts = compNodes.filter(n => (indegReal.get(n) || 0) === 0);
+    if (!starts.length) starts = compNodes.filter(n => (indegAll.get(n) || 0) === 0);
+    if (!starts.length && compNodes.length) {
+      const minIn = Math.min(...compNodes.map(n => (indegAll.get(n) || 0)));
+      starts = compNodes.filter(n => (indegAll.get(n) || 0) === minIn).slice(0, 1);
+    }
+
+    fluxos.push({
+      starts: starts.sort((a, b) => String(a).localeCompare(String(b))),
+      nodes: compNodes
+    });
   }
+
+  fluxos.sort((a, b) => {
+    const ak = (a && a.starts && a.starts[0]) ? a.starts[0] : ((a && a.nodes && a.nodes[0]) ? a.nodes[0] : '');
+    const bk = (b && b.starts && b.starts[0]) ? b.starts[0] : ((b && b.nodes && b.nodes[0]) ? b.nodes[0] : '');
+    return String(ak).localeCompare(String(bk));
+  });
+
+  const __startsAll = [];
+  for (const fl of fluxos) {
+    const arr = (fl && Array.isArray(fl.starts)) ? fl.starts : [];
+    for (const s of arr) __startsAll.push(s);
+  }
+  const startKeys = Array.from(new Set(__startsAll))
+    .sort((a, b) => String(a).localeCompare(String(b)));
 
   const keyToFlow = new Map();
   fluxos.forEach((fl, i) => {
