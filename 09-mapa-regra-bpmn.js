@@ -18,7 +18,7 @@ function atpGetBpmnSplitFilesForRules(rules) {
       }
     }).join('\n');
     const h = (typeof hashCode === 'function') ? Math.abs(hashCode(sig)).toString(36) : String(sig.length);
-    const key = String(list.length) + '_' + h;
+    const key = 'v2_' + String(list.length) + '_' + h;
     if (ATP_BPMN_SPLIT_CACHE && ATP_BPMN_SPLIT_CACHE_KEY === key) return ATP_BPMN_SPLIT_CACHE;
     const files = atpBuildFluxosBPMN(rules || [], { layout: 'grid', splitFiles: true }) || [];
     ATP_BPMN_SPLIT_CACHE = files;

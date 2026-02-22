@@ -939,6 +939,7 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
 
         const svcTaskMeta = new Map();
         const svcIdsByEdge = new Map();
+        const svcIdByRuleKey = new Map();
 
         let svcCount = 0;
         for (const from of nodesAll) {
@@ -953,38 +954,57 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
 
             for (let li = 0; li < labs.length; li++) {
               const label = labs[li];
-
               const fullLabel = String(label == null ? '' : label);
 
               const isRef = /^\s*REFINAMENTO\b/i.test(fullLabel);
-              if (isRef) {
+              if (isRef) continue;
 
-                continue;
+              const ruleKey = norm(fullLabel).toUpperCase();
+              if (!ruleKey) continue;
+
+              let sid = svcIdByRuleKey.get(ruleKey);
+              if (!sid) {
+                svcCount++;
+                sid = 'Svc_' + procId + '_' + svcCount;
+                svcIdByRuleKey.set(ruleKey, sid);
+                svcTaskMeta.set(sid, {
+                  from,
+                  to,
+                  label: fullLabel,
+                  fromSet: new Set([from]),
+                  toSet: new Set([to])
+                });
+
+                let shortLabel = truncateBpmnName(fullLabel, 420);
+                let docLabel = truncateBpmnDoc(fullLabel, 5000);
+                x += '    <bpmn:serviceTask id="' + sid + '" name="' + xmlEsc(shortLabel) + '">\n';
+                x += '      <bpmn:documentation>' + xmlEsc(docLabel) + '</bpmn:documentation>\n';
+                x += '    </bpmn:serviceTask>\n';
+              } else {
+                const meta = svcTaskMeta.get(sid);
+                if (meta) {
+                  if (!(meta.fromSet instanceof Set)) meta.fromSet = new Set(meta.from ? [meta.from] : []);
+                  if (!(meta.toSet instanceof Set)) meta.toSet = new Set(meta.to ? [meta.to] : []);
+                  meta.fromSet.add(from);
+                  meta.toSet.add(to);
+                }
               }
 
-              svcCount++;
-
-              const sid = 'Svc_' + procId + '_' + svcCount;
-
-              svcTaskMeta.set(sid, { from, to, label });
               const k = from + '||' + to;
               const arr = svcIdsByEdge.get(k) || [];
-              arr.push(sid);
+              if (!arr.includes(sid)) arr.push(sid);
               svcIdsByEdge.set(k, arr);
-
-              let shortLabel = truncateBpmnName(fullLabel, 420);
-              let docLabel = truncateBpmnDoc(fullLabel, 5000);
-
-              x += '    <bpmn:serviceTask id="' + sid + '" name="' + xmlEsc(shortLabel) + '">\n';
-              x += '      <bpmn:documentation>' + xmlEsc(docLabel) + '</bpmn:documentation>\n';
-              x += '    </bpmn:serviceTask>\n';
             }
           }
         }
 
         let flowCount = 0;
         const edgesForDI = [];
+        const flowSeen = new Set();
         const addFlow = (srcId, dstId, name) => {
+          const flowKey = String(srcId) + '||' + String(dstId) + '||' + String(name || '');
+          if (flowSeen.has(flowKey)) return;
+          flowSeen.add(flowKey);
           flowCount++;
           const fid = 'Flow_' + procId + '_' + flowCount;
           x += '    <bpmn:sequenceFlow id="' + fid + '" sourceRef="' + srcId + '" targetRef="' + dstId + '"' + (name ? (' name="' + xmlEsc(name) + '"') : '') + '/>\n';
@@ -1248,13 +1268,10 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
 
         let __maxSvcStack = 1;
         try {
-          const __tmp = new Map();
-          for (const meta of (svcTaskMeta ? svcTaskMeta.values() : [])) {
-            if (!meta || !meta.from || !meta.to) continue;
-            const k = String(meta.from) + '||' + String(meta.to);
-            __tmp.set(k, (__tmp.get(k) || 0) + 1);
+          for (const ids of (svcIdsByEdge ? svcIdsByEdge.values() : [])) {
+            const n = Array.isArray(ids) ? ids.length : 0;
+            __maxSvcStack = Math.max(__maxSvcStack, n || 1);
           }
-          for (const v of __tmp.values()) __maxSvcStack = Math.max(__maxSvcStack, v || 1);
         } catch (e) { }
 
         const startX = padX + 40;
@@ -1299,26 +1316,31 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
           x += '      </bpmndi:BPMNShape>\n';
         }
 
-        const __svcDockYBySid = new Map();
+        const __svcDockYByFlowId = new Map();
         try {
           const DOCK_MARGIN = 12;
           const DOCK_MIN_GAP = 8;
+          const taskIdSet = new Set(Array.from(taskIdByNode.values()));
 
-          const byTo = new Map();
-          for (const [sid, meta] of svcTaskMeta.entries()) {
-            if (!meta || !meta.to) continue;
-            const t = String(meta.to);
-            const arr = byTo.get(t) || [];
-            arr.push(sid);
-            byTo.set(t, arr);
+          const byToTaskId = new Map();
+          for (const e0 of edgesForDI) {
+            if (!e0 || !svcPos.has(e0.src)) continue;
+            if (!taskIdSet.has(e0.dst)) continue;
+            const arr = byToTaskId.get(e0.dst) || [];
+            arr.push({ flowId: e0.id, sid: e0.src });
+            byToTaskId.set(e0.dst, arr);
           }
 
-          for (const [toNode, sids] of byTo.entries()) {
-
-            const toTid = taskIdByNode.get(toNode);
-            if (!toTid) continue;
+          for (const [toTid, links] of byToTaskId.entries()) {
             const tb = (function () {
-              console.log('[ATP][HUBS] virtual hubs build active');
+              let toNode = null;
+              for (const [n, tid] of taskIdByNode.entries()) {
+                if (tid === toTid) {
+                  toNode = n;
+                  break;
+                }
+              }
+              if (!toNode) return null;
               const p0 = posNode.get(toNode);
               if (!p0) return null;
               return { x: p0.x, y: p0.y, w: nodeW, h: nodeH };
@@ -1327,17 +1349,17 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
             const minY = tb.y + DOCK_MARGIN;
             const maxY = tb.y + tb.h - DOCK_MARGIN;
 
-            const arr = (sids || []).slice().filter(id => svcPos.has(id));
+            const arr = (links || []).slice().filter(item => item && svcPos.has(item.sid));
             arr.sort((a, b) => {
-              const pa = svcPos.get(a); const pb = svcPos.get(b);
+              const pa = svcPos.get(a.sid); const pb = svcPos.get(b.sid);
               const ya = pa ? (pa.y + pa.h / 2) : 0;
               const yb = pb ? (pb.y + pb.h / 2) : 0;
-              return (ya - yb) || String(a).localeCompare(String(b));
+              return (ya - yb) || String(a.sid).localeCompare(String(b.sid));
             });
 
             const docks = [];
             for (let i = 0; i < arr.length; i++) {
-              const sid = arr[i];
+              const sid = arr[i].sid;
               const sp = svcPos.get(sid);
               const desired = sp ? (sp.y + sp.h / 2) : ((minY + maxY) / 2);
               let dy = Math.max(minY, Math.min(maxY, desired));
@@ -1356,7 +1378,9 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
               }
             }
 
-            for (let i = 0; i < arr.length; i++) __svcDockYBySid.set(arr[i], Math.round(docks[i]));
+            for (let i = 0; i < arr.length; i++) {
+              __svcDockYByFlowId.set(arr[i].flowId, Math.round(docks[i]));
+            }
           }
         } catch (e) { }
 
@@ -1536,8 +1560,8 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
 
           let dockY = null;
           try {
-            if (typeof __svcDockYBySid !== 'undefined' && __svcDockYBySid && __svcDockYBySid.has(e.src)) {
-              dockY = __svcDockYBySid.get(e.src);
+            if (typeof __svcDockYByFlowId !== 'undefined' && __svcDockYByFlowId && __svcDockYByFlowId.has(e.id)) {
+              dockY = __svcDockYByFlowId.get(e.id);
             }
           } catch (e) { dockY = null; }
 
