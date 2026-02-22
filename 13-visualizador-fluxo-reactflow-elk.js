@@ -1300,7 +1300,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
               onClick: onToggleCompact,
               disabled: running
             },
-            compactMode ? 'Modo Completo' : 'Modo Compacto'
+            compactMode ? 'Compacto: ON' : 'Compacto: OFF'
           ),
           React.createElement(
             'button',
