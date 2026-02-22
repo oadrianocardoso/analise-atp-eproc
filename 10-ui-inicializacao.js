@@ -391,8 +391,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       'elk.direction': 'RIGHT',
       'elk.edgeRouting': 'ORTHOGONAL',
       'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
-      'elk.spacing.nodeNode': '70',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '160',
+      'elk.spacing.nodeNode': '44',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '230',
       'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
       'elk.layered.considerModelOrder': 'NODES_AND_EDGES'
     },

@@ -431,8 +431,10 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       layoutOptions: {
         'elk.algorithm': 'layered',
         'elk.direction': 'RIGHT',
-        'elk.spacing.nodeNode': '70',
-        'elk.layered.spacing.nodeNodeBetweenLayers': '150',
+        'elk.spacing.nodeNode': '44',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '230',
+        'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+        'elk.layered.considerModelOrder': 'NODES_AND_EDGES',
         'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
         'elk.edgeRouting': 'ORTHOGONAL'
       },
