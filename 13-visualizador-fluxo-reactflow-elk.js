@@ -655,6 +655,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     const cur = String(currentNode || '');
     const skip = skippedNodes instanceof Set ? skippedNodes : new Set();
     return baseNodes.map((n) => {
+      if (n && n.type === 'atpLane') return n;
       const classes = ['atp-rf-node'];
       if (visitedNodes.has(n.id)) classes.push('atp-rf-node-visited');
       if (n.id === cur) classes.push('atp-rf-node-current');
@@ -665,6 +666,65 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         className: classes.join(' ')
       };
     });
+  }
+
+  function atpDimsByType(node) {
+    if (!node) return { width: 300, height: 96 };
+    if (node.type === 'atpDecisao') return { width: 160, height: 150 };
+    if (node.type === 'atpRegra') return { width: 260, height: 100 };
+    return { width: 300, height: 96 };
+  }
+
+  function atpBuildLaneOverlayNodes(positionedNodes, laneLabels) {
+    const nodes = Array.isArray(positionedNodes) ? positionedNodes : [];
+    const labels = Array.isArray(laneLabels) ? laneLabels : [];
+    const lanes = new Map();
+
+    for (const n of nodes) {
+      if (!n || n.type === 'atpLane') continue;
+      const laneIdx = Number(n && n.data && n.data.laneIndex);
+      if (!Number.isFinite(laneIdx) || laneIdx < 0) continue;
+
+      const d = atpDimsByType(n);
+      const x = Number(n.position && n.position.x) || 0;
+      const y = Number(n.position && n.position.y) || 0;
+      const x2 = x + d.width;
+      const y2 = y + d.height;
+
+      const rec = lanes.get(laneIdx) || { minX: x, minY: y, maxX: x2, maxY: y2 };
+      rec.minX = Math.min(rec.minX, x);
+      rec.minY = Math.min(rec.minY, y);
+      rec.maxX = Math.max(rec.maxX, x2);
+      rec.maxY = Math.max(rec.maxY, y2);
+      lanes.set(laneIdx, rec);
+    }
+
+    const PAD_X = 36;
+    const PAD_Y = 26;
+    const out = [];
+    const idxs = Array.from(lanes.keys()).sort((a, b) => a - b);
+    for (const laneIdx of idxs) {
+      const b = lanes.get(laneIdx);
+      if (!b) continue;
+      const meta = labels.find((l) => Number(l && l.index) === laneIdx) || null;
+      const title = meta ? `Lane ${String(laneIdx + 1).padStart(2, '0')} - ${String(meta.label || '')}` : `Lane ${String(laneIdx + 1).padStart(2, '0')}`;
+      out.push({
+        id: `lane_bg_${laneIdx}`,
+        type: 'atpLane',
+        position: { x: Math.round(b.minX - PAD_X), y: Math.round(b.minY - PAD_Y) },
+        data: {
+          label: title,
+          width: Math.max(240, Math.round((b.maxX - b.minX) + (PAD_X * 2))),
+          height: Math.max(160, Math.round((b.maxY - b.minY) + (PAD_Y * 2)))
+        },
+        draggable: false,
+        selectable: false,
+        connectable: false,
+        deletable: false,
+        zIndex: -1
+      });
+    }
+    return out;
   }
 
   function atpCloseFlowReactModal() {
@@ -688,6 +748,8 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     const libs = await atpEnsureReactFlowElkLoaded();
     const model = atpFlowModelFromRules(rules, flowIdx);
     const layoutNodes = await atpApplyElkLayout(model.nodes, model.edges, libs.ELK, model);
+    const laneNodes = atpBuildLaneOverlayNodes(layoutNodes, model.laneLabels);
+    const allLayoutNodes = laneNodes.concat(layoutNodes);
 
     const overlay = document.createElement('div');
     overlay.id = 'atpFlowReactModal';
@@ -797,7 +859,23 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       );
     }
 
+    function ATPNodeLane(props) {
+      const data = props && props.data ? props.data : {};
+      const w = Math.max(180, Number(data.width) || 240);
+      const h = Math.max(120, Number(data.height) || 160);
+      return React.createElement(
+        'div',
+        {
+          className: 'atp-rf-lane-box',
+          style: { width: `${w}px`, height: `${h}px` },
+          title: String(data.label || '')
+        },
+        React.createElement('div', { className: 'atp-rf-lane-label' }, String(data.label || 'Lane'))
+      );
+    }
+
     const nodeTypes = {
+      atpLane: ATPNodeLane,
       atpEntrada: ATPNodeEntrada,
       atpNode: ATPNodePadrao,
       atpSaida: ATPNodeSaida,
@@ -806,7 +884,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     };
 
     function ATPFlowApp() {
-      const [nodes, setNodes, onNodesChange] = useNodesState(layoutNodes);
+      const [nodes, setNodes, onNodesChange] = useNodesState(allLayoutNodes);
       const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
       const [running, setRunning] = React.useState(false);
       const laneLabels = Array.isArray(model && model.laneLabels) ? model.laneLabels : [];
@@ -818,7 +896,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         body: 'Clique em "Modo Execucao" para animar a tomada de decisao.'
       });
 
-      const baseNodesRef = React.useRef(layoutNodes);
+      const baseNodesRef = React.useRef(allLayoutNodes);
       const baseEdgesRef = React.useRef(initialEdges);
       const planRef = React.useRef(model.execPlan);
       const timerRef = React.useRef(null);

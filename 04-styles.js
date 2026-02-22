@@ -73,6 +73,8 @@ function injectStyle() {
       .atp-rf-node-current .atp-rf-node-box{border-color:#d97706;box-shadow:0 0 0 3px rgba(245,158,11,.24);}
       .atp-rf-node-skip .atp-rf-node-box{border-color:#dc2626;box-shadow:0 0 0 2px rgba(220,38,38,.2);}
       .atp-rf-node-current .atp-rf-decision-diamond{border-color:#d97706;box-shadow:0 0 0 3px rgba(245,158,11,.24);}
+      .atp-rf-lane-box{position:relative;border:2px dashed #94a3b8;border-radius:14px;background:rgba(148,163,184,.08);pointer-events:none;box-sizing:border-box;}
+      .atp-rf-lane-label{position:absolute;top:6px;left:10px;padding:2px 8px;border-radius:999px;border:1px solid #94a3b8;background:#f8fafc;font-size:11px;font-weight:800;color:#334155;max-width:90%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 
       .atp-rf-edge .react-flow__edge-path{transition:stroke .25s ease, stroke-width .25s ease, stroke-dasharray .25s ease;}
       .atp-rf-edge .react-flow__edge-text{font-weight:700;fill:#111827;}
