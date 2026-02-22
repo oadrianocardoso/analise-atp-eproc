@@ -5,7 +5,20 @@ let ATP_BPMN_SPLIT_CACHE_KEY = '';
 
 function atpGetBpmnSplitFilesForRules(rules) {
   try {
-    const key = String((rules && rules.length) || 0);
+    const list = Array.isArray(rules) ? rules : [];
+    const sig = list.map((r) => {
+      try {
+        const num = String((r && r.num) || '');
+        const pr = String((r && r.prioridade && (r.prioridade.num ?? r.prioridade.raw ?? r.prioridade.text)) || '');
+        const rem = String((r && r.localizadorRemover && r.localizadorRemover.canonical) || '');
+        const inc = String((r && r.localizadorIncluirAcao && r.localizadorIncluirAcao.canonical) || '');
+        return [num, pr, rem, inc].join('|');
+      } catch (_) {
+        return '';
+      }
+    }).join('\n');
+    const h = (typeof hashCode === 'function') ? Math.abs(hashCode(sig)).toString(36) : String(sig.length);
+    const key = String(list.length) + '_' + h;
     if (ATP_BPMN_SPLIT_CACHE && ATP_BPMN_SPLIT_CACHE_KEY === key) return ATP_BPMN_SPLIT_CACHE;
     const files = atpBuildFluxosBPMN(rules || [], { layout: 'grid', splitFiles: true }) || [];
     ATP_BPMN_SPLIT_CACHE = files;

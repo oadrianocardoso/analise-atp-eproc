@@ -331,9 +331,9 @@ function atpBpmnDimsByNode(node) {
   const name = clean(String(n.name || '')).toUpperCase();
 
   // Perfil alinhado ao visual React+ELK:
-  // localizador ~= 300x96 | regra ~= 260x100 | decisao ~= 92x92
+  // localizador ~= 300x96 | regra ~= 260x100 | decisao ~= 160x150
   if (t === 'startevent' || t === 'endevent') return { width: 36, height: 36 };
-  if (t.includes('gateway')) return { width: 92, height: 92 };
+  if (t.includes('gateway')) return { width: 160, height: 150 };
   if (t === 'servicetask' || /^REGRA\b/.test(name) || /^REFINAMENTO\b/.test(name)) return { width: 260, height: 100 };
   return { width: 300, height: 96 };
 }

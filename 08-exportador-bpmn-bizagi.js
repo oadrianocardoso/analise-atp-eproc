@@ -744,30 +744,49 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
     const allTo = new Set();
     const outGlobal = new Map();
     const edgeMeta = new Map();
+    const edgeMetaSeen = new Map();
+
+    const addEdgeMetaLabelUnique = (edgeKey, label) => {
+      const k = String(edgeKey || '');
+      const raw = String(label == null ? '' : label);
+      const dedupe = norm(raw).toUpperCase();
+      if (!k || !dedupe) return;
+
+      let seen = edgeMetaSeen.get(k);
+      if (!seen) {
+        seen = new Set();
+        edgeMetaSeen.set(k, seen);
+      }
+      if (seen.has(dedupe)) return;
+      seen.add(dedupe);
+
+      const arr = edgeMeta.get(k) || [];
+      arr.push(raw);
+      edgeMeta.set(k, arr);
+    };
 
     for (const r of (rules || [])) {
 
-      const fromKeys = atpClausesToKeys(r && r.localizadorRemover);
-      const toKeys = atpClausesToKeys(r && r.localizadorIncluirAcao);
+      const fromKeys = Array.from(new Set(atpClausesToKeys(r && r.localizadorRemover).map(norm).filter(Boolean)));
+      const toKeys = Array.from(new Set(atpClausesToKeys(r && r.localizadorIncluirAcao).map(norm).filter(Boolean)));
+      const ruleLabel = getRuleLabel(r);
 
       for (const fk of fromKeys) {
-        const fromK = norm(fk);
+        const fromK = fk;
         if (!fromK) continue;
 
         allFrom.add(fromK);
         if (!outGlobal.has(fromK)) outGlobal.set(fromK, new Set());
 
         for (const tk of toKeys) {
-          const toK = norm(tk);
+          const toK = tk;
           if (!toK) continue;
 
           allTo.add(toK);
           outGlobal.get(fromK).add(toK);
 
           const key = fromK + '||' + toK;
-          const arr = edgeMeta.get(key) || [];
-          arr.push(getRuleLabel(r));
-          edgeMeta.set(key, arr);
+          addEdgeMetaLabelUnique(key, ruleLabel);
         }
       }
     }
@@ -785,10 +804,7 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
       allTo.add(child);
 
       const key = base + '||' + child;
-      const arr = edgeMeta.get(key) || [];
-
-      if (!arr.includes('REFINAMENTO (E/&&)')) arr.push('REFINAMENTO (E/&&)');
-      edgeMeta.set(key, arr);
+      addEdgeMetaLabelUnique(key, 'REFINAMENTO (E/&&)');
     }
 
     const allKeys = Array.from(allFrom).sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
