@@ -325,17 +325,12 @@ function atpBpmnGetEls(doc, tag, scope) {
   return out;
 }
 
-function atpBpmnDimsByNode(node) {
-  const n = node || {};
-  const t = String(n.type || '').toLowerCase();
-  const name = clean(String(n.name || '')).toUpperCase();
-
-  // Perfil alinhado ao visual React+ELK:
-  // localizador ~= 300x96 | regra ~= 260x100 | decisao ~= 160x150
+function atpBpmnDimsByType(type) {
+  const t = String(type || '').toLowerCase();
   if (t === 'startevent' || t === 'endevent') return { width: 36, height: 36 };
-  if (t.includes('gateway')) return { width: 160, height: 150 };
-  if (t === 'servicetask' || /^REGRA\b/.test(name) || /^REFINAMENTO\b/.test(name)) return { width: 260, height: 100 };
-  return { width: 300, height: 96 };
+  if (t.includes('gateway')) return { width: 60, height: 60 };
+  if (t === 'servicetask') return { width: 260, height: 92 };
+  return { width: 220, height: 86 };
 }
 
 async function atpApplyElkLayoutToBpmnXml(xml) {
@@ -391,13 +386,11 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       'elk.direction': 'RIGHT',
       'elk.edgeRouting': 'ORTHOGONAL',
       'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
-      'elk.spacing.nodeNode': '44',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '230',
-      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-      'elk.layered.considerModelOrder': 'NODES_AND_EDGES'
+      'elk.spacing.nodeNode': '70',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '160'
     },
     children: nodes.map((n) => {
-      const d = atpBpmnDimsByNode(n);
+      const d = atpBpmnDimsByType(n.type);
       return { id: n.id, width: d.width, height: d.height };
     }),
     edges: edges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] }))
@@ -406,8 +399,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
   const laid = await elk.layout(graph);
   const posMap = new Map();
   for (const ch of (laid.children || [])) {
-    const base = nodeMap.get(ch.id) || { id: ch.id, type: 'task', name: '' };
-    const d = atpBpmnDimsByNode(base);
+    const base = nodeMap.get(ch.id) || { id: ch.id, type: 'task' };
+    const d = atpBpmnDimsByType(base.type);
     posMap.set(ch.id, {
       x: Number(ch.x) || 0,
       y: Number(ch.y) || 0,

@@ -220,77 +220,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     starts.forEach(pushLocal);
     Array.from(nodeSet).forEach(pushLocal);
 
-    const laneSeeds = [];
-    const laneSeedSet = new Set();
-    const pushLaneSeed = (k) => {
-      const kk = String(k || '');
-      if (!kk || laneSeedSet.has(kk)) return;
-      laneSeedSet.add(kk);
-      laneSeeds.push(kk);
-    };
-
-    starts.forEach(pushLaneSeed);
-    if (!laneSeeds.length) {
-      const indeg = new Map();
-      orderedLocals.forEach((k) => indeg.set(k, 0));
-      for (const [from, branches] of branchesByLocal.entries()) {
-        if (!indeg.has(from)) indeg.set(from, 0);
-        for (const br of (branches || [])) {
-          const to = String(br && br.to || '');
-          if (!to) continue;
-          indeg.set(to, (indeg.get(to) || 0) + 1);
-        }
-      }
-      orderedLocals.filter((k) => (indeg.get(k) || 0) === 0).forEach(pushLaneSeed);
-    }
-    if (!laneSeeds.length && orderedLocals.length) pushLaneSeed(orderedLocals[0]);
-
-    const laneByLocalKey = new Map();
-    const bestDistByLocal = new Map();
-    const laneIndexByLocal = new Map();
-    const laneQueue = [];
-
-    const enqueueLane = (localKey, laneSeedKey, laneIdx, dist) => {
-      laneQueue.push({
-        localKey: String(localKey || ''),
-        laneSeedKey: String(laneSeedKey || ''),
-        laneIdx: Number(laneIdx) || 0,
-        dist: Number(dist) || 0
-      });
-    };
-
-    laneSeeds.forEach((seed, idx) => enqueueLane(seed, seed, idx, 0));
-
-    while (laneQueue.length) {
-      const cur = laneQueue.shift();
-      const lk = String(cur.localKey || '');
-      if (!lk) continue;
-
-      const prevDist = bestDistByLocal.has(lk) ? bestDistByLocal.get(lk) : Number.POSITIVE_INFINITY;
-      const prevLane = laneIndexByLocal.has(lk) ? laneIndexByLocal.get(lk) : Number.POSITIVE_INFINITY;
-      const shouldSkip = (cur.dist > prevDist) || (cur.dist === prevDist && cur.laneIdx >= prevLane);
-      if (shouldSkip) continue;
-
-      bestDistByLocal.set(lk, cur.dist);
-      laneIndexByLocal.set(lk, cur.laneIdx);
-      laneByLocalKey.set(lk, cur.laneSeedKey);
-
-      const outs = branchesByLocal.get(lk) || [];
-      for (const br of outs) {
-        const toKey = String(br && br.to || '');
-        if (!toKey) continue;
-        enqueueLane(toKey, cur.laneSeedKey, cur.laneIdx, cur.dist + 1);
-      }
-    }
-
-    for (const local of orderedLocals) {
-      if (laneByLocalKey.has(local)) continue;
-      pushLaneSeed(local);
-      const idx = laneSeeds.length - 1;
-      laneByLocalKey.set(local, local);
-      laneIndexByLocal.set(local, idx);
-    }
-
     const nodes = [];
     const edges = [];
     const outgoingForExec = new Map();
@@ -302,8 +231,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     for (const local of orderedLocals) {
       const localId = `loc_${++seq}`;
       localNodeIdByKey.set(local, localId);
-      const laneIdx = Number(laneIndexByLocal.get(local));
-      const laneSeed = String(laneByLocalKey.get(local) || local);
       nodes.push({
         id: localId,
         type: 'atpNode',
@@ -313,9 +240,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
           label: atpShortText(local, 70),
           fullLabel: local,
           isStart: startSet.has(local),
-          isEnd: false,
-          laneKey: laneSeed,
-          laneIndex: Number.isFinite(laneIdx) ? laneIdx : 0
+          isEnd: false
         },
         position: { x: 0, y: 0 },
         draggable: false
@@ -334,17 +259,10 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
       if (hasDecision) {
         decisionNodeId = `dec_${++seq}`;
-        const laneIdx = Number(laneIndexByLocal.get(local));
-        const laneSeed = String(laneByLocalKey.get(local) || local);
         nodes.push({
           id: decisionNodeId,
           type: 'atpDecisao',
-          data: {
-            label: 'DECISAO',
-            fullLabel: 'No de decisao',
-            laneKey: laneSeed,
-            laneIndex: Number.isFinite(laneIdx) ? laneIdx : 0
-          },
+          data: { label: 'DECISAO', fullLabel: 'No de decisao' },
           position: { x: 0, y: 0 },
           draggable: false
         });
@@ -370,8 +288,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
           rule: br.rule || null
         };
         const meta = atpBuildRuleNodeMeta(fakeItem);
-        const laneIdx = Number(laneIndexByLocal.get(local));
-        const laneSeed = String(laneByLocalKey.get(local) || local);
         nodes.push({
           id: ruleNodeId,
           type: 'atpRegra',
@@ -379,9 +295,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
             kind: 'rule',
             label: meta.label,
             subtitle: meta.subtitle,
-            fullLabel: meta.fullLabel,
-            laneKey: laneSeed,
-            laneIndex: Number.isFinite(laneIdx) ? laneIdx : 0
+            fullLabel: meta.fullLabel
           },
           position: { x: 0, y: 0 },
           draggable: false
@@ -447,17 +361,12 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
     const fallbackStartKey = starts.find(k => orderedLocals.includes(k)) || orderedLocals[0] || null;
     const fallbackStartNodeId = fallbackStartKey ? (localNodeIdByKey.get(fallbackStartKey) || null) : null;
-    const laneKeys = laneSeeds.slice();
-    const laneLabels = laneKeys.map((k, i) => ({ key: k, index: i, label: atpShortText(k, 70) }));
-
     const execPlan = atpBuildExecutionPlan(outgoingForExec, fallbackStartKey);
     return {
       nodes,
       edges,
       starts,
       startNode: fallbackStartNodeId,
-      laneKeys,
-      laneLabels,
       outgoingForExec,
       execPlan
     };
@@ -509,45 +418,27 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     return { steps, endReason };
   }
 
-  async function atpApplyElkLayout(nodes, edges, ELKClass, modelMeta) {
+  async function atpApplyElkLayout(nodes, edges, ELKClass) {
     const elk = new ELKClass();
     const dims = (n) => {
       if (n.type === 'atpDecisao') return { width: 160, height: 150 };
       if (n.type === 'atpRegra') return { width: 260, height: 100 };
-      if (n.type === 'atpSubfluxo') return { width: 240, height: 86 };
       return { width: 300, height: 96 };
     };
-
-    const startNodeIds = (nodes || [])
-      .filter((n) => !!(n && n.data && n.data.isStart))
-      .map((n) => String(n.id || ''))
-      .filter(Boolean);
-
-    const virtualStartId = '__atp_start_anchor__';
 
     const graph = {
       id: 'atp-root',
       layoutOptions: {
         'elk.algorithm': 'layered',
         'elk.direction': 'RIGHT',
-        'elk.spacing.nodeNode': '44',
-        'elk.layered.spacing.nodeNodeBetweenLayers': '230',
-        'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-        'elk.layered.considerModelOrder': 'NODES_AND_EDGES',
+        'elk.spacing.nodeNode': '70',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '150',
         'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
-        'org.eclipse.elk.partitioning.activate': 'true',
         'elk.edgeRouting': 'ORTHOGONAL'
       },
       children: nodes.map((n) => {
         const d = dims(n);
-        const laneIdx = Number(n && n.data && n.data.laneIndex);
-        const child = { id: n.id, width: d.width, height: d.height };
-        if (Number.isFinite(laneIdx) && laneIdx >= 0) {
-          child.layoutOptions = {
-            'org.eclipse.elk.partitioning.partition': String(laneIdx + 1)
-          };
-        }
-        return child;
+        return { id: n.id, width: d.width, height: d.height };
       }),
       edges: edges.map((e) => ({
         id: e.id,
@@ -555,22 +446,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         targets: [e.target]
       }))
     };
-
-    if (startNodeIds.length) {
-      graph.children.push({
-        id: virtualStartId,
-        width: 4,
-        height: 4,
-        layoutOptions: { 'org.eclipse.elk.partitioning.partition': '0' }
-      });
-      for (let i = 0; i < startNodeIds.length; i += 1) {
-        graph.edges.push({
-          id: `${virtualStartId}_e_${i + 1}`,
-          sources: [virtualStartId],
-          targets: [startNodeIds[i]]
-        });
-      }
-    }
 
     try {
       const out = await elk.layout(graph);
@@ -656,7 +531,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     const cur = String(currentNode || '');
     const skip = skippedNodes instanceof Set ? skippedNodes : new Set();
     return baseNodes.map((n) => {
-      if (n && n.type === 'atpLane') return n;
       const classes = ['atp-rf-node'];
       if (visitedNodes.has(n.id)) classes.push('atp-rf-node-visited');
       if (n.id === cur) classes.push('atp-rf-node-current');
@@ -667,219 +541,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         className: classes.join(' ')
       };
     });
-  }
-
-  function atpBuildCompactGraph(model, expandedDecisionIds, threshold) {
-    const outNodes = [];
-    const outEdges = [];
-    const edgeDetailsById = new Map();
-    const nodeById = new Map();
-    const seq = { n: 0 };
-    const expanded = expandedDecisionIds instanceof Set ? expandedDecisionIds : new Set();
-    const maxOut = Math.max(2, Number(threshold) || 6);
-
-    const nextId = (pfx) => `${pfx}_${++seq.n}`;
-    const addEdge = (edge, meta) => {
-      outEdges.push(edge);
-      if (meta) edgeDetailsById.set(edge.id, meta);
-    };
-
-    for (const n of (model && Array.isArray(model.nodes) ? model.nodes : [])) {
-      if (!n || n.type === 'atpRegra' || n.type === 'atpLane') continue;
-      const cp = {
-        ...n,
-        position: { x: 0, y: 0 },
-        data: { ...(n.data || {}) }
-      };
-      nodeById.set(cp.id, cp);
-      outNodes.push(cp);
-    }
-
-    const optionsByDecision = new Map();
-    const directOptionsBySource = new Map();
-
-    for (const opts of ((model && model.outgoingForExec instanceof Map) ? model.outgoingForExec.values() : [])) {
-      for (const op of (opts || [])) {
-        if (!op) continue;
-        if (op.decisionNodeId) {
-          const arr = optionsByDecision.get(op.decisionNodeId) || [];
-          arr.push(op);
-          optionsByDecision.set(op.decisionNodeId, arr);
-        } else {
-          const arr = directOptionsBySource.get(op.fromNodeId) || [];
-          arr.push(op);
-          directOptionsBySource.set(op.fromNodeId, arr);
-        }
-      }
-    }
-
-    for (const [decisionId, options] of optionsByDecision.entries()) {
-      const first = options[0];
-      const fromId = first && first.fromNodeId ? first.fromNodeId : null;
-      const decNode = nodeById.get(decisionId);
-      if (decNode) {
-        decNode.data = {
-          ...(decNode.data || {}),
-          isHeavyDecision: options.length > maxOut
-        };
-      }
-
-      if (fromId && nodeById.has(fromId) && nodeById.has(decisionId)) {
-        const edgeId = (first && first.edgeFromLocalId) ? String(first.edgeFromLocalId) : nextId('cmp_ld');
-        addEdge({
-          id: edgeId,
-          source: fromId,
-          target: decisionId,
-          type: 'smoothstep',
-          data: { compactStructural: true }
-        });
-      }
-
-      if (options.length > maxOut && !expanded.has(decisionId)) {
-        const uniqDest = new Set(options.map((o) => String(o.toKey || '')).filter(Boolean));
-        const hubId = `sub_${String(decisionId)}`;
-        outNodes.push({
-          id: hubId,
-          type: 'atpSubfluxo',
-          data: {
-            decisionId,
-            label: `Subfluxo (${options.length} regras)`,
-            subtitle: `${uniqDest.size} destinos`,
-            laneKey: decNode && decNode.data ? decNode.data.laneKey : null,
-            laneIndex: decNode && decNode.data ? decNode.data.laneIndex : null
-          },
-          position: { x: 0, y: 0 },
-          draggable: false
-        });
-        addEdge({
-          id: `cmp_sub_${String(decisionId)}`,
-          source: decisionId,
-          target: hubId,
-          type: 'smoothstep',
-          label: `${options.length} regras`,
-          data: { compactCollapsed: true, decisionId }
-        }, {
-          title: 'Subfluxo colapsado',
-          lines: options.map((o) => String(o.label || o.details || `${o.fromKey} -> ${o.toKey}`))
-        });
-        continue;
-      }
-
-      const byDest = new Map();
-      for (const op of options) {
-        const k = String(op.toNodeId || '');
-        if (!k) continue;
-        const arr = byDest.get(k) || [];
-        arr.push(op);
-        byDest.set(k, arr);
-      }
-      for (const [toNodeId, arr] of byDest.entries()) {
-        if (!nodeById.has(toNodeId)) continue;
-        const edgeId = nextId('cmp_dd');
-        const cnt = arr.length;
-        addEdge({
-          id: edgeId,
-          source: decisionId,
-          target: toNodeId,
-          type: 'smoothstep',
-          label: `${cnt} regra${cnt > 1 ? 's' : ''}`,
-          data: { compact: true, decisionId }
-        }, {
-          title: `Decisão: ${String((nodeById.get(decisionId)?.data?.label) || decisionId)}`,
-          lines: arr.map((o) => String(o.label || o.details || `${o.fromKey} -> ${o.toKey}`))
-        });
-      }
-    }
-
-    for (const [fromId, options] of directOptionsBySource.entries()) {
-      if (!nodeById.has(fromId)) continue;
-      const byDest = new Map();
-      for (const op of options) {
-        const k = String(op.toNodeId || '');
-        if (!k) continue;
-        const arr = byDest.get(k) || [];
-        arr.push(op);
-        byDest.set(k, arr);
-      }
-      for (const [toNodeId, arr] of byDest.entries()) {
-        if (!nodeById.has(toNodeId)) continue;
-        const edgeId = nextId('cmp_ldir');
-        const cnt = arr.length;
-        addEdge({
-          id: edgeId,
-          source: fromId,
-          target: toNodeId,
-          type: 'smoothstep',
-          label: `${cnt} regra${cnt > 1 ? 's' : ''}`,
-          data: { compact: true }
-        }, {
-          title: `Transição: ${String((nodeById.get(fromId)?.data?.label) || fromId)} -> ${String((nodeById.get(toNodeId)?.data?.label) || toNodeId)}`,
-          lines: arr.map((o) => String(o.label || o.details || `${o.fromKey} -> ${o.toKey}`))
-        });
-      }
-    }
-
-    return { nodes: outNodes, edges: outEdges, edgeDetailsById };
-  }
-
-  function atpDimsByType(node) {
-    if (!node) return { width: 300, height: 96 };
-    if (node.type === 'atpDecisao') return { width: 160, height: 150 };
-    if (node.type === 'atpRegra') return { width: 260, height: 100 };
-    if (node.type === 'atpSubfluxo') return { width: 240, height: 86 };
-    return { width: 300, height: 96 };
-  }
-
-  function atpBuildLaneOverlayNodes(positionedNodes, laneLabels) {
-    const nodes = Array.isArray(positionedNodes) ? positionedNodes : [];
-    const labels = Array.isArray(laneLabels) ? laneLabels : [];
-    const lanes = new Map();
-
-    for (const n of nodes) {
-      if (!n || n.type === 'atpLane') continue;
-      const laneIdx = Number(n && n.data && n.data.laneIndex);
-      if (!Number.isFinite(laneIdx) || laneIdx < 0) continue;
-
-      const d = atpDimsByType(n);
-      const x = Number(n.position && n.position.x) || 0;
-      const y = Number(n.position && n.position.y) || 0;
-      const x2 = x + d.width;
-      const y2 = y + d.height;
-
-      const rec = lanes.get(laneIdx) || { minX: x, minY: y, maxX: x2, maxY: y2 };
-      rec.minX = Math.min(rec.minX, x);
-      rec.minY = Math.min(rec.minY, y);
-      rec.maxX = Math.max(rec.maxX, x2);
-      rec.maxY = Math.max(rec.maxY, y2);
-      lanes.set(laneIdx, rec);
-    }
-
-    const PAD_X = 36;
-    const PAD_Y = 26;
-    const out = [];
-    const idxs = Array.from(lanes.keys()).sort((a, b) => a - b);
-    for (const laneIdx of idxs) {
-      const b = lanes.get(laneIdx);
-      if (!b) continue;
-      const meta = labels.find((l) => Number(l && l.index) === laneIdx) || null;
-      const title = meta ? `Lane ${String(laneIdx + 1).padStart(2, '0')} - ${String(meta.label || '')}` : `Lane ${String(laneIdx + 1).padStart(2, '0')}`;
-      out.push({
-        id: `lane_bg_${laneIdx}`,
-        type: 'atpLane',
-        position: { x: Math.round(b.minX - PAD_X), y: Math.round(b.minY - PAD_Y) },
-        data: {
-          label: title,
-          width: Math.max(240, Math.round((b.maxX - b.minX) + (PAD_X * 2))),
-          height: Math.max(160, Math.round((b.maxY - b.minY) + (PAD_Y * 2)))
-        },
-        draggable: false,
-        selectable: false,
-        connectable: false,
-        deletable: false,
-        zIndex: -1
-      });
-    }
-    return out;
   }
 
   function atpCloseFlowReactModal() {
@@ -902,10 +563,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
     const libs = await atpEnsureReactFlowElkLoaded();
     const model = atpFlowModelFromRules(rules, flowIdx);
-    const COMPACT_DECISION_THRESHOLD = 6;
-    const fullLayoutCoreNodes = await atpApplyElkLayout(model.nodes, model.edges, libs.ELK, model);
-    const fullLaneNodes = atpBuildLaneOverlayNodes(fullLayoutCoreNodes, model.laneLabels);
-    const fullLayoutNodes = fullLaneNodes.concat(fullLayoutCoreNodes);
+    const layoutNodes = await atpApplyElkLayout(model.nodes, model.edges, libs.ELK);
 
     const overlay = document.createElement('div');
     overlay.id = 'atpFlowReactModal';
@@ -919,7 +577,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
     const top = document.createElement('div');
     top.className = 'atp-map-top';
-    top.innerHTML = `<div><div class="atp-map-title">Visualizar Fluxo ${String(flowIdx + 1).padStart(2, '0')} (React Flow + ELK)</div><div class="atp-map-sub">Modo compacto agrega regras por aresta. Clique em arestas para detalhes e em subfluxos para expandir.</div></div>`;
+    top.innerHTML = `<div><div class="atp-map-title">Visualizar Fluxo ${String(flowIdx + 1).padStart(2, '0')} (React Flow + ELK)</div><div class="atp-map-sub">Modo Execucao simula a primeira regra por prioridade em cada decisao.</div></div>`;
 
     const actions = document.createElement('div');
     actions.className = 'atp-map-actions';
@@ -959,7 +617,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     const useEdgesState = RF.useEdgesState;
 
     const markerClosed = MarkerType.ArrowClosed || MarkerType.Arrow || undefined;
-    const styleEdges = (arr) => (arr || []).map((e) => ({
+    const initialEdges = (model.edges || []).map((e) => ({
       ...e,
       markerEnd: markerClosed ? { type: markerClosed } : undefined,
       labelStyle: { fill: '#111827', fontWeight: 700, fontSize: 11 },
@@ -969,26 +627,12 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       style: { stroke: '#6b7280', strokeWidth: 1.9 },
       animated: false
     }));
-    const fullLayoutEdges = styleEdges(model.edges || []);
-
-    const buildCompactLayout = async (expandedSet) => {
-      const compact = atpBuildCompactGraph(model, expandedSet, COMPACT_DECISION_THRESHOLD);
-      const laid = await atpApplyElkLayout(compact.nodes, compact.edges, libs.ELK, model);
-      const laneOverlay = atpBuildLaneOverlayNodes(laid, model.laneLabels);
-      return {
-        nodes: laneOverlay.concat(laid),
-        edges: styleEdges(compact.edges),
-        edgeDetailsById: compact.edgeDetailsById
-      };
-    };
-
-    const compactInitial = await buildCompactLayout(new Set());
 
     function ATPNodeBox(props, kindLabel, cssKind) {
       const data = props && props.data ? props.data : {};
       const title = String(data.fullLabel || data.label || '');
-      const hStyleL = { width: 8, height: 8, opacity: 0, border: 0, background: 'transparent', left: 2 };
-      const hStyleR = { width: 8, height: 8, opacity: 0, border: 0, background: 'transparent', right: 2 };
+      const hStyleL = { width: 0, height: 0, minWidth: 0, minHeight: 0, opacity: 0, border: 0, background: 'transparent', pointerEvents: 'none', transform: 'translate(0,-50%)', left: 0 };
+      const hStyleR = { width: 0, height: 0, minWidth: 0, minHeight: 0, opacity: 0, border: 0, background: 'transparent', pointerEvents: 'none', transform: 'translate(0,-50%)', right: 0 };
       return React.createElement(
         'div',
         { className: `atp-rf-node-box atp-rf-kind-${cssKind}`, title },
@@ -1017,8 +661,8 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     }
 
     function ATPNodeDecisao() {
-      const hStyleL = { width: 8, height: 8, opacity: 0, border: 0, background: 'transparent', left: 2 };
-      const hStyleR = { width: 8, height: 8, opacity: 0, border: 0, background: 'transparent', right: 2 };
+      const hStyleL = { width: 0, height: 0, minWidth: 0, minHeight: 0, opacity: 0, border: 0, background: 'transparent', pointerEvents: 'none', transform: 'translate(0,-50%)', left: 0 };
+      const hStyleR = { width: 0, height: 0, minWidth: 0, minHeight: 0, opacity: 0, border: 0, background: 'transparent', pointerEvents: 'none', transform: 'translate(0,-50%)', right: 0 };
       return React.createElement(
         'div',
         { className: 'atp-rf-decision-node' },
@@ -1029,34 +673,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       );
     }
 
-    function ATPNodeLane(props) {
-      const data = props && props.data ? props.data : {};
-      const w = Math.max(180, Number(data.width) || 240);
-      const h = Math.max(120, Number(data.height) || 160);
-      return React.createElement(
-        'div',
-        {
-          className: 'atp-rf-lane-box',
-          style: { width: `${w}px`, height: `${h}px` },
-          title: String(data.label || '')
-        },
-        React.createElement('div', { className: 'atp-rf-lane-label' }, String(data.label || 'Lane'))
-      );
-    }
-
-    function ATPNodeSubfluxo(props) {
-      const data = props && props.data ? props.data : {};
-      return React.createElement(
-        'div',
-        { className: 'atp-rf-subfluxo-box', title: String(data.label || 'Subfluxo') },
-        React.createElement('div', { className: 'atp-rf-subfluxo-title' }, String(data.label || 'Subfluxo')),
-        React.createElement('div', { className: 'atp-rf-subfluxo-sub' }, String(data.subtitle || 'Clique para expandir'))
-      );
-    }
-
     const nodeTypes = {
-      atpLane: ATPNodeLane,
-      atpSubfluxo: ATPNodeSubfluxo,
       atpEntrada: ATPNodeEntrada,
       atpNode: ATPNodePadrao,
       atpSaida: ATPNodeSaida,
@@ -1065,48 +682,19 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     };
 
     function ATPFlowApp() {
-      const [nodes, setNodes, onNodesChange] = useNodesState(compactInitial.nodes);
-      const [edges, setEdges, onEdgesChange] = useEdgesState(compactInitial.edges);
+      const [nodes, setNodes, onNodesChange] = useNodesState(layoutNodes);
+      const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
       const [running, setRunning] = React.useState(false);
-      const [compactMode, setCompactMode] = React.useState(true);
-      const laneLabels = Array.isArray(model && model.laneLabels) ? model.laneLabels : [];
-      const laneSummary = laneLabels.length
-        ? laneLabels.map((l) => `${String((l.index || 0) + 1).padStart(2, '0')}: ${l.label}`).join(' | ')
-        : 'Sem agrupamento por inicio';
-      const [details, setDetails] = React.useState({
-        title: 'Detalhes',
-        body: 'Modo compacto ativo. Clique em uma aresta para ver as regras agregadas.'
-      });
       const [status, setStatus] = React.useState({
         title: 'Fluxo pronto',
-        body: 'Modo compacto: regras agregadas por aresta. Clique em "Modo Completo" para ver tudo.'
+        body: 'Clique em "Modo Execucao" para animar a tomada de decisao.'
       });
 
-      const baseNodesRef = React.useRef(fullLayoutNodes);
-      const baseEdgesRef = React.useRef(fullLayoutEdges);
+      const baseNodesRef = React.useRef(layoutNodes);
+      const baseEdgesRef = React.useRef(initialEdges);
       const planRef = React.useRef(model.execPlan);
-      const compactExpandedRef = React.useRef(new Set());
-      const compactMetaRef = React.useRef({ edgeDetailsById: compactInitial.edgeDetailsById || new Map() });
-      const compactReqRef = React.useRef(0);
       const timerRef = React.useRef(null);
       const stepRef = React.useRef(-1);
-
-      const rebuildCompact = React.useCallback((expandedSet) => {
-        const token = ++compactReqRef.current;
-        const nextExpanded = expandedSet instanceof Set ? new Set(expandedSet) : new Set();
-        compactExpandedRef.current = nextExpanded;
-        Promise.resolve()
-          .then(() => buildCompactLayout(nextExpanded))
-          .then((pack) => {
-            if (token !== compactReqRef.current) return;
-            compactMetaRef.current = { edgeDetailsById: pack.edgeDetailsById || new Map() };
-            setNodes(pack.nodes || []);
-            setEdges(pack.edges || []);
-          })
-          .catch((e) => {
-            try { console.warn(LOG, 'Falha ao rebuild de layout compacto:', e); } catch (_) {}
-          });
-      }, [setNodes, setEdges]);
 
       const applyState = React.useCallback((idx, isRunning, customStatus) => {
         const plan = planRef.current || { steps: [] };
@@ -1170,10 +758,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
         setRunning(true);
         stepRef.current = -1;
-        setDetails({
-          title: 'Detalhes',
-          body: 'Execução em modo completo. No modo compacto, clique em arestas para ver regras.'
-        });
         applyState(-1, true, {
           title: 'Execucao iniciada',
           body: 'Avaliando regras por prioridade em cada decisao.'
@@ -1191,74 +775,10 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         }, 1400);
       }, [applyState, stopExec]);
 
-      const onToggleCompact = React.useCallback(() => {
-        if (running) return;
-        if (compactMode) {
-          setCompactMode(false);
-          setNodes(baseNodesRef.current);
-          setEdges(baseEdgesRef.current);
-          setStatus({
-            title: 'Modo completo',
-            body: 'Visualização detalhada com todos os nós de regra.'
-          });
-          setDetails({
-            title: 'Detalhes',
-            body: 'Modo completo ativo. Use "Modo Compacto" para organizar o fluxo.'
-          });
-          return;
-        }
-        setCompactMode(true);
-        setStatus({
-          title: 'Modo compacto',
-          body: 'Arestas agregadas por quantidade de regras.'
-        });
-        setDetails({
-          title: 'Detalhes',
-          body: 'Clique em uma aresta para ver as regras agregadas. Clique em subfluxo para expandir.'
-        });
-        rebuildCompact(compactExpandedRef.current);
-      }, [compactMode, rebuildCompact, running, setEdges, setNodes]);
-
       const onToggleExec = React.useCallback(() => {
-        if (running) {
-          stopExec(true);
-          return;
-        }
-        if (compactMode) {
-          setCompactMode(false);
-          setNodes(baseNodesRef.current);
-          setEdges(baseEdgesRef.current);
-        }
-        startExec();
-      }, [compactMode, running, setEdges, setNodes, startExec, stopExec]);
-
-      const onNodeClick = React.useCallback((_, node) => {
-        if (!compactMode || running || !node) return;
-        let decisionId = '';
-        if (node.type === 'atpSubfluxo') {
-          decisionId = String(node && node.data && node.data.decisionId || '');
-        } else if (node.type === 'atpDecisao' && node.data && node.data.isHeavyDecision) {
-          decisionId = String(node.id || '');
-        }
-        if (!decisionId) return;
-        const next = new Set(compactExpandedRef.current || []);
-        if (next.has(decisionId)) next.delete(decisionId);
-        else next.add(decisionId);
-        rebuildCompact(next);
-      }, [compactMode, rebuildCompact, running]);
-
-      const onEdgeClick = React.useCallback((_, edge) => {
-        if (!compactMode || !edge) return;
-        const metaMap = compactMetaRef.current && compactMetaRef.current.edgeDetailsById;
-        const meta = metaMap && metaMap.get ? metaMap.get(String(edge.id || '')) : null;
-        if (!meta) return;
-        const lines = Array.isArray(meta.lines) ? meta.lines : [];
-        const txt = lines.length ? lines.slice(0, 25).join(' | ') : 'Sem regras agregadas.';
-        setDetails({
-          title: String(meta.title || 'Detalhes da Aresta'),
-          body: txt + (lines.length > 25 ? ' | ...' : '')
-        });
-      }, [compactMode]);
+        if (running) stopExec(true);
+        else startExec();
+      }, [running, startExec, stopExec]);
 
       React.useEffect(() => {
         return () => {
@@ -1276,8 +796,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
           nodeTypes,
           onNodesChange,
           onEdgesChange,
-          onNodeClick,
-          onEdgeClick,
           fitView: true,
           fitViewOptions: { padding: 0.15, duration: 500 },
           minZoom: 0.2,
@@ -1296,16 +814,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
             'button',
             {
               type: 'button',
-              className: 'atp-map-btn',
-              onClick: onToggleCompact,
-              disabled: running
-            },
-            compactMode ? 'Compacto: ON' : 'Compacto: OFF'
-          ),
-          React.createElement(
-            'button',
-            {
-              type: 'button',
               className: 'atp-map-btn atp-rf-exec-btn',
               onClick: onToggleExec
             },
@@ -1317,18 +825,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
           { position: 'top-left', className: 'atp-rf-panel-left' },
           React.createElement('div', { className: 'atp-rf-status-title' }, status.title),
           React.createElement('div', { className: 'atp-rf-status-body' }, status.body)
-        ),
-        React.createElement(
-          Panel,
-          { position: 'bottom-left', className: 'atp-rf-panel-lanes' },
-          React.createElement('div', { className: 'atp-rf-status-title' }, 'Lanes (Por Inicio)'),
-          React.createElement('div', { className: 'atp-rf-status-body' }, laneSummary)
-        ),
-        React.createElement(
-          Panel,
-          { position: 'bottom-right', className: 'atp-rf-panel-details' },
-          React.createElement('div', { className: 'atp-rf-status-title' }, details.title),
-          React.createElement('div', { className: 'atp-rf-status-body' }, details.body)
         )
       );
     }
