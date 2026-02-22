@@ -220,6 +220,77 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     starts.forEach(pushLocal);
     Array.from(nodeSet).forEach(pushLocal);
 
+    const laneSeeds = [];
+    const laneSeedSet = new Set();
+    const pushLaneSeed = (k) => {
+      const kk = String(k || '');
+      if (!kk || laneSeedSet.has(kk)) return;
+      laneSeedSet.add(kk);
+      laneSeeds.push(kk);
+    };
+
+    starts.forEach(pushLaneSeed);
+    if (!laneSeeds.length) {
+      const indeg = new Map();
+      orderedLocals.forEach((k) => indeg.set(k, 0));
+      for (const [from, branches] of branchesByLocal.entries()) {
+        if (!indeg.has(from)) indeg.set(from, 0);
+        for (const br of (branches || [])) {
+          const to = String(br && br.to || '');
+          if (!to) continue;
+          indeg.set(to, (indeg.get(to) || 0) + 1);
+        }
+      }
+      orderedLocals.filter((k) => (indeg.get(k) || 0) === 0).forEach(pushLaneSeed);
+    }
+    if (!laneSeeds.length && orderedLocals.length) pushLaneSeed(orderedLocals[0]);
+
+    const laneByLocalKey = new Map();
+    const bestDistByLocal = new Map();
+    const laneIndexByLocal = new Map();
+    const laneQueue = [];
+
+    const enqueueLane = (localKey, laneSeedKey, laneIdx, dist) => {
+      laneQueue.push({
+        localKey: String(localKey || ''),
+        laneSeedKey: String(laneSeedKey || ''),
+        laneIdx: Number(laneIdx) || 0,
+        dist: Number(dist) || 0
+      });
+    };
+
+    laneSeeds.forEach((seed, idx) => enqueueLane(seed, seed, idx, 0));
+
+    while (laneQueue.length) {
+      const cur = laneQueue.shift();
+      const lk = String(cur.localKey || '');
+      if (!lk) continue;
+
+      const prevDist = bestDistByLocal.has(lk) ? bestDistByLocal.get(lk) : Number.POSITIVE_INFINITY;
+      const prevLane = laneIndexByLocal.has(lk) ? laneIndexByLocal.get(lk) : Number.POSITIVE_INFINITY;
+      const shouldSkip = (cur.dist > prevDist) || (cur.dist === prevDist && cur.laneIdx >= prevLane);
+      if (shouldSkip) continue;
+
+      bestDistByLocal.set(lk, cur.dist);
+      laneIndexByLocal.set(lk, cur.laneIdx);
+      laneByLocalKey.set(lk, cur.laneSeedKey);
+
+      const outs = branchesByLocal.get(lk) || [];
+      for (const br of outs) {
+        const toKey = String(br && br.to || '');
+        if (!toKey) continue;
+        enqueueLane(toKey, cur.laneSeedKey, cur.laneIdx, cur.dist + 1);
+      }
+    }
+
+    for (const local of orderedLocals) {
+      if (laneByLocalKey.has(local)) continue;
+      pushLaneSeed(local);
+      const idx = laneSeeds.length - 1;
+      laneByLocalKey.set(local, local);
+      laneIndexByLocal.set(local, idx);
+    }
+
     const nodes = [];
     const edges = [];
     const outgoingForExec = new Map();
@@ -231,6 +302,8 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     for (const local of orderedLocals) {
       const localId = `loc_${++seq}`;
       localNodeIdByKey.set(local, localId);
+      const laneIdx = Number(laneIndexByLocal.get(local));
+      const laneSeed = String(laneByLocalKey.get(local) || local);
       nodes.push({
         id: localId,
         type: 'atpNode',
@@ -240,7 +313,9 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
           label: atpShortText(local, 70),
           fullLabel: local,
           isStart: startSet.has(local),
-          isEnd: false
+          isEnd: false,
+          laneKey: laneSeed,
+          laneIndex: Number.isFinite(laneIdx) ? laneIdx : 0
         },
         position: { x: 0, y: 0 },
         draggable: false
@@ -259,10 +334,17 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
       if (hasDecision) {
         decisionNodeId = `dec_${++seq}`;
+        const laneIdx = Number(laneIndexByLocal.get(local));
+        const laneSeed = String(laneByLocalKey.get(local) || local);
         nodes.push({
           id: decisionNodeId,
           type: 'atpDecisao',
-          data: { label: 'DECISAO', fullLabel: 'No de decisao' },
+          data: {
+            label: 'DECISAO',
+            fullLabel: 'No de decisao',
+            laneKey: laneSeed,
+            laneIndex: Number.isFinite(laneIdx) ? laneIdx : 0
+          },
           position: { x: 0, y: 0 },
           draggable: false
         });
@@ -288,6 +370,8 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
           rule: br.rule || null
         };
         const meta = atpBuildRuleNodeMeta(fakeItem);
+        const laneIdx = Number(laneIndexByLocal.get(local));
+        const laneSeed = String(laneByLocalKey.get(local) || local);
         nodes.push({
           id: ruleNodeId,
           type: 'atpRegra',
@@ -295,7 +379,9 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
             kind: 'rule',
             label: meta.label,
             subtitle: meta.subtitle,
-            fullLabel: meta.fullLabel
+            fullLabel: meta.fullLabel,
+            laneKey: laneSeed,
+            laneIndex: Number.isFinite(laneIdx) ? laneIdx : 0
           },
           position: { x: 0, y: 0 },
           draggable: false
@@ -361,12 +447,17 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
     const fallbackStartKey = starts.find(k => orderedLocals.includes(k)) || orderedLocals[0] || null;
     const fallbackStartNodeId = fallbackStartKey ? (localNodeIdByKey.get(fallbackStartKey) || null) : null;
+    const laneKeys = laneSeeds.slice();
+    const laneLabels = laneKeys.map((k, i) => ({ key: k, index: i, label: atpShortText(k, 70) }));
+
     const execPlan = atpBuildExecutionPlan(outgoingForExec, fallbackStartKey);
     return {
       nodes,
       edges,
       starts,
       startNode: fallbackStartNodeId,
+      laneKeys,
+      laneLabels,
       outgoingForExec,
       execPlan
     };
@@ -418,13 +509,20 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     return { steps, endReason };
   }
 
-  async function atpApplyElkLayout(nodes, edges, ELKClass) {
+  async function atpApplyElkLayout(nodes, edges, ELKClass, modelMeta) {
     const elk = new ELKClass();
     const dims = (n) => {
       if (n.type === 'atpDecisao') return { width: 160, height: 150 };
       if (n.type === 'atpRegra') return { width: 260, height: 100 };
       return { width: 300, height: 96 };
     };
+
+    const startNodeIds = (nodes || [])
+      .filter((n) => !!(n && n.data && n.data.isStart))
+      .map((n) => String(n.id || ''))
+      .filter(Boolean);
+
+    const virtualStartId = '__atp_start_anchor__';
 
     const graph = {
       id: 'atp-root',
@@ -436,11 +534,19 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
         'elk.layered.considerModelOrder': 'NODES_AND_EDGES',
         'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+        'org.eclipse.elk.partitioning.activate': 'true',
         'elk.edgeRouting': 'ORTHOGONAL'
       },
       children: nodes.map((n) => {
         const d = dims(n);
-        return { id: n.id, width: d.width, height: d.height };
+        const laneIdx = Number(n && n.data && n.data.laneIndex);
+        const child = { id: n.id, width: d.width, height: d.height };
+        if (Number.isFinite(laneIdx) && laneIdx >= 0) {
+          child.layoutOptions = {
+            'org.eclipse.elk.partitioning.partition': String(laneIdx + 1)
+          };
+        }
+        return child;
       }),
       edges: edges.map((e) => ({
         id: e.id,
@@ -448,6 +554,22 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         targets: [e.target]
       }))
     };
+
+    if (startNodeIds.length) {
+      graph.children.push({
+        id: virtualStartId,
+        width: 4,
+        height: 4,
+        layoutOptions: { 'org.eclipse.elk.partitioning.partition': '0' }
+      });
+      for (let i = 0; i < startNodeIds.length; i += 1) {
+        graph.edges.push({
+          id: `${virtualStartId}_e_${i + 1}`,
+          sources: [virtualStartId],
+          targets: [startNodeIds[i]]
+        });
+      }
+    }
 
     try {
       const out = await elk.layout(graph);
@@ -565,7 +687,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
     const libs = await atpEnsureReactFlowElkLoaded();
     const model = atpFlowModelFromRules(rules, flowIdx);
-    const layoutNodes = await atpApplyElkLayout(model.nodes, model.edges, libs.ELK);
+    const layoutNodes = await atpApplyElkLayout(model.nodes, model.edges, libs.ELK, model);
 
     const overlay = document.createElement('div');
     overlay.id = 'atpFlowReactModal';
@@ -579,7 +701,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
     const top = document.createElement('div');
     top.className = 'atp-map-top';
-    top.innerHTML = `<div><div class="atp-map-title">Visualizar Fluxo ${String(flowIdx + 1).padStart(2, '0')} (React Flow + ELK)</div><div class="atp-map-sub">Modo Execucao simula a primeira regra por prioridade em cada decisao.</div></div>`;
+    top.innerHTML = `<div><div class="atp-map-title">Visualizar Fluxo ${String(flowIdx + 1).padStart(2, '0')} (React Flow + ELK)</div><div class="atp-map-sub">Layout por inicio (lanes) + ancoragem de entrada na esquerda. Modo Execucao simula a primeira regra por prioridade.</div></div>`;
 
     const actions = document.createElement('div');
     actions.className = 'atp-map-actions';
@@ -687,6 +809,10 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       const [nodes, setNodes, onNodesChange] = useNodesState(layoutNodes);
       const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
       const [running, setRunning] = React.useState(false);
+      const laneLabels = Array.isArray(model && model.laneLabels) ? model.laneLabels : [];
+      const laneSummary = laneLabels.length
+        ? laneLabels.map((l) => `${String((l.index || 0) + 1).padStart(2, '0')}: ${l.label}`).join(' | ')
+        : 'Sem agrupamento por inicio';
       const [status, setStatus] = React.useState({
         title: 'Fluxo pronto',
         body: 'Clique em "Modo Execucao" para animar a tomada de decisao.'
@@ -827,6 +953,12 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
           { position: 'top-left', className: 'atp-rf-panel-left' },
           React.createElement('div', { className: 'atp-rf-status-title' }, status.title),
           React.createElement('div', { className: 'atp-rf-status-body' }, status.body)
+        ),
+        React.createElement(
+          Panel,
+          { position: 'bottom-left', className: 'atp-rf-panel-lanes' },
+          React.createElement('div', { className: 'atp-rf-status-title' }, 'Lanes (Por Inicio)'),
+          React.createElement('div', { className: 'atp-rf-status-body' }, laneSummary)
         )
       );
     }

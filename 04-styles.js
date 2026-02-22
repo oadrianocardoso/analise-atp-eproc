@@ -47,6 +47,7 @@ function injectStyle() {
       .atp-rf-canvas .react-flow{background:transparent !important;}
       .atp-rf-panel-left{background:#ffffff;border:1px solid #d1d5db;border-radius:12px;padding:10px;max-width:min(650px,58vw);box-shadow:0 8px 26px rgba(15,23,42,.15);}
       .atp-rf-panel-right{display:flex;align-items:center;gap:8px;}
+      .atp-rf-panel-lanes{background:#ffffff;border:1px solid #d1d5db;border-radius:12px;padding:10px;max-width:min(760px,66vw);box-shadow:0 8px 26px rgba(15,23,42,.12);}
       .atp-rf-status-title{font-size:12px;font-weight:800;color:#0f172a;margin-bottom:4px;}
       .atp-rf-status-body{font-size:12px;line-height:1.45;color:#334155;word-break:break-word;}
       .atp-rf-exec-btn{font-weight:700;}
