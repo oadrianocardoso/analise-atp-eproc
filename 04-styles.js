@@ -58,10 +58,18 @@ function injectStyle() {
       .atp-rf-node-title{font-size:12px;font-weight:700;color:#111827;line-height:1.35;word-break:break-word;}
       .atp-rf-node-sub{font-size:11px;color:#475569;line-height:1.3;margin-top:4px;word-break:break-word;}
       .atp-rf-kind-node .atp-rf-node-kind{background:#e0f2fe;border-color:#bae6fd;color:#0c4a6e;}
+      .atp-rf-kind-motor .atp-rf-node-kind{background:#e0e7ff;border-color:#a5b4fc;color:#1e1b4b;}
+      .atp-rf-kind-motor{border-color:#a5b4fc;background:#f5f7ff;}
+      .atp-rf-kind-evento .atp-rf-node-kind{background:#dbeafe;border-color:#93c5fd;color:#1e3a8a;}
+      .atp-rf-kind-evento{border-color:#93c5fd;background:#f5fbff;}
+      .atp-rf-kind-prioridade .atp-rf-node-kind{background:#ede9fe;border-color:#c4b5fd;color:#4c1d95;}
+      .atp-rf-kind-prioridade{border-color:#c4b5fd;background:#faf5ff;}
       .atp-rf-kind-entrada .atp-rf-node-kind{background:#dcfce7;border-color:#86efac;color:#14532d;}
       .atp-rf-kind-entrada{border-color:#86efac;}
       .atp-rf-kind-regra .atp-rf-node-kind{background:#ffedd5;border-color:#fdba74;color:#9a3412;}
       .atp-rf-kind-regra{border-color:#fdba74;background:#fffaf0;}
+      .atp-rf-kind-acao .atp-rf-node-kind{background:#d1fae5;border-color:#6ee7b7;color:#065f46;}
+      .atp-rf-kind-acao{border-color:#6ee7b7;background:#f0fdf4;}
       .atp-rf-kind-saida .atp-rf-node-kind{background:#e5e7eb;border-color:#cbd5e1;color:#111827;}
       .atp-rf-kind-saida{border-color:#cbd5e1;background:#f8fafc;}
 

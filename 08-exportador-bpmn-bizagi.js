@@ -953,7 +953,6 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
 
         const svcTaskMeta = new Map();
         const svcIdsByEdge = new Map();
-        const svcIdByRuleKey = new Map();
 
         let svcCount = 0;
         for (const from of nodesAll) {
@@ -973,36 +972,19 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
               const isRef = /^\s*REFINAMENTO\b/i.test(fullLabel);
               if (isRef) continue;
 
-              const ruleKey = norm(fullLabel).toUpperCase();
-              if (!ruleKey) continue;
+              svcCount++;
+              const sid = 'Svc_' + procId + '_' + svcCount;
+              svcTaskMeta.set(sid, {
+                from,
+                to,
+                label: fullLabel
+              });
 
-              let sid = svcIdByRuleKey.get(ruleKey);
-              if (!sid) {
-                svcCount++;
-                sid = 'Svc_' + procId + '_' + svcCount;
-                svcIdByRuleKey.set(ruleKey, sid);
-                svcTaskMeta.set(sid, {
-                  from,
-                  to,
-                  label: fullLabel,
-                  fromSet: new Set([from]),
-                  toSet: new Set([to])
-                });
-
-                let shortLabel = truncateBpmnName(fullLabel, 420);
-                let docLabel = truncateBpmnDoc(fullLabel, 5000);
-                x += '    <bpmn:serviceTask id="' + sid + '" name="' + xmlEsc(shortLabel) + '">\n';
-                x += '      <bpmn:documentation>' + xmlEsc(docLabel) + '</bpmn:documentation>\n';
-                x += '    </bpmn:serviceTask>\n';
-              } else {
-                const meta = svcTaskMeta.get(sid);
-                if (meta) {
-                  if (!(meta.fromSet instanceof Set)) meta.fromSet = new Set(meta.from ? [meta.from] : []);
-                  if (!(meta.toSet instanceof Set)) meta.toSet = new Set(meta.to ? [meta.to] : []);
-                  meta.fromSet.add(from);
-                  meta.toSet.add(to);
-                }
-              }
+              let shortLabel = truncateBpmnName(fullLabel, 420);
+              let docLabel = truncateBpmnDoc(fullLabel, 5000);
+              x += '    <bpmn:serviceTask id="' + sid + '" name="' + xmlEsc(shortLabel) + '">\n';
+              x += '      <bpmn:documentation>' + xmlEsc(docLabel) + '</bpmn:documentation>\n';
+              x += '    </bpmn:serviceTask>\n';
 
               const k = from + '||' + to;
               const arr = svcIdsByEdge.get(k) || [];

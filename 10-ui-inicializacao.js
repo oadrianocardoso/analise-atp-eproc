@@ -333,6 +333,154 @@ function atpBpmnDimsByType(type) {
   return { width: 220, height: 86 };
 }
 
+function atpBpmnNodeKind(type) {
+  const t = String(type || '').toLowerCase();
+  if (t === 'startevent') return 'start';
+  if (t === 'endevent') return 'end';
+  if (t.indexOf('gateway') >= 0) return 'decision';
+  if (t === 'servicetask') return 'action';
+  return 'locator';
+}
+
+function atpBpmnEdgeStepByKinds(fromKind, toKind) {
+  // Modelo-alvo:
+  // Início -> Entrada -> Decisão -> Ação -> Saída -> (Decisão/Ação/Fim)
+  if (fromKind === 'start') return 1;
+  if (fromKind === 'decision') {
+    return 1;
+  }
+  if (fromKind === 'action') {
+    return 1;
+  }
+  if (fromKind === 'locator') {
+    return 1;
+  }
+  return 1;
+}
+
+function atpBpmnComputeFlowStageColumns(nodes, edges, inDegree) {
+  const listNodes = Array.isArray(nodes) ? nodes : [];
+  const listEdges = Array.isArray(edges) ? edges : [];
+  const nodeById = new Map(listNodes.map(n => [String(n && n.id || ''), n]).filter(p => p[0]));
+  const outById = new Map();
+  const predById = new Map();
+  const cols = new Map();
+  const hardMaxCol = Math.max(10, (listNodes.length || 10) + 8);
+
+  for (const n of listNodes) {
+    const id = String(n && n.id || '');
+    if (!id) continue;
+    outById.set(id, []);
+    predById.set(id, []);
+  }
+  for (const e of listEdges) {
+    const sid = String(e && e.source || '');
+    const tid = String(e && e.target || '');
+    if (!sid || !tid) continue;
+    if (!outById.has(sid)) outById.set(sid, []);
+    if (!predById.has(tid)) predById.set(tid, []);
+    outById.get(sid).push(tid);
+    predById.get(tid).push(sid);
+  }
+
+  const seeds = [];
+  for (const n of listNodes) {
+    const id = String(n && n.id || '');
+    if (!id) continue;
+    const kind = atpBpmnNodeKind(n.type);
+    if (kind === 'start') {
+      cols.set(id, 0);
+      seeds.push(id);
+    }
+  }
+  for (const n of listNodes) {
+    const id = String(n && n.id || '');
+    if (!id || cols.has(id)) continue;
+    const kind = atpBpmnNodeKind(n.type);
+    if (kind === 'locator' && Number(inDegree.get(id) || 0) === 0) {
+      cols.set(id, 1);
+      seeds.push(id);
+    }
+  }
+
+  // Árvore: define coluna no primeiro caminho encontrado (evita colapso em coluna final por ciclos).
+  const q = seeds.slice();
+  const seen = new Set(q);
+  while (q.length) {
+    const sid = String(q.shift() || '');
+    if (!sid) continue;
+    const sCol = Number(cols.get(sid));
+    if (!Number.isFinite(sCol)) continue;
+    const sNode = nodeById.get(sid);
+    const sKind = atpBpmnNodeKind(sNode && sNode.type);
+    const outs = (outById.get(sid) || []).slice().sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
+    for (const tid of outs) {
+      const tNode = nodeById.get(tid);
+      const tKind = atpBpmnNodeKind(tNode && tNode.type);
+      const step = atpBpmnEdgeStepByKinds(sKind, tKind);
+      const proposed = Math.min(hardMaxCol, sCol + step);
+      if (!cols.has(tid)) cols.set(tid, proposed);
+      if (!seen.has(tid)) {
+        seen.add(tid);
+        q.push(tid);
+      }
+    }
+  }
+
+  // Passo de consistência único para garantir avanço até o fim sem "explodir" ciclos.
+  const ordered = Array.from(nodeById.keys()).sort((a, b) => {
+    const ca = Number(cols.get(a) || 0);
+    const cb = Number(cols.get(b) || 0);
+    if (ca !== cb) return ca - cb;
+    return String(a).localeCompare(String(b), 'pt-BR');
+  });
+  for (const sid of ordered) {
+    const sCol = Number(cols.get(sid));
+    if (!Number.isFinite(sCol)) continue;
+    const sNode = nodeById.get(sid);
+    const sKind = atpBpmnNodeKind(sNode && sNode.type);
+    for (const tid of (outById.get(sid) || [])) {
+      const tNode = nodeById.get(tid);
+      const tKind = atpBpmnNodeKind(tNode && tNode.type);
+      const step = atpBpmnEdgeStepByKinds(sKind, tKind);
+      const proposed = Math.min(hardMaxCol, sCol + step);
+      const cur = Number(cols.get(tid));
+      if (!Number.isFinite(cur)) cols.set(tid, proposed);
+      else if (proposed > cur && proposed <= cur + 3) cols.set(tid, proposed);
+    }
+  }
+
+  // Garantia: FIM sempre à direita dos predecessores.
+  for (const n of listNodes) {
+    const id = String(n && n.id || '');
+    if (!id) continue;
+    if (atpBpmnNodeKind(n.type) !== 'end') continue;
+    const preds = predById.get(id) || [];
+    let maxPred = 0;
+    for (const p of preds) {
+      const cp = Number(cols.get(p));
+      if (Number.isFinite(cp)) maxPred = Math.max(maxPred, cp);
+    }
+    const cur = Number(cols.get(id));
+    const want = Math.min(hardMaxCol, maxPred + 1);
+    if (!Number.isFinite(cur) || cur < want) cols.set(id, want);
+  }
+
+  // Fallback para nós não alcançados.
+  for (const n of listNodes) {
+    const id = String(n && n.id || '');
+    if (!id || cols.has(id)) continue;
+    const kind = atpBpmnNodeKind(n && n.type);
+    if (kind === 'start') cols.set(id, 0);
+    else if (kind === 'locator') cols.set(id, 1);
+    else if (kind === 'decision') cols.set(id, 2);
+    else if (kind === 'action') cols.set(id, 3);
+    else cols.set(id, 5);
+  }
+
+  return cols;
+}
+
 async function atpApplyElkLayoutToBpmnXml(xml) {
   const ELKClass = await atpEnsureElkLoadedForBpmn();
   const elk = new ELKClass();
@@ -383,6 +531,9 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
   const nodes = Array.from(nodeMap.values());
   if (!nodes.length) throw new Error('Sem nós BPMN para layout.');
 
+  // Colunas por estágio do fluxo (entrada -> decisão -> ação -> saída -> ...).
+  const colById = atpBpmnComputeFlowStageColumns(nodes, edges, inDegree);
+
   const graph = {
     id: 'atp-bpmn-root',
     layoutOptions: {
@@ -390,12 +541,23 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       'elk.direction': 'RIGHT',
       'elk.edgeRouting': 'ORTHOGONAL',
       'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
-      'elk.spacing.nodeNode': '70',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '160'
+      'elk.layered.considerModelOrder': 'NODES_AND_EDGES',
+      'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+      'elk.partitioning.activate': 'true',
+      'elk.spacing.nodeNode': '74',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '170'
     },
     children: nodes.map((n) => {
       const d = atpBpmnDimsByType(n.type);
-      return { id: n.id, width: d.width, height: d.height };
+      const col = Number(colById.get(String(n.id)) || 0);
+      return {
+        id: n.id,
+        width: d.width,
+        height: d.height,
+        layoutOptions: {
+          'elk.partitioning.partition': String(col)
+        }
+      };
     }),
     edges: edges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] }))
   };
@@ -413,6 +575,61 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     });
   }
 
+  // Trava de colunas por estágio do fluxo.
+  const maxWByCol = new Map();
+  for (const [id, b] of posMap.entries()) {
+    const c = Number(colById.get(String(id)));
+    const prev = Number(maxWByCol.get(c) || 0);
+    maxWByCol.set(c, Math.max(prev, Number(b.w) || 220));
+  }
+  const colX = new Map();
+  let xCursor = 40;
+  const colsSorted = Array.from(maxWByCol.keys()).map(v => Number(v)).filter(Number.isFinite).sort((a, b) => a - b);
+  for (const c of colsSorted) {
+    const mw = Number(maxWByCol.get(c) || 220);
+    colX.set(c, xCursor);
+    xCursor += mw + 130;
+  }
+  for (const [id, b] of posMap.entries()) {
+    const c = Number(colById.get(String(id)));
+    const baseX = Number(colX.get(c) || 0);
+    const mw = Number(maxWByCol.get(c) || b.w || 220);
+    b.x = baseX + Math.max(0, ((mw - (Number(b.w) || 0)) / 2));
+  }
+
+  // Evita sobreposição vertical dentro da mesma coluna após travar o X.
+  const colItems = new Map();
+  for (const [id, b] of posMap.entries()) {
+    const c = Number(colById.get(String(id)));
+    if (!colItems.has(c)) colItems.set(c, []);
+    colItems.get(c).push({ id, b });
+  }
+  const COL_MIN_GAP_Y = 24;
+  for (const c of Array.from(colItems.keys()).sort((a, b) => a - b)) {
+    const arr = colItems.get(c) || [];
+    arr.sort((a, b) => {
+      const ay = Number(a && a.b && a.b.y || 0);
+      const by = Number(b && b.b && b.b.y || 0);
+      if (ay !== by) return ay - by;
+      return String(a && a.id || '').localeCompare(String(b && b.id || ''), 'pt-BR');
+    });
+
+    let nextY = null;
+    for (const it of arr) {
+      if (!it || !it.b) continue;
+      const h = Math.max(20, Number(it.b.h) || 20);
+      const y = Number(it.b.y) || 0;
+      if (nextY === null) {
+        nextY = y + h + COL_MIN_GAP_Y;
+        continue;
+      }
+      if (y < nextY) {
+        it.b.y = nextY;
+      }
+      nextY = Number(it.b.y) + h + COL_MIN_GAP_Y;
+    }
+  }
+
   const edgeWps = new Map();
   for (const e of (laid.edges || [])) {
     const sec = e && Array.isArray(e.sections) ? e.sections[0] : null;
@@ -425,6 +642,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     wps.push({ x: Number(sec.endPoint.x) || 0, y: Number(sec.endPoint.y) || 0 });
     edgeWps.set(String(e.id || ''), wps);
   }
+  // Waypoints do ELK não refletem a trava manual de colunas; usa fallback ortogonal recalculado.
+  edgeWps.clear();
 
   let diagram = null;
   try { diagram = doc.getElementsByTagNameNS(NS.bpmndi, 'BPMNDiagram')[0] || null; } catch (_) {}
@@ -465,6 +684,57 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     bo.setAttribute('height', String(Math.round(b.h)));
     sh.appendChild(bo);
     plane.appendChild(sh);
+  }
+
+  const globalMaxY = (() => {
+    let v = Number.NEGATIVE_INFINITY;
+    for (const b of posMap.values()) v = Math.max(v, (Number(b.y) || 0) + (Number(b.h) || 0));
+    return Number.isFinite(v) ? v : 1000;
+  })();
+
+  const colLeft = (c) => Number(colX.get(c));
+  const colRight = (c) => Number(colX.get(c)) + Number(maxWByCol.get(c) || 220);
+
+  // Índices de ramificação (saída e entrada) para separar visualmente as arestas.
+  const outIdxByEdge = new Map();
+  const outCountBySource = new Map();
+  const inIdxByEdge = new Map();
+  const inCountByTarget = new Map();
+
+  const bySource = new Map();
+  const byTarget = new Map();
+  for (const e of edges) {
+    const sid = String(e && e.source || '');
+    const tid = String(e && e.target || '');
+    if (!sid || !tid) continue;
+    if (!bySource.has(sid)) bySource.set(sid, []);
+    if (!byTarget.has(tid)) byTarget.set(tid, []);
+    bySource.get(sid).push(e);
+    byTarget.get(tid).push(e);
+  }
+  for (const [sid, arr] of bySource.entries()) {
+    arr.sort((a, b) => {
+      const ta = posMap.get(String(a && a.target || ''));
+      const tb = posMap.get(String(b && b.target || ''));
+      const ya = Number(ta && ta.y || 0);
+      const yb = Number(tb && tb.y || 0);
+      if (ya !== yb) return ya - yb;
+      return String(a && a.id || '').localeCompare(String(b && b.id || ''), 'pt-BR');
+    });
+    outCountBySource.set(sid, arr.length || 1);
+    arr.forEach((e, i) => outIdxByEdge.set(String(e && e.id || ''), i));
+  }
+  for (const [tid, arr] of byTarget.entries()) {
+    arr.sort((a, b) => {
+      const sa = posMap.get(String(a && a.source || ''));
+      const sb = posMap.get(String(b && b.source || ''));
+      const ya = Number(sa && sa.y || 0);
+      const yb = Number(sb && sb.y || 0);
+      if (ya !== yb) return ya - yb;
+      return String(a && a.id || '').localeCompare(String(b && b.id || ''), 'pt-BR');
+    });
+    inCountByTarget.set(tid, arr.length || 1);
+    arr.forEach((e, i) => inIdxByEdge.set(String(e && e.id || ''), i));
   }
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -529,26 +799,78 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     if (isGatewayType(meta)) return dockGateway(rect, side, ref);
     return dockBySide(rect, side, ref);
   };
-  const buildFallbackOrtho = (srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
+  const compactPts = (pts) => {
+    const out = [];
+    for (const p0 of (pts || [])) {
+      const p = { x: Number(p0 && p0.x) || 0, y: Number(p0 && p0.y) || 0 };
+      const prev = out.length ? out[out.length - 1] : null;
+      if (prev && Math.abs(prev.x - p.x) < 0.001 && Math.abs(prev.y - p.y) < 0.001) continue;
+      out.push(p);
+    }
+    return out;
+  };
+  const buildFallbackOrtho = (edge, srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
+    const e = edge || {};
+    const sid = String(e.source || '');
+    const tid = String(e.target || '');
+    const sCol = Number(colById.get(sid));
+    const tCol = Number(colById.get(tid));
     const sc = rectCenter(srcRect);
     const tc = rectCenter(tgtRect);
-    const srcSide = isGatewayType(srcMeta)
-      ? sideForGatewayFan(srcRect, tgtRect, srcOutCount)
-      : sideFromPoint(srcRect, tc);
-    const tgtSide = isGatewayType(tgtMeta) && (Number(tgtInCount) || 0) > 1
-      ? sideForGatewayFan(tgtRect, srcRect, tgtInCount)
-      : sideFromPoint(tgtRect, sc);
+
+    const forward = Number.isFinite(sCol) && Number.isFinite(tCol) ? (tCol >= sCol) : (tc.x >= sc.x);
+    const srcSide = forward ? 'right' : 'left';
+    const tgtSide = forward ? 'left' : 'right';
     const p1 = dockForNode(srcRect, srcMeta, srcSide, tc);
     const p2 = dockForNode(tgtRect, tgtMeta, tgtSide, sc);
-    if (Math.abs(p1.x - p2.x) < 0.001 || Math.abs(p1.y - p2.y) < 0.001) return [p1, p2];
-    const dx = Math.abs(tc.x - sc.x);
-    const dy = Math.abs(tc.y - sc.y);
-    if (dx >= dy) {
-      const mx = (p1.x + p2.x) / 2;
-      return [p1, { x: mx, y: p1.y }, { x: mx, y: p2.y }, p2];
+
+    const outIdx = Number(outIdxByEdge.get(String(e.id || '')) || 0);
+    const outCnt = Number(outCountBySource.get(sid) || Math.max(1, srcOutCount || 1));
+    const inIdx = Number(inIdxByEdge.get(String(e.id || '')) || 0);
+    const inCnt = Number(inCountByTarget.get(tid) || Math.max(1, tgtInCount || 1));
+    const outOff = (outIdx - ((outCnt - 1) / 2)) * 10;
+    const inOff = (inIdx - ((inCnt - 1) / 2)) * 10;
+    const hasCols = Number.isFinite(sCol) && Number.isFinite(tCol);
+
+    if (hasCols && tCol === sCol) {
+      const xLoop = (Number.isFinite(colRight(sCol)) ? colRight(sCol) : Math.max(p1.x, p2.x)) + 36 + outOff;
+      return compactPts([p1, { x: xLoop, y: p1.y }, { x: xLoop, y: p2.y }, p2]);
     }
-    const my = (p1.y + p2.y) / 2;
-    return [p1, { x: p1.x, y: my }, { x: p2.x, y: my }, p2];
+
+    if (forward) {
+      // Árvore determinística: sai da coluna da origem, ramifica, entra na coluna do destino.
+      const xOut = hasCols
+        ? (colRight(sCol) + 20 + outOff)
+        : (Math.max(p1.x, p2.x) + 30 + outOff);
+      const xIn = hasCols
+        ? (colLeft(tCol) - 20 + inOff)
+        : (Math.min(p1.x, p2.x) - 20 + inOff);
+
+      if (xIn > xOut + 12) {
+        return compactPts([
+          p1,
+          { x: xOut, y: p1.y },
+          { x: xOut, y: p2.y },
+          { x: xIn, y: p2.y },
+          p2
+        ]);
+      }
+
+      const mx = ((p1.x + p2.x) / 2) + (outOff * 0.6) + (inOff * 0.4);
+      return compactPts([p1, { x: mx, y: p1.y }, { x: mx, y: p2.y }, p2]);
+    } else {
+      // Retornos/merges: faixa inferior fixa para não poluir o tronco principal.
+      const leftCol = hasCols ? Math.min(sCol, tCol) : null;
+      const xBase = (leftCol !== null && Number.isFinite(colLeft(leftCol))) ? colLeft(leftCol) : Math.min(p1.x, p2.x);
+      const xBack = xBase - 52 - Math.abs(outOff);
+      const laneY = globalMaxY + 72 + Math.abs(inOff);
+      return compactPts([p1, { x: xBack, y: p1.y }, { x: xBack, y: laneY }, { x: xBack, y: p2.y }, p2]);
+    }
+
+    // Fallback simples.
+    if (Math.abs(p1.x - p2.x) < 0.001 || Math.abs(p1.y - p2.y) < 0.001) return [p1, p2];
+    const mx = (p1.x + p2.x) / 2;
+    return compactPts([p1, { x: mx, y: p1.y }, { x: mx, y: p2.y }, p2]);
   };
   const snapElkEdgeToBounds = (wps, srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
     const pts = Array.isArray(wps) ? wps.map((p) => ({ x: Number(p.x) || 0, y: Number(p.y) || 0 })) : [];
@@ -580,7 +902,7 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       const s = posMap.get(e.source);
       const t = posMap.get(e.target);
       if (s && t) {
-        wps = buildFallbackOrtho(s, t, srcMeta, tgtMeta, srcOutCount, tgtInCount);
+        wps = buildFallbackOrtho(e, s, t, srcMeta, tgtMeta, srcOutCount, tgtInCount);
       } else {
         wps = [];
       }
@@ -1125,12 +1447,6 @@ function disableAlterarPreferenciaNumRegistros() {
         btn.id = 'btnVisualizarFluxoATP';
         btn.textContent = 'Visualizar Fluxo';
 
-        const btnBpmnElk = document.createElement('button');
-        btnBpmnElk.type = 'button';
-        btnBpmnElk.className = 'infraButton';
-        btnBpmnElk.id = 'btnVisualizarFluxoBpmnElkATP';
-        btnBpmnElk.textContent = 'Visualizar Fluxo BPMN (ELK)';
-
         sel.addEventListener('mousedown', () => {
           try { atpRefreshFluxosPickerOptions(table); } catch (e) {}
         }, true);
@@ -1148,48 +1464,6 @@ function disableAlterarPreferenciaNumRegistros() {
               alert('Não foi possível obter as regras (tabela vazia ou não carregada).');
               return;
             }
-            const openLegacyBpmn = () => {
-              const files = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getBpmnFilesForRules === 'function')
-                ? window.ATP.extract.getBpmnFilesForRules(rules)
-                : atpGetBpmnSplitFilesForRules(rules);
-              const f = files && files[idx];
-              if (!f || !f.xml) {
-                alert('Fluxo selecionado não possui BPMN gerado.');
-                return;
-              }
-              atpOpenFlowBpmnModal(f, idx);
-            };
-
-            if (typeof window.atpOpenFlowReactModal === 'function') {
-              Promise.resolve(window.atpOpenFlowReactModal({ flowIdx: idx, rules }))
-                .catch((err) => {
-                  try { console.warn(LOG_PREFIX, '[Fluxos/UI] Fallback para BPMN legado (React Flow indisponível):', err); } catch(_) {}
-                  openLegacyBpmn();
-                });
-              return;
-            }
-
-            openLegacyBpmn();
-          } catch (e) {
-            try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao visualizar fluxo:', e); } catch(_) {}
-          }
-        });
-
-        btnBpmnElk.addEventListener('click', () => {
-          try {
-            atpRefreshFluxosPickerOptions(table);
-            const idx = parseInt(String(sel.value || '-1'), 10);
-            if (!Number.isFinite(idx) || idx < 0) {
-              alert('Selecione um fluxo.');
-              return;
-            }
-
-            const rules = atpGetRulesState();
-            if (!rules.length) {
-              alert('Não foi possível obter as regras (tabela vazia ou não carregada).');
-              return;
-            }
-
             const files = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getBpmnFilesForRules === 'function')
               ? window.ATP.extract.getBpmnFilesForRules(rules)
               : atpGetBpmnSplitFilesForRules(rules);
@@ -1213,14 +1487,13 @@ function disableAlterarPreferenciaNumRegistros() {
                 atpOpenFlowBpmnModal(f, idx);
               });
           } catch (e) {
-            try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao visualizar BPMN com ELK:', e); } catch (_) {}
+            try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao visualizar fluxo (BPMN + ELK):', e); } catch (_) {}
           }
         });
 
         wrap.appendChild(title);
         wrap.appendChild(sel);
         wrap.appendChild(btn);
-        wrap.appendChild(btnBpmnElk);
 
         host.insertAdjacentElement('afterend', wrap);
       }

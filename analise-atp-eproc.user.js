@@ -24,7 +24,6 @@
 // @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/08-exportador-bpmn-bizagi.js
 // @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/09-mapa-regra-bpmn.js
 // @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/11-coordenador-de-fluxos.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/13-visualizador-fluxo-reactflow-elk.js
 // @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/10-ui-inicializacao.js
 // @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/12-monitor-de-acesso.js
 // ==/UserScript==
