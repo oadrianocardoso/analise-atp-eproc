@@ -42,6 +42,8 @@ function injectStyle() {
       .atp-map-canvas .bjs-container, .atp-map-canvas .bjs-container svg{width:100% !important;height:100% !important;}
       .atp-map-canvas svg{display:block;}
       .atp-map-canvas .djs-container{min-height:100%;}
+      .atp-map-canvas .djs-connection.selected .djs-visual > path{stroke:#f97316 !important;stroke-width:2.8px !important;}
+      .atp-map-canvas .djs-connection.hover .djs-visual > path{stroke:#fb923c !important;}
 
       .atp-rf-canvas{width:100%;height:100%;background:transparent;}
       .atp-rf-canvas .react-flow{background:transparent !important;}
@@ -75,6 +77,8 @@ function injectStyle() {
 
       .atp-rf-edge .react-flow__edge-path{transition:stroke .25s ease, stroke-width .25s ease, stroke-dasharray .25s ease;}
       .atp-rf-edge .react-flow__edge-text{font-weight:700;fill:#111827;}
+      .atp-rf-canvas .react-flow__edge.selected .react-flow__edge-path{stroke:#f97316 !important;stroke-width:2.8 !important;}
+      .atp-rf-canvas .react-flow__edge.selected .react-flow__edge-text{fill:#c2410c !important;}
 
       .atp-map-scroller{overflow:auto;max-height:72vh;border:1px solid #e5e7eb;border-radius:10px;background:#fff;}
       .atp-map-svg{text-rendering:geometricPrecision;}

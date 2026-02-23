@@ -463,6 +463,56 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     plane.appendChild(sh);
   }
 
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const rectCenter = (r) => ({ x: r.x + (r.w / 2), y: r.y + (r.h / 2) });
+  const sideFromPoint = (rect, pt) => {
+    const c = rectCenter(rect);
+    const dx = (Number(pt && pt.x) || 0) - c.x;
+    const dy = (Number(pt && pt.y) || 0) - c.y;
+    if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
+    return dy >= 0 ? 'bottom' : 'top';
+  };
+  const dockBySide = (rect, side, ref) => {
+    const l = rect.x;
+    const r = rect.x + rect.w;
+    const t = rect.y;
+    const b = rect.y + rect.h;
+    const rx = Number(ref && ref.x) || (l + r) / 2;
+    const ry = Number(ref && ref.y) || (t + b) / 2;
+    if (side === 'left') return { x: l, y: clamp(ry, t, b) };
+    if (side === 'right') return { x: r, y: clamp(ry, t, b) };
+    if (side === 'top') return { x: clamp(rx, l, r), y: t };
+    return { x: clamp(rx, l, r), y: b };
+  };
+  const buildFallbackOrtho = (srcRect, tgtRect) => {
+    const sc = rectCenter(srcRect);
+    const tc = rectCenter(tgtRect);
+    const srcSide = sideFromPoint(srcRect, tc);
+    const tgtSide = sideFromPoint(tgtRect, sc);
+    const p1 = dockBySide(srcRect, srcSide, tc);
+    const p2 = dockBySide(tgtRect, tgtSide, sc);
+    if (Math.abs(p1.x - p2.x) < 0.001 || Math.abs(p1.y - p2.y) < 0.001) return [p1, p2];
+    const dx = Math.abs(tc.x - sc.x);
+    const dy = Math.abs(tc.y - sc.y);
+    if (dx >= dy) {
+      const mx = (p1.x + p2.x) / 2;
+      return [p1, { x: mx, y: p1.y }, { x: mx, y: p2.y }, p2];
+    }
+    const my = (p1.y + p2.y) / 2;
+    return [p1, { x: p1.x, y: my }, { x: p2.x, y: my }, p2];
+  };
+  const snapElkEdgeToBounds = (wps, srcRect, tgtRect) => {
+    const pts = Array.isArray(wps) ? wps.map((p) => ({ x: Number(p.x) || 0, y: Number(p.y) || 0 })) : [];
+    if (pts.length < 2 || !srcRect || !tgtRect) return pts;
+    const p1 = pts[1] || rectCenter(tgtRect);
+    const pPrev = pts[pts.length - 2] || rectCenter(srcRect);
+    const srcSide = sideFromPoint(srcRect, p1);
+    const tgtSide = sideFromPoint(tgtRect, pPrev);
+    pts[0] = dockBySide(srcRect, srcSide, p1);
+    pts[pts.length - 1] = dockBySide(tgtRect, tgtSide, pPrev);
+    return pts;
+  };
+
   for (const e of edges) {
     const ed = doc.createElementNS(NS.bpmndi, 'bpmndi:BPMNEdge');
     ed.setAttribute('id', 'DI_' + e.id);
@@ -473,12 +523,14 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       const s = posMap.get(e.source);
       const t = posMap.get(e.target);
       if (s && t) {
-        const p1 = { x: s.x + s.w, y: s.y + s.h / 2 };
-        const p2 = { x: t.x, y: t.y + t.h / 2 };
-        wps = [p1, { x: (p1.x + p2.x) / 2, y: p1.y }, { x: (p1.x + p2.x) / 2, y: p2.y }, p2];
+        wps = buildFallbackOrtho(s, t);
       } else {
         wps = [];
       }
+    } else {
+      const s = posMap.get(e.source);
+      const t = posMap.get(e.target);
+      wps = snapElkEdgeToBounds(wps, s, t);
     }
 
     for (const p of wps) {
