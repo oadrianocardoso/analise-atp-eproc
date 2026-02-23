@@ -366,6 +366,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
 
   const flows = atpBpmnGetEls(doc, 'sequenceFlow', proc);
   const edges = [];
+  const outDegree = new Map();
+  const inDegree = new Map();
   for (const sf of flows) {
     const id = String(sf.getAttribute('id') || ('Flow_' + Math.random().toString(36).slice(2)));
     const source = String(sf.getAttribute('sourceRef') || '');
@@ -374,6 +376,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     if (!nodeMap.has(source)) nodeMap.set(source, { id: source, type: 'task', name: source });
     if (!nodeMap.has(target)) nodeMap.set(target, { id: target, type: 'task', name: target });
     edges.push({ id, source, target });
+    outDegree.set(source, (outDegree.get(source) || 0) + 1);
+    inDegree.set(target, (inDegree.get(target) || 0) + 1);
   }
 
   const nodes = Array.from(nodeMap.values());
@@ -465,12 +469,49 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const rectCenter = (r) => ({ x: r.x + (r.w / 2), y: r.y + (r.h / 2) });
+  const isGatewayType = (n) => String(n && n.type || '').toLowerCase().indexOf('gateway') >= 0;
   const sideFromPoint = (rect, pt) => {
     const c = rectCenter(rect);
     const dx = (Number(pt && pt.x) || 0) - c.x;
     const dy = (Number(pt && pt.y) || 0) - c.y;
     if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
     return dy >= 0 ? 'bottom' : 'top';
+  };
+  const sideForGatewayFan = (srcRect, tgtRect, srcOutCount) => {
+    const sc = rectCenter(srcRect);
+    const tc = rectCenter(tgtRect);
+    const dx = tc.x - sc.x;
+    const dy = tc.y - sc.y;
+    const hasFan = (Number(srcOutCount) || 0) > 1;
+    if (hasFan && Math.abs(dy) > Math.max(10, srcRect.h * 0.22)) {
+      return dy >= 0 ? 'bottom' : 'top';
+    }
+    if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
+    return dy >= 0 ? 'bottom' : 'top';
+  };
+  const dockGateway = (rect, side, ref) => {
+    const l = rect.x;
+    const r = rect.x + rect.w;
+    const t = rect.y;
+    const b = rect.y + rect.h;
+    const cx = rect.x + (rect.w / 2);
+    const cy = rect.y + (rect.h / 2);
+    const hw = Math.max(1, rect.w / 2);
+    const hh = Math.max(1, rect.h / 2);
+    const rx = Number(ref && ref.x) || cx;
+    const ry = Number(ref && ref.y) || cy;
+
+    if (side === 'left' || side === 'right') {
+      const y = clamp(ry, t, b);
+      const k = Math.max(0, 1 - (Math.abs(y - cy) / hh));
+      const x = cx + ((side === 'right' ? 1 : -1) * hw * k);
+      return { x, y };
+    }
+
+    const x = clamp(rx, l, r);
+    const k = Math.max(0, 1 - (Math.abs(x - cx) / hw));
+    const y = cy + ((side === 'bottom' ? 1 : -1) * hh * k);
+    return { x, y };
   };
   const dockBySide = (rect, side, ref) => {
     const l = rect.x;
@@ -484,13 +525,21 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     if (side === 'top') return { x: clamp(rx, l, r), y: t };
     return { x: clamp(rx, l, r), y: b };
   };
-  const buildFallbackOrtho = (srcRect, tgtRect) => {
+  const dockForNode = (rect, meta, side, ref) => {
+    if (isGatewayType(meta)) return dockGateway(rect, side, ref);
+    return dockBySide(rect, side, ref);
+  };
+  const buildFallbackOrtho = (srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
     const sc = rectCenter(srcRect);
     const tc = rectCenter(tgtRect);
-    const srcSide = sideFromPoint(srcRect, tc);
-    const tgtSide = sideFromPoint(tgtRect, sc);
-    const p1 = dockBySide(srcRect, srcSide, tc);
-    const p2 = dockBySide(tgtRect, tgtSide, sc);
+    const srcSide = isGatewayType(srcMeta)
+      ? sideForGatewayFan(srcRect, tgtRect, srcOutCount)
+      : sideFromPoint(srcRect, tc);
+    const tgtSide = isGatewayType(tgtMeta) && (Number(tgtInCount) || 0) > 1
+      ? sideForGatewayFan(tgtRect, srcRect, tgtInCount)
+      : sideFromPoint(tgtRect, sc);
+    const p1 = dockForNode(srcRect, srcMeta, srcSide, tc);
+    const p2 = dockForNode(tgtRect, tgtMeta, tgtSide, sc);
     if (Math.abs(p1.x - p2.x) < 0.001 || Math.abs(p1.y - p2.y) < 0.001) return [p1, p2];
     const dx = Math.abs(tc.x - sc.x);
     const dy = Math.abs(tc.y - sc.y);
@@ -501,15 +550,19 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     const my = (p1.y + p2.y) / 2;
     return [p1, { x: p1.x, y: my }, { x: p2.x, y: my }, p2];
   };
-  const snapElkEdgeToBounds = (wps, srcRect, tgtRect) => {
+  const snapElkEdgeToBounds = (wps, srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
     const pts = Array.isArray(wps) ? wps.map((p) => ({ x: Number(p.x) || 0, y: Number(p.y) || 0 })) : [];
     if (pts.length < 2 || !srcRect || !tgtRect) return pts;
     const p1 = pts[1] || rectCenter(tgtRect);
     const pPrev = pts[pts.length - 2] || rectCenter(srcRect);
-    const srcSide = sideFromPoint(srcRect, p1);
-    const tgtSide = sideFromPoint(tgtRect, pPrev);
-    pts[0] = dockBySide(srcRect, srcSide, p1);
-    pts[pts.length - 1] = dockBySide(tgtRect, tgtSide, pPrev);
+    const srcSide = isGatewayType(srcMeta)
+      ? sideForGatewayFan(srcRect, tgtRect, srcOutCount)
+      : sideFromPoint(srcRect, p1);
+    const tgtSide = isGatewayType(tgtMeta) && (Number(tgtInCount) || 0) > 1
+      ? sideForGatewayFan(tgtRect, srcRect, tgtInCount)
+      : sideFromPoint(tgtRect, pPrev);
+    pts[0] = dockForNode(srcRect, srcMeta, srcSide, p1);
+    pts[pts.length - 1] = dockForNode(tgtRect, tgtMeta, tgtSide, pPrev);
     return pts;
   };
 
@@ -519,18 +572,22 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     ed.setAttribute('bpmnElement', e.id);
 
     let wps = edgeWps.get(e.id) || null;
+    const srcMeta = nodeMap.get(e.source) || null;
+    const tgtMeta = nodeMap.get(e.target) || null;
+    const srcOutCount = Number(outDegree.get(e.source) || 0);
+    const tgtInCount = Number(inDegree.get(e.target) || 0);
     if (!wps || wps.length < 2) {
       const s = posMap.get(e.source);
       const t = posMap.get(e.target);
       if (s && t) {
-        wps = buildFallbackOrtho(s, t);
+        wps = buildFallbackOrtho(s, t, srcMeta, tgtMeta, srcOutCount, tgtInCount);
       } else {
         wps = [];
       }
     } else {
       const s = posMap.get(e.source);
       const t = posMap.get(e.target);
-      wps = snapElkEdgeToBounds(wps, s, t);
+      wps = snapElkEdgeToBounds(wps, s, t, srcMeta, tgtMeta, srcOutCount, tgtInCount);
     }
 
     for (const p of wps) {
