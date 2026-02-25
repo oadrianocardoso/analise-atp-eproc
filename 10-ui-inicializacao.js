@@ -809,6 +809,27 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     }
     return out;
   };
+  const orthogonalizePts = (pts) => {
+    const src = compactPts(pts || []);
+    if (src.length < 2) return src;
+    const out = [src[0]];
+    for (let i = 1; i < src.length; i++) {
+      const a = out[out.length - 1];
+      const b = src[i];
+      const ax = Number(a && a.x) || 0;
+      const ay = Number(a && a.y) || 0;
+      const bx = Number(b && b.x) || 0;
+      const by = Number(b && b.y) || 0;
+      if (Math.abs(ax - bx) < 0.001 || Math.abs(ay - by) < 0.001) {
+        out.push({ x: bx, y: by });
+        continue;
+      }
+      // Proíbe diagonais: quebra em dois segmentos ortogonais (H depois V).
+      out.push({ x: bx, y: ay });
+      out.push({ x: bx, y: by });
+    }
+    return compactPts(out);
+  };
   const buildFallbackOrtho = (edge, srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
     const e = edge || {};
     const sid = String(e.source || '');
@@ -852,7 +873,7 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
         : (Math.min(p1.x, p2.x) - 20 - inShift);
 
       if (xIn > xOut + 12) {
-        return compactPts([
+        return orthogonalizePts([
           p1,
           { x: xOut, y: p1.y },
           { x: xOut, y: p2.y },
@@ -862,20 +883,20 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       }
 
       const mx = ((p1.x + p2.x) / 2) + (outOff * 0.6) + (inOff * 0.4);
-      return compactPts([p1, { x: mx, y: p1.y }, { x: mx, y: p2.y }, p2]);
+      return orthogonalizePts([p1, { x: mx, y: p1.y }, { x: mx, y: p2.y }, p2]);
     } else {
       // Retornos/merges: faixa inferior fixa para não poluir o tronco principal.
       const leftCol = hasCols ? Math.min(sCol, tCol) : null;
       const xBase = (leftCol !== null && Number.isFinite(colLeft(leftCol))) ? colLeft(leftCol) : Math.min(p1.x, p2.x);
       const xBack = xBase - 52 - Math.abs(outOff);
       const laneY = globalMaxY + 72 + Math.abs(inOff);
-      return compactPts([p1, { x: xBack, y: p1.y }, { x: xBack, y: laneY }, { x: xBack, y: p2.y }, p2]);
+      return orthogonalizePts([p1, { x: xBack, y: p1.y }, { x: xBack, y: laneY }, { x: xBack, y: p2.y }, p2]);
     }
 
     // Fallback simples.
     if (Math.abs(p1.x - p2.x) < 0.001 || Math.abs(p1.y - p2.y) < 0.001) return [p1, p2];
     const mx = (p1.x + p2.x) / 2;
-    return compactPts([p1, { x: mx, y: p1.y }, { x: mx, y: p2.y }, p2]);
+    return orthogonalizePts([p1, { x: mx, y: p1.y }, { x: mx, y: p2.y }, p2]);
   };
   const snapElkEdgeToBounds = (wps, srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
     const pts = Array.isArray(wps) ? wps.map((p) => ({ x: Number(p.x) || 0, y: Number(p.y) || 0 })) : [];
@@ -917,7 +938,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       wps = snapElkEdgeToBounds(wps, s, t, srcMeta, tgtMeta, srcOutCount, tgtInCount);
     }
 
-    for (const p of wps) {
+    const wpsOrtho = orthogonalizePts(wps || []);
+    for (const p of wpsOrtho) {
       const wp = doc.createElementNS(NS.di, 'di:waypoint');
       wp.setAttribute('x', String(Math.round(Number(p.x) || 0)));
       wp.setAttribute('y', String(Math.round(Number(p.y) || 0)));
