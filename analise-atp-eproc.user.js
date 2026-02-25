@@ -3,7 +3,7 @@
 // @namespace    https://github.com/oadrianocardoso/analise-atp-eproc
 // @description  Script para análise avançada de regras de ATP no eProc, com detecção de colisões, geração de relatórios e exportação de fluxos em BPMN.
 // @author       ADRIANO AUGUSTO CARDOSO E SANTOS
-// @version      10.32
+// @version      10.33
 // @downloadURL  https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/analise-atp-eproc.user.js
 // @updateURL    https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/analise-atp-eproc.user.js
 // @homepageURL  https://github.com/oadrianocardoso/analise-atp-eproc
