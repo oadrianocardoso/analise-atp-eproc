@@ -831,6 +831,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     const outOff = (outIdx - ((outCnt - 1) / 2)) * 10;
     const inOff = (inIdx - ((inCnt - 1) / 2)) * 10;
     const hasCols = Number.isFinite(sCol) && Number.isFinite(tCol);
+    const fanOut = isGatewayType(srcMeta) && outCnt > 1;
+    const fanIn = isGatewayType(tgtMeta) && inCnt > 1;
 
     if (hasCols && tCol === sCol) {
       const xLoop = (Number.isFinite(colRight(sCol)) ? colRight(sCol) : Math.max(p1.x, p2.x)) + 36 + outOff;
@@ -839,12 +841,15 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
 
     if (forward) {
       // Árvore determinística: sai da coluna da origem, ramifica, entra na coluna do destino.
+      // Em fan-out/fan-in, cada aresta usa um canal próprio (evita tronco vertical único).
+      const outShift = fanOut ? (outIdx * 14) : outOff;
+      const inShift = fanIn ? (inIdx * 14) : inOff;
       const xOut = hasCols
-        ? (colRight(sCol) + 20 + outOff)
-        : (Math.max(p1.x, p2.x) + 30 + outOff);
+        ? (colRight(sCol) + 24 + outShift)
+        : (Math.max(p1.x, p2.x) + 30 + outShift);
       const xIn = hasCols
-        ? (colLeft(tCol) - 20 + inOff)
-        : (Math.min(p1.x, p2.x) - 20 + inOff);
+        ? (colLeft(tCol) - 24 - inShift)
+        : (Math.min(p1.x, p2.x) - 20 - inShift);
 
       if (xIn > xOut + 12) {
         return compactPts([
