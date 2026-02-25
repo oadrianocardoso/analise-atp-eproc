@@ -32,4 +32,17 @@ const ATP_CONFIG = {
   analisarQuebraFluxo: true,
 };
 
+// Compatibilidade com versões antigas da UI que consultam esta função.
+function isDesativarResultPage() {
+  try {
+    const href = String((window && window.location && window.location.href) || '');
+    if (!/controlador\.php/i.test(href)) return true;
+    const acao = String(new URL(href).searchParams.get('acao') || '').toLowerCase();
+    if (!acao) return false;
+    return acao !== 'automatizar_localizadores';
+  } catch (_) {
+    return false;
+  }
+}
+
 try { console.log('[ATP][OK] config.js inicializado'); } catch (e) { }
