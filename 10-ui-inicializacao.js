@@ -333,154 +333,6 @@ function atpBpmnDimsByType(type) {
   return { width: 220, height: 86 };
 }
 
-function atpBpmnNodeKind(type) {
-  const t = String(type || '').toLowerCase();
-  if (t === 'startevent') return 'start';
-  if (t === 'endevent') return 'end';
-  if (t.indexOf('gateway') >= 0) return 'decision';
-  if (t === 'servicetask') return 'action';
-  return 'locator';
-}
-
-function atpBpmnEdgeStepByKinds(fromKind, toKind) {
-  // Modelo-alvo:
-  // Início -> Entrada -> Decisão -> Ação -> Saída -> (Decisão/Ação/Fim)
-  if (fromKind === 'start') return 1;
-  if (fromKind === 'decision') {
-    return 1;
-  }
-  if (fromKind === 'action') {
-    return 1;
-  }
-  if (fromKind === 'locator') {
-    return 1;
-  }
-  return 1;
-}
-
-function atpBpmnComputeFlowStageColumns(nodes, edges, inDegree) {
-  const listNodes = Array.isArray(nodes) ? nodes : [];
-  const listEdges = Array.isArray(edges) ? edges : [];
-  const nodeById = new Map(listNodes.map(n => [String(n && n.id || ''), n]).filter(p => p[0]));
-  const outById = new Map();
-  const predById = new Map();
-  const cols = new Map();
-  const hardMaxCol = Math.max(10, (listNodes.length || 10) + 8);
-
-  for (const n of listNodes) {
-    const id = String(n && n.id || '');
-    if (!id) continue;
-    outById.set(id, []);
-    predById.set(id, []);
-  }
-  for (const e of listEdges) {
-    const sid = String(e && e.source || '');
-    const tid = String(e && e.target || '');
-    if (!sid || !tid) continue;
-    if (!outById.has(sid)) outById.set(sid, []);
-    if (!predById.has(tid)) predById.set(tid, []);
-    outById.get(sid).push(tid);
-    predById.get(tid).push(sid);
-  }
-
-  const seeds = [];
-  for (const n of listNodes) {
-    const id = String(n && n.id || '');
-    if (!id) continue;
-    const kind = atpBpmnNodeKind(n.type);
-    if (kind === 'start') {
-      cols.set(id, 0);
-      seeds.push(id);
-    }
-  }
-  for (const n of listNodes) {
-    const id = String(n && n.id || '');
-    if (!id || cols.has(id)) continue;
-    const kind = atpBpmnNodeKind(n.type);
-    if (kind === 'locator' && Number(inDegree.get(id) || 0) === 0) {
-      cols.set(id, 1);
-      seeds.push(id);
-    }
-  }
-
-  // Árvore: define coluna no primeiro caminho encontrado (evita colapso em coluna final por ciclos).
-  const q = seeds.slice();
-  const seen = new Set(q);
-  while (q.length) {
-    const sid = String(q.shift() || '');
-    if (!sid) continue;
-    const sCol = Number(cols.get(sid));
-    if (!Number.isFinite(sCol)) continue;
-    const sNode = nodeById.get(sid);
-    const sKind = atpBpmnNodeKind(sNode && sNode.type);
-    const outs = (outById.get(sid) || []).slice().sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
-    for (const tid of outs) {
-      const tNode = nodeById.get(tid);
-      const tKind = atpBpmnNodeKind(tNode && tNode.type);
-      const step = atpBpmnEdgeStepByKinds(sKind, tKind);
-      const proposed = Math.min(hardMaxCol, sCol + step);
-      if (!cols.has(tid)) cols.set(tid, proposed);
-      if (!seen.has(tid)) {
-        seen.add(tid);
-        q.push(tid);
-      }
-    }
-  }
-
-  // Passo de consistência único para garantir avanço até o fim sem "explodir" ciclos.
-  const ordered = Array.from(nodeById.keys()).sort((a, b) => {
-    const ca = Number(cols.get(a) || 0);
-    const cb = Number(cols.get(b) || 0);
-    if (ca !== cb) return ca - cb;
-    return String(a).localeCompare(String(b), 'pt-BR');
-  });
-  for (const sid of ordered) {
-    const sCol = Number(cols.get(sid));
-    if (!Number.isFinite(sCol)) continue;
-    const sNode = nodeById.get(sid);
-    const sKind = atpBpmnNodeKind(sNode && sNode.type);
-    for (const tid of (outById.get(sid) || [])) {
-      const tNode = nodeById.get(tid);
-      const tKind = atpBpmnNodeKind(tNode && tNode.type);
-      const step = atpBpmnEdgeStepByKinds(sKind, tKind);
-      const proposed = Math.min(hardMaxCol, sCol + step);
-      const cur = Number(cols.get(tid));
-      if (!Number.isFinite(cur)) cols.set(tid, proposed);
-      else if (proposed > cur && proposed <= cur + 3) cols.set(tid, proposed);
-    }
-  }
-
-  // Garantia: FIM sempre à direita dos predecessores.
-  for (const n of listNodes) {
-    const id = String(n && n.id || '');
-    if (!id) continue;
-    if (atpBpmnNodeKind(n.type) !== 'end') continue;
-    const preds = predById.get(id) || [];
-    let maxPred = 0;
-    for (const p of preds) {
-      const cp = Number(cols.get(p));
-      if (Number.isFinite(cp)) maxPred = Math.max(maxPred, cp);
-    }
-    const cur = Number(cols.get(id));
-    const want = Math.min(hardMaxCol, maxPred + 1);
-    if (!Number.isFinite(cur) || cur < want) cols.set(id, want);
-  }
-
-  // Fallback para nós não alcançados.
-  for (const n of listNodes) {
-    const id = String(n && n.id || '');
-    if (!id || cols.has(id)) continue;
-    const kind = atpBpmnNodeKind(n && n.type);
-    if (kind === 'start') cols.set(id, 0);
-    else if (kind === 'locator') cols.set(id, 1);
-    else if (kind === 'decision') cols.set(id, 2);
-    else if (kind === 'action') cols.set(id, 3);
-    else cols.set(id, 5);
-  }
-
-  return cols;
-}
-
 async function atpApplyElkLayoutToBpmnXml(xml) {
   const ELKClass = await atpEnsureElkLoadedForBpmn();
   const elk = new ELKClass();
@@ -530,8 +382,6 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
 
   const nodes = Array.from(nodeMap.values());
   if (!nodes.length) throw new Error('Sem nós BPMN para layout.');
-  // Colunas estruturais por fase do fluxo (garfo): início -> entrada -> decisão -> ação -> saída -> ...
-  const colById = atpBpmnComputeFlowStageColumns(nodes, edges, inDegree);
 
   const graph = {
     id: 'atp-bpmn-root',
@@ -539,25 +389,15 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       'elk.algorithm': 'layered',
       'elk.direction': 'RIGHT',
       'elk.edgeRouting': 'ORTHOGONAL',
-      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
       'elk.layered.considerModelOrder': 'NODES_AND_EDGES',
       'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-      'elk.partitioning.activate': 'true',
-      'elk.spacing.nodeNode': '44',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '240',
-      'elk.layered.nodePlacement.favorStraightEdges': 'true'
+      'elk.spacing.nodeNode': '60',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '120'
     },
     children: nodes.map((n) => {
       const d = atpBpmnDimsByType(n.type);
-      const col = Number(colById.get(String(n.id)) || 0);
-      return {
-        id: n.id,
-        width: d.width,
-        height: d.height,
-        layoutOptions: {
-          'elk.partitioning.partition': String(col)
-        }
-      };
+      return { id: n.id, width: d.width, height: d.height };
     }),
     edges: edges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] }))
   };
@@ -1482,20 +1322,6 @@ function disableAlterarPreferenciaNumRegistros() {
       btnFit.title = 'Ajustar ao viewport';
       btnFit.textContent = 'Fit';
 
-      const modeSel = document.createElement('select');
-      modeSel.className = 'atp-map-btn';
-      modeSel.title = 'Modo de visualização';
-      modeSel.style.minWidth = '180px';
-      modeSel.innerHTML = ''
-        + '<option value="clean">Modo Limpo (Backbone)</option>'
-        + '<option value="full">Modo Completo (Auditoria)</option>';
-
-      const btnCollapseBranches = document.createElement('button');
-      btnCollapseBranches.type = 'button';
-      btnCollapseBranches.className = 'atp-map-btn';
-      btnCollapseBranches.title = 'Recolher ramos expandidos no modo limpo';
-      btnCollapseBranches.textContent = 'Recolher Ramos';
-
       const btnDownload = document.createElement('button');
       btnDownload.type = 'button';
       btnDownload.className = 'atp-map-btn';
@@ -1641,8 +1467,6 @@ function disableAlterarPreferenciaNumRegistros() {
       actions.appendChild(zoomLabel);
       actions.appendChild(btnZoomIn);
       actions.appendChild(btnFit);
-      actions.appendChild(modeSel);
-      actions.appendChild(btnCollapseBranches);
       actions.appendChild(btnDownload);
       actions.appendChild(btnJpeg);
       actions.appendChild(btnClose);
@@ -1663,9 +1487,6 @@ function disableAlterarPreferenciaNumRegistros() {
       atpEnsureBpmnJsLoaded().then((BpmnJS) => {
         const viewer = new BpmnJS({ container: canvas });
         overlay._atpBpmnViewer = viewer;
-        overlay._atpViewMode = 'clean';
-        overlay._atpExpandedDecisions = new Set();
-        overlay._atpCleanOverlayIds = [];
 
         const originalNames = new Map();
         const MAX_LABEL = 90;
@@ -1749,197 +1570,6 @@ function disableAlterarPreferenciaNumRegistros() {
           } catch (e) {}
         };
 
-        overlay._atpComputeAndApplyViewMode = () => {
-          try {
-            const elementRegistry = viewer.get('elementRegistry');
-            const overlays = viewer.get('overlays');
-            const viewMode = String(overlay._atpViewMode || 'clean');
-            const expanded = overlay._atpExpandedDecisions || new Set();
-
-            const clearBadges = () => {
-              try {
-                const ids = Array.isArray(overlay._atpCleanOverlayIds) ? overlay._atpCleanOverlayIds : [];
-                ids.forEach((id) => { try { overlays.remove(id); } catch (_) {} });
-                overlay._atpCleanOverlayIds = [];
-              } catch (_) {}
-            };
-
-            const setVisible = (id, visible) => {
-              try {
-                const el = elementRegistry.get(id);
-                if (!el) return;
-                const gfx = elementRegistry.getGraphics(el);
-                if (gfx) gfx.style.display = visible ? '' : 'none';
-                const lbl = elementRegistry.get(id + '_label');
-                if (lbl) {
-                  const lg = elementRegistry.getGraphics(lbl);
-                  if (lg) lg.style.display = visible ? '' : 'none';
-                }
-              } catch (_) {}
-            };
-
-            clearBadges();
-
-            if (viewMode === 'full') {
-              elementRegistry.forEach((el) => {
-                try {
-                  if (!el || !el.id) return;
-                  setVisible(el.id, true);
-                } catch (_) {}
-              });
-              return;
-            }
-
-            const nodeById = new Map();
-            const flowById = new Map();
-            const outByNode = new Map();
-            const inByNode = new Map();
-            const hiddenCountByDecision = new Map();
-
-            const ensureMapsFor = (id) => {
-              if (!id) return;
-              if (!outByNode.has(id)) outByNode.set(id, []);
-              if (!inByNode.has(id)) inByNode.set(id, []);
-            };
-
-            elementRegistry.forEach((el) => {
-              try {
-                const bo = el && el.businessObject;
-                if (!bo || !el.id) return;
-                const t = String(bo.$type || '');
-                if (t === 'bpmn:SequenceFlow') {
-                  const sid = String(bo.sourceRef && bo.sourceRef.id || '');
-                  const tid = String(bo.targetRef && bo.targetRef.id || '');
-                  if (!sid || !tid) return;
-                  flowById.set(el.id, { id: el.id, source: sid, target: tid });
-                  ensureMapsFor(sid);
-                  ensureMapsFor(tid);
-                  outByNode.get(sid).push(el.id);
-                  inByNode.get(tid).push(el.id);
-                  return;
-                }
-                const isNode = Array.isArray(bo.incoming) && Array.isArray(bo.outgoing);
-                if (!isNode) return;
-                nodeById.set(el.id, el);
-                ensureMapsFor(el.id);
-              } catch (_) {}
-            });
-
-            if (!nodeById.size) return;
-
-            const starts = [];
-            for (const [id, el] of nodeById.entries()) {
-              const t = String(el.businessObject && el.businessObject.$type || '');
-              if (t === 'bpmn:StartEvent') starts.push(id);
-            }
-            if (!starts.length) {
-              for (const [id] of nodeById.entries()) {
-                if ((inByNode.get(id) || []).length === 0) starts.push(id);
-              }
-            }
-
-            const depthMemo = new Map();
-            const depthDfs = (id, stack) => {
-              if (!id) return 0;
-              if (depthMemo.has(id)) return Number(depthMemo.get(id) || 0);
-              if (stack.has(id)) return 0;
-              stack.add(id);
-              let best = 0;
-              const outs = outByNode.get(id) || [];
-              for (const fid of outs) {
-                const f = flowById.get(fid);
-                if (!f) continue;
-                best = Math.max(best, 1 + depthDfs(f.target, stack));
-              }
-              stack.delete(id);
-              depthMemo.set(id, best);
-              return best;
-            };
-
-            const primaryByNode = new Map();
-            for (const [id] of nodeById.entries()) {
-              const outs = (outByNode.get(id) || []).slice();
-              if (outs.length <= 1) continue;
-              outs.sort((a, b) => {
-                const fa = flowById.get(a);
-                const fb = flowById.get(b);
-                const da = depthDfs(fa && fa.target, new Set());
-                const db = depthDfs(fb && fb.target, new Set());
-                if (da !== db) return db - da;
-                const oa = (fa && outByNode.get(fa.target) || []).length;
-                const ob = (fb && outByNode.get(fb.target) || []).length;
-                if (oa !== ob) return ob - oa;
-                return String(a).localeCompare(String(b), 'pt-BR');
-              });
-              primaryByNode.set(id, outs[0]);
-              hiddenCountByDecision.set(id, Math.max(0, outs.length - 1));
-            }
-
-            const visibleNodes = new Set();
-            const visibleFlows = new Set();
-            const q = starts.slice();
-            const seen = new Set();
-            while (q.length) {
-              const id = String(q.shift() || '');
-              if (!id || seen.has(id)) continue;
-              seen.add(id);
-              visibleNodes.add(id);
-              const outs = (outByNode.get(id) || []).slice();
-              let use = outs;
-              if (outs.length > 1 && primaryByNode.has(id) && !expanded.has(id)) {
-                use = [primaryByNode.get(id)];
-              }
-              for (const fid of use) {
-                const f = flowById.get(fid);
-                if (!f) continue;
-                visibleFlows.add(fid);
-                if (f.target) q.push(f.target);
-              }
-            }
-
-            // Renderização: oculta ramos secundários no modo limpo.
-            elementRegistry.forEach((el) => {
-              try {
-                const bo = el && el.businessObject;
-                if (!bo || !el.id) return;
-                const t = String(bo.$type || '');
-                if (t === 'bpmn:SequenceFlow') {
-                  setVisible(el.id, visibleFlows.has(el.id));
-                  return;
-                }
-                const isNode = Array.isArray(bo.incoming) && Array.isArray(bo.outgoing);
-                if (!isNode) return;
-                setVisible(el.id, visibleNodes.has(el.id));
-              } catch (_) {}
-            });
-
-            // Badge para indicar decisão colapsada.
-            for (const [id, hiddenCount] of hiddenCountByDecision.entries()) {
-              try {
-                if (!hiddenCount || hiddenCount < 1) continue;
-                if (!visibleNodes.has(id)) continue;
-                if (expanded.has(id)) continue;
-                const badge = document.createElement('div');
-                badge.style.background = '#f59e0b';
-                badge.style.color = '#111827';
-                badge.style.border = '1px solid #b45309';
-                badge.style.borderRadius = '10px';
-                badge.style.padding = '1px 6px';
-                badge.style.fontSize = '11px';
-                badge.style.fontWeight = '600';
-                badge.style.cursor = 'pointer';
-                badge.textContent = '+' + String(hiddenCount) + ' ramos';
-                badge.title = 'Clique na decisão para expandir os ramos ocultos';
-                const ovId = overlays.add(id, {
-                  position: { right: -8, bottom: -8 },
-                  html: badge
-                });
-                overlay._atpCleanOverlayIds.push(ovId);
-              } catch (_) {}
-            }
-          } catch (e) {}
-        };
-
         viewer.importXML(String(fileObj.xml || '')).then(() => {
           try {
             const canvasApi = viewer.get('canvas');
@@ -1947,7 +1577,6 @@ function disableAlterarPreferenciaNumRegistros() {
             zoomValue = canvasApi.zoom();
             zoomLabel.textContent = Math.round(zoomValue * 100) + '%';
             overlay._atpApplyTruncation();
-            overlay._atpComputeAndApplyViewMode();
             try { overlay._atpApplyHoverTitles && overlay._atpApplyHoverTitles(); } catch (e) {}
           } catch (e) {}
         }).catch((e) => {
@@ -1973,43 +1602,6 @@ function disableAlterarPreferenciaNumRegistros() {
             zoomLabel.textContent = Math.round(zoomValue * 100) + '%';
           } catch (e) {}
         });
-
-        modeSel.addEventListener('change', () => {
-          try {
-            overlay._atpViewMode = String(modeSel.value || 'clean');
-            if (overlay._atpViewMode === 'full') {
-              overlay._atpExpandedDecisions = new Set();
-            }
-            overlay._atpComputeAndApplyViewMode();
-          } catch (_) {}
-        });
-
-        btnCollapseBranches.addEventListener('click', () => {
-          try {
-            overlay._atpExpandedDecisions = new Set();
-            overlay._atpViewMode = 'clean';
-            modeSel.value = 'clean';
-            overlay._atpComputeAndApplyViewMode();
-          } catch (_) {}
-        });
-
-        try {
-          const eventBus = viewer.get('eventBus');
-          eventBus.on('element.click', (ev) => {
-            try {
-              if (String(overlay._atpViewMode || 'clean') !== 'clean') return;
-              const el = ev && ev.element;
-              const bo = el && el.businessObject;
-              if (!el || !bo) return;
-              const isGateway = String(bo.$type || '').indexOf('Gateway') >= 0;
-              if (!isGateway) return;
-              if (!overlay._atpExpandedDecisions) overlay._atpExpandedDecisions = new Set();
-              if (overlay._atpExpandedDecisions.has(el.id)) overlay._atpExpandedDecisions.delete(el.id);
-              else overlay._atpExpandedDecisions.add(el.id);
-              overlay._atpComputeAndApplyViewMode();
-            } catch (_) {}
-          });
-        } catch (_) {}
 
       }).catch((e) => {
         try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao carregar bpmn-js modeler:', e); } catch(_) {}
