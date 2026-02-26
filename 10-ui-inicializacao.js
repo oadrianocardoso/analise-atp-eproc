@@ -588,35 +588,145 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     b.x = baseX + Math.max(0, ((mw - (Number(b.w) || 0)) / 2));
   }
 
-  // Evita sobreposição vertical dentro da mesma coluna.
+  // Reorganização vertical por fase: alinhamento 1:1 e centróides N:1.
   const colItems = new Map();
   for (const [id, b] of posMap.entries()) {
     const c = Number(colById.get(String(id)));
     if (!colItems.has(c)) colItems.set(c, []);
     colItems.get(c).push({ id, b });
   }
-  const COL_MIN_GAP_Y = 46;
-  for (const c of Array.from(colItems.keys()).sort((a, b) => a - b)) {
-    const arr = colItems.get(c) || [];
-    arr.sort((a, b) => {
-      const ay = Number(a && a.b && a.b.y || 0);
-      const by = Number(b && b.b && b.b.y || 0);
-      if (ay !== by) return ay - by;
-      return String(a && a.id || '').localeCompare(String(b && b.id || ''), 'pt-BR');
-    });
-    let nextY = null;
-    for (const it of arr) {
-      if (!it || !it.b) continue;
-      const h = Math.max(20, Number(it.b.h) || 20);
-      const y = Number(it.b.y) || 0;
-      if (nextY === null) {
-        nextY = y + h + COL_MIN_GAP_Y;
-        continue;
-      }
-      if (y < nextY) it.b.y = nextY;
-      nextY = Number(it.b.y) + h + COL_MIN_GAP_Y;
+  const COL_MIN_GAP_Y = 54;
+  const centerY = (b) => (Number(b && b.y) || 0) + ((Number(b && b.h) || 0) / 2);
+  const setCenterY = (b, cy) => { b.y = (Number(cy) || 0) - ((Number(b && b.h) || 0) / 2); };
+  const avg = (arr) => {
+    if (!arr || !arr.length) return null;
+    let s = 0;
+    let n = 0;
+    for (const v of arr) { const x = Number(v); if (Number.isFinite(x)) { s += x; n++; } }
+    return n ? (s / n) : null;
+  };
+
+  const predForwardByTarget = new Map();
+  const succForwardBySource = new Map();
+  for (const e of edges) {
+    const sid = String(e && e.source || '');
+    const tid = String(e && e.target || '');
+    if (!sid || !tid) continue;
+    const sCol = Number(colById.get(sid));
+    const tCol = Number(colById.get(tid));
+    if (!Number.isFinite(sCol) || !Number.isFinite(tCol)) continue;
+    if (tCol > sCol) {
+      if (!predForwardByTarget.has(tid)) predForwardByTarget.set(tid, []);
+      if (!succForwardBySource.has(sid)) succForwardBySource.set(sid, []);
+      predForwardByTarget.get(tid).push(sid);
+      succForwardBySource.get(sid).push(tid);
     }
   }
+
+  const kindById = new Map();
+  for (const n of nodes) kindById.set(String(n && n.id || ''), atpBpmnNodeKind(n && n.type));
+  const desiredCenterById = new Map();
+  for (const [id, b] of posMap.entries()) desiredCenterById.set(String(id), centerY(b));
+
+  const packColumnByDesired = (arr) => {
+    const items = (arr || []).slice().filter(it => it && it.b && it.id);
+    if (!items.length) return;
+    items.sort((a, b) => {
+      const da = Number(desiredCenterById.get(String(a.id)) || centerY(a.b));
+      const db = Number(desiredCenterById.get(String(b.id)) || centerY(b.b));
+      if (da !== db) return da - db;
+      return String(a.id).localeCompare(String(b.id), 'pt-BR');
+    });
+    const centers = items.map(it => Number(desiredCenterById.get(String(it.id)) || centerY(it.b)));
+    for (let i = 1; i < items.length; i++) {
+      const hp = Math.max(20, Number(items[i - 1].b.h) || 20);
+      const hc = Math.max(20, Number(items[i].b.h) || 20);
+      const minDist = (hp / 2) + (hc / 2) + COL_MIN_GAP_Y;
+      if (centers[i] < centers[i - 1] + minDist) centers[i] = centers[i - 1] + minDist;
+    }
+    for (let i = items.length - 2; i >= 0; i--) {
+      const hc = Math.max(20, Number(items[i].b.h) || 20);
+      const hn = Math.max(20, Number(items[i + 1].b.h) || 20);
+      const minDist = (hc / 2) + (hn / 2) + COL_MIN_GAP_Y;
+      if (centers[i] > centers[i + 1] - minDist) centers[i] = centers[i + 1] - minDist;
+    }
+    const meanDesired = avg(items.map(it => Number(desiredCenterById.get(String(it.id)) || centerY(it.b))));
+    const meanPacked = avg(centers);
+    const shift = (Number.isFinite(meanDesired) && Number.isFinite(meanPacked)) ? (meanDesired - meanPacked) : 0;
+    for (let i = 0; i < items.length; i++) {
+      const cy = centers[i] + shift;
+      setCenterY(items[i].b, cy);
+      desiredCenterById.set(String(items[i].id), cy);
+    }
+  };
+
+  const colsAsc = Array.from(colItems.keys()).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  const colsDesc = colsAsc.slice().reverse();
+
+  for (let iter = 0; iter < 4; iter++) {
+    for (const c of colsAsc) {
+      const arr = colItems.get(c) || [];
+      for (const it of arr) {
+        const id = String(it && it.id || '');
+        if (!id) continue;
+        const k = String(kindById.get(id) || '');
+        const preds = (predForwardByTarget.get(id) || []).slice();
+        let d = null;
+        if (preds.length) d = avg(preds.map(pid => {
+          const pb = posMap.get(String(pid));
+          return pb ? centerY(pb) : null;
+        }));
+
+        // 1:1 localizador -> gateway na mesma linha.
+        if (k === 'decision' && preds.length === 1) {
+          const p = String(preds[0] || '');
+          if (String(kindById.get(p) || '') === 'locator' && Number(outDegree.get(p) || 0) === 1) {
+            const pb = posMap.get(p);
+            if (pb) d = centerY(pb);
+          }
+        }
+
+        // N:1 ações -> localizador de saída alinhado ao centróide das regras.
+        if (k === 'locator' && preds.length > 1) {
+          const allActions = preds.every(pid => String(kindById.get(String(pid)) || '') === 'action');
+          if (allActions) {
+            d = avg(preds.map(pid => {
+              const pb = posMap.get(String(pid));
+              return pb ? centerY(pb) : null;
+            }));
+          }
+        }
+
+        if (Number.isFinite(d)) desiredCenterById.set(id, Number(d));
+      }
+      packColumnByDesired(arr);
+    }
+
+    // Suaviza continuidade para direita (evita quebra abrupta entre blocos).
+    for (const c of colsDesc) {
+      const arr = colItems.get(c) || [];
+      for (const it of arr) {
+        const id = String(it && it.id || '');
+        if (!id) continue;
+        const succ = (succForwardBySource.get(id) || []).slice();
+        if (!succ.length) continue;
+        const d2 = avg(succ.map(tid => {
+          const tb = posMap.get(String(tid));
+          return tb ? centerY(tb) : null;
+        }));
+        if (!Number.isFinite(d2)) continue;
+        const cur = Number(desiredCenterById.get(id) || centerY(it.b));
+        desiredCenterById.set(id, (cur * 0.7) + (Number(d2) * 0.3));
+      }
+      packColumnByDesired(arr);
+    }
+  }
+
+  const globalMaxX = (() => {
+    let v = Number.NEGATIVE_INFINITY;
+    for (const b of posMap.values()) v = Math.max(v, (Number(b.x) || 0) + (Number(b.w) || 0));
+    return Number.isFinite(v) ? v : 0;
+  })();
 
   const edgeWps = new Map();
   for (const e of (laid.edges || [])) {
@@ -844,10 +954,14 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       return orthogonalizePts([p1, { x: trunkX, y: p1.y }, { x: trunkX, y: p2.y }, p2]);
     }
 
+    // Ligações para a esquerda: contorna pela direita do diagrama.
+    if (!forward) {
+      const laneX = globalMaxX + 160 + Math.abs(outOff * 0.4) + Math.abs(inOff * 0.3);
+      return orthogonalizePts([p1, { x: laneX, y: p1.y }, { x: laneX, y: p2.y }, p2]);
+    }
+
     // Padrão L tradicional (um cotovelo principal + chegada ao alvo).
-    const elbowX = forward
-      ? Math.max(p1.x + 24, p2.x - 24 + inOff)
-      : Math.min(p1.x - 24, p2.x + 24 + outOff);
+    const elbowX = Math.max(p1.x + 24, p2.x - 24 + inOff);
     return orthogonalizePts([p1, { x: elbowX, y: p1.y }, { x: elbowX, y: p2.y }, p2]);
   };
   const snapElkEdgeToBounds = (wps, srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
