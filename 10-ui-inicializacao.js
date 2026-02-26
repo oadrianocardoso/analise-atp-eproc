@@ -530,6 +530,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
 
   const nodes = Array.from(nodeMap.values());
   if (!nodes.length) throw new Error('Sem nós BPMN para layout.');
+  // Colunas estruturais por fase do fluxo (garfo): início -> entrada -> decisão -> ação -> saída -> ...
+  const colById = atpBpmnComputeFlowStageColumns(nodes, edges, inDegree);
 
   const graph = {
     id: 'atp-bpmn-root',
@@ -540,12 +542,21 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
       'elk.layered.considerModelOrder': 'NODES_AND_EDGES',
       'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-      'elk.spacing.nodeNode': '60',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '120'
+      'elk.partitioning.activate': 'true',
+      'elk.spacing.nodeNode': '74',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '160'
     },
     children: nodes.map((n) => {
       const d = atpBpmnDimsByType(n.type);
-      return { id: n.id, width: d.width, height: d.height };
+      const col = Number(colById.get(String(n.id)) || 0);
+      return {
+        id: n.id,
+        width: d.width,
+        height: d.height,
+        layoutOptions: {
+          'elk.partitioning.partition': String(col)
+        }
+      };
     }),
     edges: edges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] }))
   };
