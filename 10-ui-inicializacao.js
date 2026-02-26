@@ -819,22 +819,37 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     const inCnt = Number(inCountByTarget.get(tid) || Math.max(1, tgtInCount || 1));
     const outOff = (outIdx - ((outCnt - 1) / 2)) * 12;
     const inOff = (inIdx - ((inCnt - 1) / 2)) * 10;
-    const srcSide = isGatewayType(srcMeta)
-      ? sideForGatewayFan(srcRect, tgtRect, srcOutCount)
-      : sideFromPoint(srcRect, tc);
-    const tgtSide = isGatewayType(tgtMeta) && (Number(tgtInCount) || 0) > 1
-      ? sideForGatewayFan(tgtRect, srcRect, tgtInCount)
-      : sideFromPoint(tgtRect, sc);
-    const p1 = dockForNode(srcRect, srcMeta, srcSide, tc);
-    const p2 = dockForNode(tgtRect, tgtMeta, tgtSide, sc);
+    const forward = tc.x >= sc.x;
+    const srcIsGateway = isGatewayType(srcMeta);
+    const tgtIsGateway = isGatewayType(tgtMeta);
+
+    // Estilo tradicional: conexões horizontais entre colunas (left/right), sem fan por top/bottom.
+    const srcSide = forward ? 'right' : 'left';
+    const tgtSide = forward ? 'left' : 'right';
+    const p1 = dockForNode(srcRect, srcMeta, srcSide, { x: sc.x, y: sc.y });
+    const p2 = dockForNode(tgtRect, tgtMeta, tgtSide, { x: tc.x, y: tc.y });
 
     // Fallback simples.
     if (Math.abs(p1.x - p2.x) < 0.001 || Math.abs(p1.y - p2.y) < 0.001) return [p1, p2];
     const dx = Math.abs(tc.x - sc.x);
     const dy = Math.abs(tc.y - sc.y);
-    const forward = tc.x >= sc.x;
+
+    // Gateway com múltiplas saídas: cria "tronco vertical" com ramificações horizontais.
+    if (forward && srcIsGateway && outCnt > 1) {
+      const trunkX = p1.x + 30;
+      const nearTargetX = Math.max(trunkX + 18, p2.x - 24 + inOff);
+      return orthogonalizePts([p1, { x: trunkX, y: p1.y }, { x: trunkX, y: p2.y }, { x: nearTargetX, y: p2.y }, p2]);
+    }
+
+    // Gateway com múltiplas entradas: convergência tradicional em tronco vertical.
+    if (!forward && tgtIsGateway && inCnt > 1) {
+      const trunkX = p2.x - 30;
+      const nearSourceX = Math.min(trunkX - 18, p1.x + 24 + outOff);
+      return orthogonalizePts([p1, { x: nearSourceX, y: p1.y }, { x: trunkX, y: p1.y }, { x: trunkX, y: p2.y }, p2]);
+    }
+
     if (forward) {
-      const d = Math.max(20, Math.min(80, dx * 0.32));
+      const d = Math.max(24, Math.min(96, dx * 0.35));
       const x1 = p1.x + d + outOff;
       const x2 = p2.x - d + inOff;
       if (x2 > x1 + 10) {
@@ -1836,14 +1851,99 @@ function disableAlterarPreferenciaNumRegistros() {
 
         const ATP_CHAIN_MARKER = 'atp-chain-selected';
         overlay._atpChainSelectedIds = new Set();
+        overlay._atpChainMarkerBackup = new Map();
         overlay._atpClearChainSelection = () => {
           try {
+            const elementRegistry = viewer.get('elementRegistry');
             const canvasApi = viewer.get('canvas');
             if (!canvasApi) return;
+            for (const [id, prev] of Array.from(overlay._atpChainMarkerBackup || [])) {
+              try {
+                const el = elementRegistry && elementRegistry.get(id);
+                if (!el) continue;
+                const gfx = elementRegistry.getGraphics(el);
+                const path = gfx && gfx.querySelector && gfx.querySelector('.djs-visual > path');
+                if (!path) continue;
+                const prevEnd = String(prev && prev.end || '');
+                const prevStart = String(prev && prev.start || '');
+                if (prevEnd) path.setAttribute('marker-end', prevEnd); else path.removeAttribute('marker-end');
+                if (prevStart) path.setAttribute('marker-start', prevStart); else path.removeAttribute('marker-start');
+              } catch (_) {}
+            }
+            overlay._atpChainMarkerBackup = new Map();
             for (const id of Array.from(overlay._atpChainSelectedIds || [])) {
               try { canvasApi.removeMarker(id, ATP_CHAIN_MARKER); } catch (_) {}
             }
             overlay._atpChainSelectedIds = new Set();
+          } catch (_) {}
+        };
+        const atpExtractMarkerId = (markerUrl) => {
+          const m = String(markerUrl || '').match(/url\(#([^)]+)\)/);
+          return m && m[1] ? String(m[1]) : '';
+        };
+        const atpEnsureOrangeMarker = (baseMarkerId) => {
+          try {
+            const svg = canvas && canvas.querySelector ? canvas.querySelector('svg') : null;
+            if (!svg || !baseMarkerId) return '';
+            let defs = svg.querySelector('defs');
+            if (!defs) {
+              defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+              svg.insertBefore(defs, svg.firstChild || null);
+            }
+            let base = null;
+            const allMarkers = Array.from(defs.querySelectorAll('marker'));
+            for (const m of allMarkers) {
+              if (String(m.id || '') === String(baseMarkerId)) { base = m; break; }
+            }
+            if (!base) return '';
+            const newId = String(baseMarkerId) + '__atp_orange';
+            for (const m of allMarkers) {
+              if (String(m.id || '') === newId) return newId;
+            }
+            const clone = base.cloneNode(true);
+            clone.setAttribute('id', newId);
+            const paints = Array.from(clone.querySelectorAll('*'));
+            for (const p of paints) {
+              try {
+                if (p.hasAttribute('stroke')) p.setAttribute('stroke', '#f97316');
+                if (p.hasAttribute('fill') && String(p.getAttribute('fill') || '').toLowerCase() !== 'none') {
+                  p.setAttribute('fill', '#f97316');
+                }
+                p.setAttribute('style', String(p.getAttribute('style') || '')
+                  .replace(/stroke\s*:[^;]+;?/gi, '')
+                  .replace(/fill\s*:[^;]+;?/gi, '')
+                  + ';stroke:#f97316;fill:#f97316;');
+              } catch (_) {}
+            }
+            defs.appendChild(clone);
+            return newId;
+          } catch (_) {
+            return '';
+          }
+        };
+        const atpColorConnectionArrow = (connId) => {
+          try {
+            const id = String(connId || '');
+            if (!id) return;
+            const elementRegistry = viewer.get('elementRegistry');
+            const el = elementRegistry && elementRegistry.get(id);
+            if (!el || String(el.type || '').toLowerCase().indexOf('connection') < 0) return;
+            const gfx = elementRegistry.getGraphics(el);
+            const path = gfx && gfx.querySelector && gfx.querySelector('.djs-visual > path');
+            if (!path) return;
+            if (!overlay._atpChainMarkerBackup) overlay._atpChainMarkerBackup = new Map();
+            if (!overlay._atpChainMarkerBackup.has(id)) {
+              overlay._atpChainMarkerBackup.set(id, {
+                end: String(path.getAttribute('marker-end') || ''),
+                start: String(path.getAttribute('marker-start') || '')
+              });
+            }
+            const mEndId = atpExtractMarkerId(path.getAttribute('marker-end'));
+            const mStartId = atpExtractMarkerId(path.getAttribute('marker-start'));
+            const endOrange = atpEnsureOrangeMarker(mEndId);
+            const startOrange = atpEnsureOrangeMarker(mStartId);
+            if (endOrange) path.setAttribute('marker-end', 'url(#' + endOrange + ')');
+            if (startOrange) path.setAttribute('marker-start', 'url(#' + startOrange + ')');
           } catch (_) {}
         };
         const atpAddChainMarker = (id) => {
@@ -1856,6 +1956,7 @@ function disableAlterarPreferenciaNumRegistros() {
             if (!canvasApi) return;
             canvasApi.addMarker(sid, ATP_CHAIN_MARKER);
             overlay._atpChainSelectedIds.add(sid);
+            try { atpColorConnectionArrow(sid); } catch (_) {}
           } catch (_) {}
         };
         const atpNormalizeClickedElement = (el) => {
