@@ -53,6 +53,13 @@ function injectStyle() {
         stroke-width:2.8px !important;
         fill:#fff7ed !important;
       }
+      .atp-map-canvas .djs-shape.atp-chain-selected .djs-visual > path{
+        stroke:#f97316 !important;
+        stroke-width:2.8px !important;
+      }
+      .atp-map-canvas .djs-shape.atp-chain-selected .djs-outline{
+        stroke:#f97316 !important;
+      }
       .atp-map-canvas .djs-element.atp-chain-selected .djs-label{fill:#c2410c !important;}
 
       .atp-rf-canvas{width:100%;height:100%;background:transparent;}

@@ -831,37 +831,24 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
 
     // Fallback simples.
     if (Math.abs(p1.x - p2.x) < 0.001 || Math.abs(p1.y - p2.y) < 0.001) return [p1, p2];
-    const dx = Math.abs(tc.x - sc.x);
-    const dy = Math.abs(tc.y - sc.y);
 
     // Gateway com múltiplas saídas: cria "tronco vertical" com ramificações horizontais.
     if (forward && srcIsGateway && outCnt > 1) {
       const trunkX = p1.x + 30;
-      const nearTargetX = Math.max(trunkX + 18, p2.x - 24 + inOff);
-      return orthogonalizePts([p1, { x: trunkX, y: p1.y }, { x: trunkX, y: p2.y }, { x: nearTargetX, y: p2.y }, p2]);
+      return orthogonalizePts([p1, { x: trunkX, y: p1.y }, { x: trunkX, y: p2.y }, p2]);
     }
 
     // Gateway com múltiplas entradas: convergência tradicional em tronco vertical.
     if (!forward && tgtIsGateway && inCnt > 1) {
       const trunkX = p2.x - 30;
-      const nearSourceX = Math.min(trunkX - 18, p1.x + 24 + outOff);
-      return orthogonalizePts([p1, { x: nearSourceX, y: p1.y }, { x: trunkX, y: p1.y }, { x: trunkX, y: p2.y }, p2]);
+      return orthogonalizePts([p1, { x: trunkX, y: p1.y }, { x: trunkX, y: p2.y }, p2]);
     }
 
-    if (forward) {
-      const d = Math.max(24, Math.min(96, dx * 0.35));
-      const x1 = p1.x + d + outOff;
-      const x2 = p2.x - d + inOff;
-      if (x2 > x1 + 10) {
-        return orthogonalizePts([p1, { x: x1, y: p1.y }, { x: x1, y: p2.y }, { x: x2, y: p2.y }, p2]);
-      }
-    }
-    if (dx >= dy) {
-      const mx = ((p1.x + p2.x) / 2) + (outOff * 0.5) + (inOff * 0.5);
-      return orthogonalizePts([p1, { x: mx, y: p1.y }, { x: mx, y: p2.y }, p2]);
-    }
-    const my = ((p1.y + p2.y) / 2) + (outOff * 0.35) + (inOff * 0.35);
-    return orthogonalizePts([p1, { x: p1.x, y: my }, { x: p2.x, y: my }, p2]);
+    // Padrão L tradicional (um cotovelo principal + chegada ao alvo).
+    const elbowX = forward
+      ? Math.max(p1.x + 24, p2.x - 24 + inOff)
+      : Math.min(p1.x - 24, p2.x + 24 + outOff);
+    return orthogonalizePts([p1, { x: elbowX, y: p1.y }, { x: elbowX, y: p2.y }, p2]);
   };
   const snapElkEdgeToBounds = (wps, srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
     const pts = Array.isArray(wps) ? wps.map((p) => ({ x: Number(p.x) || 0, y: Number(p.y) || 0 })) : [];
@@ -1978,6 +1965,7 @@ function disableAlterarPreferenciaNumRegistros() {
         const atpHighlightFromElement = (rawEl) => {
           try {
             overlay._atpClearChainSelection && overlay._atpClearChainSelection();
+            const elementRegistry = viewer.get('elementRegistry');
             const el = atpNormalizeClickedElement(rawEl);
             if (!el || !el.businessObject) return;
             const bo = el.businessObject;
@@ -2012,6 +2000,23 @@ function disableAlterarPreferenciaNumRegistros() {
               const tid = String(f && f.targetRef && f.targetRef.id || '');
               if (tid) atpAddChainMarker(tid);
             }
+
+            // Reforço por varredura: garante highlight dos ligados diretos em todos os cenários.
+            try {
+              elementRegistry.forEach((e2) => {
+                try {
+                  const bo2 = e2 && e2.businessObject;
+                  if (!bo2 || String(bo2.$type || '') !== 'bpmn:SequenceFlow') return;
+                  const sid = String(bo2.sourceRef && bo2.sourceRef.id || '');
+                  const tid = String(bo2.targetRef && bo2.targetRef.id || '');
+                  if (sid === String(el.id) || tid === String(el.id)) {
+                    atpAddChainMarker(String(e2.id || ''));
+                    if (sid) atpAddChainMarker(sid);
+                    if (tid) atpAddChainMarker(tid);
+                  }
+                } catch (_) {}
+              });
+            } catch (_) {}
           } catch (_) {}
         };
 
