@@ -342,20 +342,24 @@ function atpBpmnNodeKind(type) {
   return 'locator';
 }
 
-function atpBpmnEdgeStepByKinds(fromKind, toKind) {
-  // Modelo-alvo:
-  // Início -> Entrada -> Decisão -> Ação -> Saída -> (Decisão/Ação/Fim)
-  if (fromKind === 'start') return 1;
-  if (fromKind === 'decision') {
-    return 1;
+function atpBpmnPhaseAcceptsColumn(kind, col) {
+  const c = Number(col);
+  if (!Number.isFinite(c) || c < 0) return false;
+  if (kind === 'start') return c === 0;
+  if (kind === 'end') return c >= 2;
+  if (kind === 'locator') return c === 1 || (c > 1 && (c % 3) === 1);
+  if (kind === 'decision') return c >= 2 && (c % 3) === 2;
+  if (kind === 'action') return c >= 3 && (c % 3) === 0;
+  return c >= 1;
+}
+
+function atpBpmnNextColumnForKind(targetKind, minCol, hardMaxCol) {
+  const start = Math.max(0, Number(minCol) || 0);
+  const max = Math.max(start, Number(hardMaxCol) || start);
+  for (let c = start; c <= max; c++) {
+    if (atpBpmnPhaseAcceptsColumn(targetKind, c)) return c;
   }
-  if (fromKind === 'action') {
-    return 1;
-  }
-  if (fromKind === 'locator') {
-    return 1;
-  }
-  return 1;
+  return max;
 }
 
 function atpBpmnComputeFlowStageColumns(nodes, edges, inDegree) {
@@ -365,7 +369,7 @@ function atpBpmnComputeFlowStageColumns(nodes, edges, inDegree) {
   const outById = new Map();
   const predById = new Map();
   const cols = new Map();
-  const hardMaxCol = Math.max(10, (listNodes.length || 10) + 8);
+  const hardMaxCol = Math.max(12, (listNodes.length || 10) + 12);
 
   for (const n of listNodes) {
     const id = String(n && n.id || '');
@@ -403,7 +407,6 @@ function atpBpmnComputeFlowStageColumns(nodes, edges, inDegree) {
     }
   }
 
-  // Árvore: define coluna no primeiro caminho encontrado (evita colapso em coluna final por ciclos).
   const q = seeds.slice();
   const seen = new Set(q);
   while (q.length) {
@@ -411,14 +414,11 @@ function atpBpmnComputeFlowStageColumns(nodes, edges, inDegree) {
     if (!sid) continue;
     const sCol = Number(cols.get(sid));
     if (!Number.isFinite(sCol)) continue;
-    const sNode = nodeById.get(sid);
-    const sKind = atpBpmnNodeKind(sNode && sNode.type);
     const outs = (outById.get(sid) || []).slice().sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
     for (const tid of outs) {
       const tNode = nodeById.get(tid);
       const tKind = atpBpmnNodeKind(tNode && tNode.type);
-      const step = atpBpmnEdgeStepByKinds(sKind, tKind);
-      const proposed = Math.min(hardMaxCol, sCol + step);
+      const proposed = atpBpmnNextColumnForKind(tKind, sCol + 1, hardMaxCol);
       if (!cols.has(tid)) cols.set(tid, proposed);
       if (!seen.has(tid)) {
         seen.add(tid);
@@ -427,30 +427,45 @@ function atpBpmnComputeFlowStageColumns(nodes, edges, inDegree) {
     }
   }
 
-  // Passo de consistência único para garantir avanço até o fim sem "explodir" ciclos.
-  const ordered = Array.from(nodeById.keys()).sort((a, b) => {
-    const ca = Number(cols.get(a) || 0);
-    const cb = Number(cols.get(b) || 0);
-    if (ca !== cb) return ca - cb;
-    return String(a).localeCompare(String(b), 'pt-BR');
-  });
-  for (const sid of ordered) {
-    const sCol = Number(cols.get(sid));
-    if (!Number.isFinite(sCol)) continue;
-    const sNode = nodeById.get(sid);
-    const sKind = atpBpmnNodeKind(sNode && sNode.type);
-    for (const tid of (outById.get(sid) || [])) {
+  // Relaxamento por aresta para manter progressão à direita sem reutilizar colunas antigas.
+  const baseCols = new Map(cols);
+  const isForwardByBase = (sid, tid) => {
+    const bs = Number(baseCols.get(String(sid)));
+    const bt = Number(baseCols.get(String(tid)));
+    if (!Number.isFinite(bs) || !Number.isFinite(bt)) return true;
+    if (bt > bs) return true;
+    if (bt < bs) return false;
+    return String(sid).localeCompare(String(tid), 'pt-BR') < 0;
+  };
+
+  const RELAX_MAX = Math.max(4, Math.min(64, listNodes.length * 2));
+  for (let pass = 0; pass < RELAX_MAX; pass++) {
+    let moved = false;
+    for (const e of listEdges) {
+      const sid = String(e && e.source || '');
+      const tid = String(e && e.target || '');
+      if (!sid || !tid) continue;
+      const sCol = Number(cols.get(sid));
+      if (!Number.isFinite(sCol)) continue;
+
+      const sNode = nodeById.get(sid);
       const tNode = nodeById.get(tid);
+      const sKind = atpBpmnNodeKind(sNode && sNode.type);
       const tKind = atpBpmnNodeKind(tNode && tNode.type);
-      const step = atpBpmnEdgeStepByKinds(sKind, tKind);
-      const proposed = Math.min(hardMaxCol, sCol + step);
+
+      const forceForward = (sKind === 'locator' && tKind === 'decision');
+      if (!forceForward && !isForwardByBase(sid, tid)) continue;
+
+      const proposed = atpBpmnNextColumnForKind(tKind, sCol + 1, hardMaxCol);
       const cur = Number(cols.get(tid));
-      if (!Number.isFinite(cur)) cols.set(tid, proposed);
-      else if (proposed > cur && proposed <= cur + 3) cols.set(tid, proposed);
+      if (!Number.isFinite(cur) || proposed > cur) {
+        cols.set(tid, proposed);
+        moved = true;
+      }
     }
+    if (!moved) break;
   }
 
-  // Garantia: FIM sempre à direita dos predecessores.
   for (const n of listNodes) {
     const id = String(n && n.id || '');
     if (!id) continue;
@@ -461,20 +476,26 @@ function atpBpmnComputeFlowStageColumns(nodes, edges, inDegree) {
       const cp = Number(cols.get(p));
       if (Number.isFinite(cp)) maxPred = Math.max(maxPred, cp);
     }
-    const cur = Number(cols.get(id));
-    const want = Math.min(hardMaxCol, maxPred + 1);
-    if (!Number.isFinite(cur) || cur < want) cols.set(id, want);
+    cols.set(id, Math.min(hardMaxCol, Math.max(Number(cols.get(id) || 0), maxPred + 1)));
   }
 
-  // Fallback para nós não alcançados.
   for (const n of listNodes) {
     const id = String(n && n.id || '');
     if (!id || cols.has(id)) continue;
-    const kind = atpBpmnNodeKind(n && n.type);
-    if (kind === 'start') cols.set(id, 0);
-    else if (kind === 'locator') cols.set(id, 1);
-    else if (kind === 'decision') cols.set(id, 2);
-    else if (kind === 'action') cols.set(id, 3);
+    const k = atpBpmnNodeKind(n && n.type);
+    const preds = predById.get(id) || [];
+    let minByPred = null;
+    for (const p of preds) {
+      const cp = Number(cols.get(String(p)));
+      if (!Number.isFinite(cp)) continue;
+      const proposed = atpBpmnNextColumnForKind(k, cp + 1, hardMaxCol);
+      minByPred = Number.isFinite(minByPred) ? Math.max(minByPred, proposed) : proposed;
+    }
+    if (Number.isFinite(minByPred)) cols.set(id, Number(minByPred));
+    else if (k === 'start') cols.set(id, 0);
+    else if (k === 'locator') cols.set(id, 1);
+    else if (k === 'decision') cols.set(id, 2);
+    else if (k === 'action') cols.set(id, 3);
     else cols.set(id, 5);
   }
 
@@ -530,8 +551,6 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
 
   const nodes = Array.from(nodeMap.values());
   if (!nodes.length) throw new Error('Sem nós BPMN para layout.');
-
-  // Colunas por estágio do fluxo (entrada -> decisão -> ação -> saída -> ...).
   const colById = atpBpmnComputeFlowStageColumns(nodes, edges, inDegree);
 
   const graph = {
@@ -544,8 +563,9 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       'elk.layered.considerModelOrder': 'NODES_AND_EDGES',
       'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
       'elk.partitioning.activate': 'true',
-      'elk.spacing.nodeNode': '74',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '170'
+      'elk.spacing.nodeNode': '88',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '220',
+      'elk.layered.nodePlacement.favorStraightEdges': 'true'
     },
     children: nodes.map((n) => {
       const d = atpBpmnDimsByType(n.type);
@@ -575,7 +595,7 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     });
   }
 
-  // Trava de colunas por estágio do fluxo.
+  // Trava X por coluna estrutural (fase do fluxo).
   const maxWByCol = new Map();
   for (const [id, b] of posMap.entries()) {
     const c = Number(colById.get(String(id)));
@@ -588,7 +608,7 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
   for (const c of colsSorted) {
     const mw = Number(maxWByCol.get(c) || 220);
     colX.set(c, xCursor);
-    xCursor += mw + 130;
+    xCursor += mw + 200;
   }
   for (const [id, b] of posMap.entries()) {
     const c = Number(colById.get(String(id)));
@@ -597,38 +617,289 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     b.x = baseX + Math.max(0, ((mw - (Number(b.w) || 0)) / 2));
   }
 
-  // Evita sobreposição vertical dentro da mesma coluna após travar o X.
+  // Reorganização vertical por fase: alinhamento 1:1 e centróides N:1.
   const colItems = new Map();
   for (const [id, b] of posMap.entries()) {
     const c = Number(colById.get(String(id)));
     if (!colItems.has(c)) colItems.set(c, []);
     colItems.get(c).push({ id, b });
   }
-  const COL_MIN_GAP_Y = 24;
-  for (const c of Array.from(colItems.keys()).sort((a, b) => a - b)) {
-    const arr = colItems.get(c) || [];
-    arr.sort((a, b) => {
-      const ay = Number(a && a.b && a.b.y || 0);
-      const by = Number(b && b.b && b.b.y || 0);
-      if (ay !== by) return ay - by;
-      return String(a && a.id || '').localeCompare(String(b && b.id || ''), 'pt-BR');
-    });
+  const COL_MIN_GAP_Y = 54;
+  const centerY = (b) => (Number(b && b.y) || 0) + ((Number(b && b.h) || 0) / 2);
+  const setCenterY = (b, cy) => { b.y = (Number(cy) || 0) - ((Number(b && b.h) || 0) / 2); };
+  const avg = (arr) => {
+    if (!arr || !arr.length) return null;
+    let s = 0;
+    let n = 0;
+    for (const v of arr) { const x = Number(v); if (Number.isFinite(x)) { s += x; n++; } }
+    return n ? (s / n) : null;
+  };
 
-    let nextY = null;
-    for (const it of arr) {
-      if (!it || !it.b) continue;
-      const h = Math.max(20, Number(it.b.h) || 20);
-      const y = Number(it.b.y) || 0;
-      if (nextY === null) {
-        nextY = y + h + COL_MIN_GAP_Y;
-        continue;
-      }
-      if (y < nextY) {
-        it.b.y = nextY;
-      }
-      nextY = Number(it.b.y) + h + COL_MIN_GAP_Y;
+  const predForwardByTarget = new Map();
+  const succForwardBySource = new Map();
+  for (const e of edges) {
+    const sid = String(e && e.source || '');
+    const tid = String(e && e.target || '');
+    if (!sid || !tid) continue;
+    const sCol = Number(colById.get(sid));
+    const tCol = Number(colById.get(tid));
+    if (!Number.isFinite(sCol) || !Number.isFinite(tCol)) continue;
+    if (tCol > sCol) {
+      if (!predForwardByTarget.has(tid)) predForwardByTarget.set(tid, []);
+      if (!succForwardBySource.has(sid)) succForwardBySource.set(sid, []);
+      predForwardByTarget.get(tid).push(sid);
+      succForwardBySource.get(sid).push(tid);
     }
   }
+
+  const kindById = new Map();
+  for (const n of nodes) kindById.set(String(n && n.id || ''), atpBpmnNodeKind(n && n.type));
+  const desiredCenterById = new Map();
+  for (const [id, b] of posMap.entries()) desiredCenterById.set(String(id), centerY(b));
+
+  const packColumnByDesired = (arr) => {
+    const items = (arr || []).slice().filter(it => it && it.b && it.id);
+    if (!items.length) return;
+    items.sort((a, b) => {
+      const da = Number(desiredCenterById.get(String(a.id)) || centerY(a.b));
+      const db = Number(desiredCenterById.get(String(b.id)) || centerY(b.b));
+      if (da !== db) return da - db;
+      return String(a.id).localeCompare(String(b.id), 'pt-BR');
+    });
+    const centers = items.map(it => Number(desiredCenterById.get(String(it.id)) || centerY(it.b)));
+    for (let i = 1; i < items.length; i++) {
+      const hp = Math.max(20, Number(items[i - 1].b.h) || 20);
+      const hc = Math.max(20, Number(items[i].b.h) || 20);
+      const minDist = (hp / 2) + (hc / 2) + COL_MIN_GAP_Y;
+      if (centers[i] < centers[i - 1] + minDist) centers[i] = centers[i - 1] + minDist;
+    }
+    for (let i = items.length - 2; i >= 0; i--) {
+      const hc = Math.max(20, Number(items[i].b.h) || 20);
+      const hn = Math.max(20, Number(items[i + 1].b.h) || 20);
+      const minDist = (hc / 2) + (hn / 2) + COL_MIN_GAP_Y;
+      if (centers[i] > centers[i + 1] - minDist) centers[i] = centers[i + 1] - minDist;
+    }
+    const meanDesired = avg(items.map(it => Number(desiredCenterById.get(String(it.id)) || centerY(it.b))));
+    const meanPacked = avg(centers);
+    const shift = (Number.isFinite(meanDesired) && Number.isFinite(meanPacked)) ? (meanDesired - meanPacked) : 0;
+    for (let i = 0; i < items.length; i++) {
+      const cy = centers[i] + shift;
+      setCenterY(items[i].b, cy);
+      desiredCenterById.set(String(items[i].id), cy);
+    }
+  };
+
+  const colsAsc = Array.from(colItems.keys()).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  const colsDesc = colsAsc.slice().reverse();
+
+  for (let iter = 0; iter < 4; iter++) {
+    for (const c of colsAsc) {
+      const arr = colItems.get(c) || [];
+      for (const it of arr) {
+        const id = String(it && it.id || '');
+        if (!id) continue;
+        const k = String(kindById.get(id) || '');
+        const preds = (predForwardByTarget.get(id) || []).slice();
+        let d = null;
+        if (preds.length) d = avg(preds.map(pid => {
+          const pb = posMap.get(String(pid));
+          return pb ? centerY(pb) : null;
+        }));
+
+        // 1:1 localizador -> gateway na mesma linha.
+        if (k === 'decision' && preds.length === 1) {
+          const p = String(preds[0] || '');
+          if (String(kindById.get(p) || '') === 'locator' && Number(outDegree.get(p) || 0) === 1) {
+            const pb = posMap.get(p);
+            if (pb) d = centerY(pb);
+          }
+        }
+
+        // N:1 ações -> localizador de saída alinhado ao centróide das regras.
+        if (k === 'locator' && preds.length > 1) {
+          const allActions = preds.every(pid => String(kindById.get(String(pid)) || '') === 'action');
+          if (allActions) {
+            d = avg(preds.map(pid => {
+              const pb = posMap.get(String(pid));
+              return pb ? centerY(pb) : null;
+            }));
+          }
+        }
+
+        if (Number.isFinite(d)) desiredCenterById.set(id, Number(d));
+      }
+      packColumnByDesired(arr);
+    }
+
+    // Suaviza continuidade para direita (evita quebra abrupta entre blocos).
+    for (const c of colsDesc) {
+      const arr = colItems.get(c) || [];
+      for (const it of arr) {
+        const id = String(it && it.id || '');
+        if (!id) continue;
+        const succ = (succForwardBySource.get(id) || []).slice();
+        if (!succ.length) continue;
+        const d2 = avg(succ.map(tid => {
+          const tb = posMap.get(String(tid));
+          return tb ? centerY(tb) : null;
+        }));
+        if (!Number.isFinite(d2)) continue;
+        const cur = Number(desiredCenterById.get(id) || centerY(it.b));
+        desiredCenterById.set(id, (cur * 0.7) + (Number(d2) * 0.3));
+      }
+      packColumnByDesired(arr);
+    }
+  }
+
+  // Lanes virtuais por caminho: separa visualmente ramos independentes.
+  const forwardOutById = new Map();
+  const forwardInById = new Map();
+  for (const n of nodes) {
+    const id = String(n && n.id || '');
+    if (!id) continue;
+    forwardOutById.set(id, []);
+    forwardInById.set(id, []);
+  }
+  for (const e of edges) {
+    const sid = String(e && e.source || '');
+    const tid = String(e && e.target || '');
+    if (!sid || !tid) continue;
+    const sCol = Number(colById.get(sid));
+    const tCol = Number(colById.get(tid));
+    if (!Number.isFinite(sCol) || !Number.isFinite(tCol)) continue;
+    if (tCol > sCol) {
+      if (!forwardOutById.has(sid)) forwardOutById.set(sid, []);
+      if (!forwardInById.has(tid)) forwardInById.set(tid, []);
+      forwardOutById.get(sid).push(tid);
+      forwardInById.get(tid).push(sid);
+    }
+  }
+
+  const laneById = new Map();
+  let laneCursor = 0;
+  const roots = Array.from(posMap.keys()).sort((a, b) => {
+    const ca = Number(colById.get(String(a)) || 0);
+    const cb = Number(colById.get(String(b)) || 0);
+    if (ca !== cb) return ca - cb;
+    const ya = centerY(posMap.get(String(a)));
+    const yb = centerY(posMap.get(String(b)));
+    if (ya !== yb) return ya - yb;
+    return String(a).localeCompare(String(b), 'pt-BR');
+  }).filter((id) => {
+    const ins = forwardInById.get(String(id)) || [];
+    const k = String(kindById.get(String(id)) || '');
+    return !ins.length || k === 'start' || (k === 'locator' && Number(inDegree.get(String(id)) || 0) === 0);
+  });
+
+  const assignLaneFrom = (rootId, initialLane) => {
+    const q = [{ id: String(rootId), lane: Number(initialLane) }];
+    const seen = new Set();
+    while (q.length) {
+      const cur = q.shift();
+      const id = String(cur && cur.id || '');
+      const lane = Number(cur && cur.lane);
+      if (!id || !Number.isFinite(lane)) continue;
+      const seenKey = id + '|' + String(lane);
+      if (seen.has(seenKey)) continue;
+      seen.add(seenKey);
+
+      if (!laneById.has(id)) laneById.set(id, lane);
+
+      const outs = (forwardOutById.get(id) || []).slice().sort((a, b) => {
+        const ya = centerY(posMap.get(String(a)));
+        const yb = centerY(posMap.get(String(b)));
+        if (ya !== yb) return ya - yb;
+        return String(a).localeCompare(String(b), 'pt-BR');
+      });
+      const isSplit = String(kindById.get(id) || '') === 'decision' && outs.length > 1;
+      for (let i = 0; i < outs.length; i++) {
+        const tid = String(outs[i] || '');
+        if (!tid) continue;
+        let tLane = lane;
+        if (isSplit && i > 0) tLane = (++laneCursor);
+        if (!laneById.has(tid)) laneById.set(tid, tLane);
+        q.push({ id: tid, lane: tLane });
+      }
+    }
+  };
+
+  for (const rid of roots) {
+    const id = String(rid || '');
+    if (!id) continue;
+    if (!laneById.has(id)) {
+      laneById.set(id, laneCursor);
+      assignLaneFrom(id, laneCursor);
+      laneCursor += 1;
+    }
+  }
+
+  // Ajusta nós de merge para a lane mediana das entradas.
+  for (const [tid, preds] of forwardInById.entries()) {
+    const arr = (preds || []).map(pid => Number(laneById.get(String(pid)))).filter(Number.isFinite).sort((a, b) => a - b);
+    if (arr.length > 1) {
+      const med = arr[Math.floor((arr.length - 1) / 2)];
+      laneById.set(String(tid), Number.isFinite(med) ? med : Number(laneById.get(String(tid)) || 0));
+    }
+  }
+
+  // Fallback de lane para nós sem marcação.
+  for (const [id] of posMap.entries()) {
+    if (laneById.has(String(id))) continue;
+    laneById.set(String(id), laneCursor++);
+  }
+
+  // Aplica espaçamento entre lanes virtuais.
+  const laneGroups = new Map();
+  for (const [id] of posMap.entries()) {
+    const lane = Number(laneById.get(String(id)) || 0);
+    if (!laneGroups.has(lane)) laneGroups.set(lane, []);
+    laneGroups.get(lane).push(String(id));
+  }
+  const laneOrder = Array.from(laneGroups.keys()).sort((a, b) => {
+    const ay = avg((laneGroups.get(a) || []).map(id => centerY(posMap.get(String(id)))));
+    const by = avg((laneGroups.get(b) || []).map(id => centerY(posMap.get(String(id)))));
+    if (ay !== by) return ay - by;
+    return a - b;
+  });
+  const VIRTUAL_LANE_GAP = 72;
+  let prevLaneBottom = null;
+  for (const lane of laneOrder) {
+    const ids = laneGroups.get(lane) || [];
+    if (!ids.length) continue;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const id of ids) {
+      const b = posMap.get(String(id));
+      if (!b) continue;
+      minY = Math.min(minY, Number(b.y) || 0);
+      maxY = Math.max(maxY, (Number(b.y) || 0) + (Number(b.h) || 0));
+    }
+    if (!Number.isFinite(minY) || !Number.isFinite(maxY)) continue;
+
+    // Restaura comportamento mais estável: preserva posição original
+    // e só aplica deslocamento quando a lane invade a anterior.
+    let shift = 0;
+    if (Number.isFinite(prevLaneBottom)) {
+      const requiredMinY = Number(prevLaneBottom) + VIRTUAL_LANE_GAP;
+      if (minY < requiredMinY) shift = requiredMinY - minY;
+    }
+    if (shift !== 0) {
+      for (const id of ids) {
+        const b = posMap.get(String(id));
+        if (!b) continue;
+        b.y = (Number(b.y) || 0) + shift;
+        desiredCenterById.set(String(id), centerY(b));
+      }
+      maxY += shift;
+    }
+    prevLaneBottom = maxY;
+  }
+
+  const globalMaxX = (() => {
+    let v = Number.NEGATIVE_INFINITY;
+    for (const b of posMap.values()) v = Math.max(v, (Number(b.x) || 0) + (Number(b.w) || 0));
+    return Number.isFinite(v) ? v : 0;
+  })();
 
   const edgeWps = new Map();
   for (const e of (laid.edges || [])) {
@@ -642,9 +913,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     wps.push({ x: Number(sec.endPoint.x) || 0, y: Number(sec.endPoint.y) || 0 });
     edgeWps.set(String(e.id || ''), wps);
   }
-  // Waypoints do ELK não refletem a trava manual de colunas; usa fallback ortogonal recalculado.
+  // Waypoints do ELK não refletem a trava manual de colunas; recalcula fallback.
   edgeWps.clear();
-
   let diagram = null;
   try { diagram = doc.getElementsByTagNameNS(NS.bpmndi, 'BPMNDiagram')[0] || null; } catch (_) {}
   if (!diagram) {
@@ -686,21 +956,11 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     plane.appendChild(sh);
   }
 
-  const globalMaxY = (() => {
-    let v = Number.NEGATIVE_INFINITY;
-    for (const b of posMap.values()) v = Math.max(v, (Number(b.y) || 0) + (Number(b.h) || 0));
-    return Number.isFinite(v) ? v : 1000;
-  })();
-
-  const colLeft = (c) => Number(colX.get(c));
-  const colRight = (c) => Number(colX.get(c)) + Number(maxWByCol.get(c) || 220);
-
-  // Índices de ramificação (saída e entrada) para separar visualmente as arestas.
+  // Índices por aresta para separar visualmente fan-out/fan-in.
   const outIdxByEdge = new Map();
   const outCountBySource = new Map();
   const inIdxByEdge = new Map();
   const inCountByTarget = new Map();
-
   const bySource = new Map();
   const byTarget = new Map();
   for (const e of edges) {
@@ -809,73 +1069,73 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     }
     return out;
   };
+  const orthogonalizePts = (pts) => {
+    const src = compactPts(pts || []);
+    if (src.length < 2) return src;
+    const out = [src[0]];
+    for (let i = 1; i < src.length; i++) {
+      const a = out[out.length - 1];
+      const b = src[i];
+      const ax = Number(a && a.x) || 0;
+      const ay = Number(a && a.y) || 0;
+      const bx = Number(b && b.x) || 0;
+      const by = Number(b && b.y) || 0;
+      if (Math.abs(ax - bx) < 0.001 || Math.abs(ay - by) < 0.001) {
+        out.push({ x: bx, y: by });
+        continue;
+      }
+      // Proíbe diagonais: quebra em dois segmentos ortogonais (H depois V).
+      out.push({ x: bx, y: ay });
+      out.push({ x: bx, y: by });
+    }
+    return compactPts(out);
+  };
   const buildFallbackOrtho = (edge, srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
-    const e = edge || {};
-    const sid = String(e.source || '');
-    const tid = String(e.target || '');
-    const sCol = Number(colById.get(sid));
-    const tCol = Number(colById.get(tid));
     const sc = rectCenter(srcRect);
     const tc = rectCenter(tgtRect);
+    const eid = String(edge && edge.id || '');
+    const sid = String(edge && edge.source || '');
+    const tid = String(edge && edge.target || '');
+    const outIdx = Number(outIdxByEdge.get(eid) || 0);
+    const outCnt = Number(outCountBySource.get(sid) || Math.max(1, srcOutCount || 1));
+    const inIdx = Number(inIdxByEdge.get(eid) || 0);
+    const inCnt = Number(inCountByTarget.get(tid) || Math.max(1, tgtInCount || 1));
+    const outOff = (outIdx - ((outCnt - 1) / 2)) * 12;
+    const inOff = (inIdx - ((inCnt - 1) / 2)) * 10;
+    const forward = tc.x >= sc.x;
+    const srcIsGateway = isGatewayType(srcMeta);
+    const tgtIsGateway = isGatewayType(tgtMeta);
 
-    const forward = Number.isFinite(sCol) && Number.isFinite(tCol) ? (tCol >= sCol) : (tc.x >= sc.x);
+    // Estilo tradicional: conexões horizontais entre colunas (left/right), sem fan por top/bottom.
     const srcSide = forward ? 'right' : 'left';
     const tgtSide = forward ? 'left' : 'right';
-    const p1 = dockForNode(srcRect, srcMeta, srcSide, tc);
-    const p2 = dockForNode(tgtRect, tgtMeta, tgtSide, sc);
-
-    const outIdx = Number(outIdxByEdge.get(String(e.id || '')) || 0);
-    const outCnt = Number(outCountBySource.get(sid) || Math.max(1, srcOutCount || 1));
-    const inIdx = Number(inIdxByEdge.get(String(e.id || '')) || 0);
-    const inCnt = Number(inCountByTarget.get(tid) || Math.max(1, tgtInCount || 1));
-    const outOff = (outIdx - ((outCnt - 1) / 2)) * 10;
-    const inOff = (inIdx - ((inCnt - 1) / 2)) * 10;
-    const hasCols = Number.isFinite(sCol) && Number.isFinite(tCol);
-    const fanOut = isGatewayType(srcMeta) && outCnt > 1;
-    const fanIn = isGatewayType(tgtMeta) && inCnt > 1;
-
-    if (hasCols && tCol === sCol) {
-      const xLoop = (Number.isFinite(colRight(sCol)) ? colRight(sCol) : Math.max(p1.x, p2.x)) + 36 + outOff;
-      return compactPts([p1, { x: xLoop, y: p1.y }, { x: xLoop, y: p2.y }, p2]);
-    }
-
-    if (forward) {
-      // Árvore determinística: sai da coluna da origem, ramifica, entra na coluna do destino.
-      // Em fan-out/fan-in, cada aresta usa um canal próprio (evita tronco vertical único).
-      const outShift = fanOut ? (outIdx * 14) : outOff;
-      const inShift = fanIn ? (inIdx * 14) : inOff;
-      const xOut = hasCols
-        ? (colRight(sCol) + 24 + outShift)
-        : (Math.max(p1.x, p2.x) + 30 + outShift);
-      const xIn = hasCols
-        ? (colLeft(tCol) - 24 - inShift)
-        : (Math.min(p1.x, p2.x) - 20 - inShift);
-
-      if (xIn > xOut + 12) {
-        return compactPts([
-          p1,
-          { x: xOut, y: p1.y },
-          { x: xOut, y: p2.y },
-          { x: xIn, y: p2.y },
-          p2
-        ]);
-      }
-
-      const mx = ((p1.x + p2.x) / 2) + (outOff * 0.6) + (inOff * 0.4);
-      return compactPts([p1, { x: mx, y: p1.y }, { x: mx, y: p2.y }, p2]);
-    } else {
-      // Retornos/merges: faixa inferior fixa para não poluir o tronco principal.
-      const leftCol = hasCols ? Math.min(sCol, tCol) : null;
-      const xBase = (leftCol !== null && Number.isFinite(colLeft(leftCol))) ? colLeft(leftCol) : Math.min(p1.x, p2.x);
-      const xBack = xBase - 52 - Math.abs(outOff);
-      const laneY = globalMaxY + 72 + Math.abs(inOff);
-      return compactPts([p1, { x: xBack, y: p1.y }, { x: xBack, y: laneY }, { x: xBack, y: p2.y }, p2]);
-    }
+    const p1 = dockForNode(srcRect, srcMeta, srcSide, { x: sc.x, y: sc.y });
+    const p2 = dockForNode(tgtRect, tgtMeta, tgtSide, { x: tc.x, y: tc.y });
 
     // Fallback simples.
     if (Math.abs(p1.x - p2.x) < 0.001 || Math.abs(p1.y - p2.y) < 0.001) return [p1, p2];
-    const mx = (p1.x + p2.x) / 2;
-    return compactPts([p1, { x: mx, y: p1.y }, { x: mx, y: p2.y }, p2]);
+
+    // Gateway com múltiplas saídas: cria "tronco vertical" com ramificações horizontais.
+    if (forward && srcIsGateway && outCnt > 1) {
+      const trunkX = p1.x + 30;
+      return orthogonalizePts([p1, { x: trunkX, y: p1.y }, { x: trunkX, y: p2.y }, p2]);
+    }
+
+    // Gateway com múltiplas entradas: convergência tradicional em tronco vertical.
+    if (!forward && tgtIsGateway && inCnt > 1) {
+      const trunkX = p2.x - 30;
+      return orthogonalizePts([p1, { x: trunkX, y: p1.y }, { x: trunkX, y: p2.y }, p2]);
+    }
+
+    // Ligações para a esquerda: contorna pela direita do diagrama.
+    if (!forward) {
+      const laneX = globalMaxX + 160 + Math.abs(outOff * 0.4) + Math.abs(inOff * 0.3);
+      return orthogonalizePts([p1, { x: laneX, y: p1.y }, { x: laneX, y: p2.y }, p2]);
+    }
+
+    // Padrão L tradicional (um cotovelo principal + chegada ao alvo).
+    const elbowX = Math.max(p1.x + 24, p2.x - 24 + inOff);
+    return orthogonalizePts([p1, { x: elbowX, y: p1.y }, { x: elbowX, y: p2.y }, p2]);
   };
   const snapElkEdgeToBounds = (wps, srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
     const pts = Array.isArray(wps) ? wps.map((p) => ({ x: Number(p.x) || 0, y: Number(p.y) || 0 })) : [];
@@ -917,7 +1177,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       wps = snapElkEdgeToBounds(wps, s, t, srcMeta, tgtMeta, srcOutCount, tgtInCount);
     }
 
-    for (const p of wps) {
+    const wpsOrtho = orthogonalizePts(wps || []);
+    for (const p of wpsOrtho) {
       const wp = doc.createElementNS(NS.di, 'di:waypoint');
       wp.setAttribute('x', String(Math.round(Number(p.x) || 0)));
       wp.setAttribute('y', String(Math.round(Number(p.y) || 0)));
@@ -1862,6 +2123,194 @@ function disableAlterarPreferenciaNumRegistros() {
           } catch (e) {}
         };
 
+        const ATP_CHAIN_MARKER = 'atp-chain-selected';
+        overlay._atpChainSelectedIds = new Set();
+        overlay._atpChainMarkerBackup = new Map();
+        overlay._atpClearChainSelection = () => {
+          try {
+            const elementRegistry = viewer.get('elementRegistry');
+            const canvasApi = viewer.get('canvas');
+            if (!canvasApi) return;
+            for (const [id, prev] of Array.from(overlay._atpChainMarkerBackup || [])) {
+              try {
+                const el = elementRegistry && elementRegistry.get(id);
+                if (!el) continue;
+                const gfx = elementRegistry.getGraphics(el);
+                const path = gfx && gfx.querySelector && gfx.querySelector('.djs-visual > path');
+                if (!path) continue;
+                const prevEnd = String(prev && prev.end || '');
+                const prevStart = String(prev && prev.start || '');
+                if (prevEnd) path.setAttribute('marker-end', prevEnd); else path.removeAttribute('marker-end');
+                if (prevStart) path.setAttribute('marker-start', prevStart); else path.removeAttribute('marker-start');
+              } catch (_) {}
+            }
+            overlay._atpChainMarkerBackup = new Map();
+            for (const id of Array.from(overlay._atpChainSelectedIds || [])) {
+              try { canvasApi.removeMarker(id, ATP_CHAIN_MARKER); } catch (_) {}
+            }
+            overlay._atpChainSelectedIds = new Set();
+          } catch (_) {}
+        };
+        const atpExtractMarkerId = (markerUrl) => {
+          const m = String(markerUrl || '').match(/url\(#([^)]+)\)/);
+          return m && m[1] ? String(m[1]) : '';
+        };
+        const atpEnsureOrangeMarker = (baseMarkerId) => {
+          try {
+            const svg = canvas && canvas.querySelector ? canvas.querySelector('svg') : null;
+            if (!svg || !baseMarkerId) return '';
+            let defs = svg.querySelector('defs');
+            if (!defs) {
+              defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+              svg.insertBefore(defs, svg.firstChild || null);
+            }
+            let base = null;
+            const allMarkers = Array.from(defs.querySelectorAll('marker'));
+            for (const m of allMarkers) {
+              if (String(m.id || '') === String(baseMarkerId)) { base = m; break; }
+            }
+            if (!base) return '';
+            const newId = String(baseMarkerId) + '__atp_orange';
+            for (const m of allMarkers) {
+              if (String(m.id || '') === newId) return newId;
+            }
+            const clone = base.cloneNode(true);
+            clone.setAttribute('id', newId);
+            const paints = Array.from(clone.querySelectorAll('*'));
+            for (const p of paints) {
+              try {
+                if (p.hasAttribute('stroke')) p.setAttribute('stroke', '#f97316');
+                if (p.hasAttribute('fill') && String(p.getAttribute('fill') || '').toLowerCase() !== 'none') {
+                  p.setAttribute('fill', '#f97316');
+                }
+                p.setAttribute('style', String(p.getAttribute('style') || '')
+                  .replace(/stroke\s*:[^;]+;?/gi, '')
+                  .replace(/fill\s*:[^;]+;?/gi, '')
+                  + ';stroke:#f97316;fill:#f97316;');
+              } catch (_) {}
+            }
+            defs.appendChild(clone);
+            return newId;
+          } catch (_) {
+            return '';
+          }
+        };
+        const atpColorConnectionArrow = (connId) => {
+          try {
+            const id = String(connId || '');
+            if (!id) return;
+            const elementRegistry = viewer.get('elementRegistry');
+            const el = elementRegistry && elementRegistry.get(id);
+            const bo = el && el.businessObject;
+            if (!el || !bo || String(bo.$type || '') !== 'bpmn:SequenceFlow') return;
+            const gfx = elementRegistry.getGraphics(el);
+            const path = gfx && gfx.querySelector && gfx.querySelector('.djs-visual > path');
+            if (!path) return;
+            if (!overlay._atpChainMarkerBackup) overlay._atpChainMarkerBackup = new Map();
+            if (!overlay._atpChainMarkerBackup.has(id)) {
+              overlay._atpChainMarkerBackup.set(id, {
+                end: String(path.getAttribute('marker-end') || ''),
+                start: String(path.getAttribute('marker-start') || '')
+              });
+            }
+            const mEndId = atpExtractMarkerId(path.getAttribute('marker-end'));
+            const mStartId = atpExtractMarkerId(path.getAttribute('marker-start'));
+            const endOrange = atpEnsureOrangeMarker(mEndId);
+            const startOrange = atpEnsureOrangeMarker(mStartId);
+            if (endOrange) path.setAttribute('marker-end', 'url(#' + endOrange + ')');
+            if (startOrange) path.setAttribute('marker-start', 'url(#' + startOrange + ')');
+          } catch (_) {}
+        };
+        const atpAddChainMarker = (id) => {
+          try {
+            const sid = String(id || '');
+            if (!sid) return;
+            if (!overlay._atpChainSelectedIds) overlay._atpChainSelectedIds = new Set();
+            if (overlay._atpChainSelectedIds.has(sid)) return;
+            const canvasApi = viewer.get('canvas');
+            if (!canvasApi) return;
+            canvasApi.addMarker(sid, ATP_CHAIN_MARKER);
+            overlay._atpChainSelectedIds.add(sid);
+            try { atpColorConnectionArrow(sid); } catch (_) {}
+          } catch (_) {}
+        };
+        const atpNormalizeClickedElement = (el) => {
+          try {
+            if (!el) return null;
+            const bo = el.businessObject;
+            if (!bo) return el;
+            if (String(bo.$type || '') === 'bpmn:Label' && bo.labelTarget && bo.labelTarget.id) {
+              return viewer.get('elementRegistry').get(String(bo.labelTarget.id)) || el;
+            }
+            if (el.type === 'label' && el.labelTarget && el.labelTarget.id) {
+              return viewer.get('elementRegistry').get(String(el.labelTarget.id)) || el;
+            }
+            return el;
+          } catch (_) {
+            return el || null;
+          }
+        };
+        const atpHighlightFromElement = (rawEl) => {
+          try {
+            overlay._atpClearChainSelection && overlay._atpClearChainSelection();
+            const elementRegistry = viewer.get('elementRegistry');
+            const el = atpNormalizeClickedElement(rawEl);
+            if (!el || !el.businessObject) return;
+            const bo = el.businessObject;
+            const t = String(bo.$type || '');
+
+            if (t === 'bpmn:SequenceFlow') {
+              atpAddChainMarker(el.id);
+              if (bo.sourceRef && bo.sourceRef.id) atpAddChainMarker(String(bo.sourceRef.id));
+              if (bo.targetRef && bo.targetRef.id) atpAddChainMarker(String(bo.targetRef.id));
+              return;
+            }
+
+            const isFlowNode = !!(bo && typeof bo.$instanceOf === 'function' && bo.$instanceOf('bpmn:FlowNode'));
+            const inArr = Array.from((bo && bo.incoming) || []);
+            const outArr = Array.from((bo && bo.outgoing) || []);
+            const isNode = isFlowNode || !!(inArr.length || outArr.length);
+            if (!isNode) return;
+
+            // Nó clicado.
+            atpAddChainMarker(el.id);
+
+            // Entradas: linha + nó origem.
+            for (const f of inArr) {
+              const fid = String(f && f.id || '');
+              if (fid) atpAddChainMarker(fid);
+              const sid = String(f && f.sourceRef && f.sourceRef.id || '');
+              if (sid) atpAddChainMarker(sid);
+            }
+
+            // Saídas: linha + nó destino.
+            // Gateway com múltiplas saídas: todas as saídas são destacadas.
+            for (const f of outArr) {
+              const fid = String(f && f.id || '');
+              if (fid) atpAddChainMarker(fid);
+              const tid = String(f && f.targetRef && f.targetRef.id || '');
+              if (tid) atpAddChainMarker(tid);
+            }
+
+            // Reforço por varredura: garante highlight dos ligados diretos em todos os cenários.
+            try {
+              elementRegistry.forEach((e2) => {
+                try {
+                  const bo2 = e2 && e2.businessObject;
+                  if (!bo2 || String(bo2.$type || '') !== 'bpmn:SequenceFlow') return;
+                  const sid = String(bo2.sourceRef && bo2.sourceRef.id || '');
+                  const tid = String(bo2.targetRef && bo2.targetRef.id || '');
+                  if (sid === String(el.id) || tid === String(el.id)) {
+                    atpAddChainMarker(String(e2.id || ''));
+                    if (sid) atpAddChainMarker(sid);
+                    if (tid) atpAddChainMarker(tid);
+                  }
+                } catch (_) {}
+              });
+            } catch (_) {}
+          } catch (_) {}
+        };
+
         viewer.importXML(String(fileObj.xml || '')).then(() => {
           try {
             const canvasApi = viewer.get('canvas');
@@ -1894,6 +2343,24 @@ function disableAlterarPreferenciaNumRegistros() {
             zoomLabel.textContent = Math.round(zoomValue * 100) + '%';
           } catch (e) {}
         });
+
+        try {
+          const eventBus = viewer.get('eventBus');
+          overlay._atpLastElementClickTs = 0;
+          eventBus.on('element.click', (ev) => {
+            try {
+              overlay._atpLastElementClickTs = Date.now();
+              atpHighlightFromElement(ev && ev.element);
+            } catch (_) {}
+          });
+          eventBus.on('canvas.click', () => {
+            try {
+              const last = Number(overlay._atpLastElementClickTs || 0);
+              if ((Date.now() - last) < 120) return;
+              overlay._atpClearChainSelection && overlay._atpClearChainSelection();
+            } catch (_) {}
+          });
+        } catch (_) {}
 
       }).catch((e) => {
         try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao carregar bpmn-js modeler:', e); } catch(_) {}

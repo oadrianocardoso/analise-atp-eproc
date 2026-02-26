@@ -44,6 +44,23 @@ function injectStyle() {
       .atp-map-canvas .djs-container{min-height:100%;}
       .atp-map-canvas .djs-connection.selected .djs-visual > path{stroke:#f97316 !important;stroke-width:2.8px !important;}
       .atp-map-canvas .djs-connection.hover .djs-visual > path{stroke:#fb923c !important;}
+      .atp-map-canvas .djs-connection.atp-chain-selected .djs-visual > path{stroke:#f97316 !important;stroke-width:2.8px !important;}
+      .atp-map-canvas .djs-shape.atp-chain-selected .djs-visual > rect,
+      .atp-map-canvas .djs-shape.atp-chain-selected .djs-visual > polygon,
+      .atp-map-canvas .djs-shape.atp-chain-selected .djs-visual > circle,
+      .atp-map-canvas .djs-shape.atp-chain-selected .djs-visual > ellipse{
+        stroke:#f97316 !important;
+        stroke-width:2.8px !important;
+        fill:#fff7ed !important;
+      }
+      .atp-map-canvas .djs-shape.atp-chain-selected .djs-visual > path{
+        stroke:#f97316 !important;
+        stroke-width:2.8px !important;
+      }
+      .atp-map-canvas .djs-shape.atp-chain-selected .djs-outline{
+        stroke:#f97316 !important;
+      }
+      .atp-map-canvas .djs-element.atp-chain-selected .djs-label{fill:#c2410c !important;}
 
       .atp-rf-canvas{width:100%;height:100%;background:transparent;}
       .atp-rf-canvas .react-flow{background:transparent !important;}
