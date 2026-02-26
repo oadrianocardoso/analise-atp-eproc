@@ -1482,6 +1482,20 @@ function disableAlterarPreferenciaNumRegistros() {
       btnFit.title = 'Ajustar ao viewport';
       btnFit.textContent = 'Fit';
 
+      const modeSel = document.createElement('select');
+      modeSel.className = 'atp-map-btn';
+      modeSel.title = 'Modo de visualização';
+      modeSel.style.minWidth = '180px';
+      modeSel.innerHTML = ''
+        + '<option value="clean">Modo Limpo (Backbone)</option>'
+        + '<option value="full">Modo Completo (Auditoria)</option>';
+
+      const btnCollapseBranches = document.createElement('button');
+      btnCollapseBranches.type = 'button';
+      btnCollapseBranches.className = 'atp-map-btn';
+      btnCollapseBranches.title = 'Recolher ramos expandidos no modo limpo';
+      btnCollapseBranches.textContent = 'Recolher Ramos';
+
       const btnDownload = document.createElement('button');
       btnDownload.type = 'button';
       btnDownload.className = 'atp-map-btn';
@@ -1627,6 +1641,8 @@ function disableAlterarPreferenciaNumRegistros() {
       actions.appendChild(zoomLabel);
       actions.appendChild(btnZoomIn);
       actions.appendChild(btnFit);
+      actions.appendChild(modeSel);
+      actions.appendChild(btnCollapseBranches);
       actions.appendChild(btnDownload);
       actions.appendChild(btnJpeg);
       actions.appendChild(btnClose);
@@ -1647,6 +1663,9 @@ function disableAlterarPreferenciaNumRegistros() {
       atpEnsureBpmnJsLoaded().then((BpmnJS) => {
         const viewer = new BpmnJS({ container: canvas });
         overlay._atpBpmnViewer = viewer;
+        overlay._atpViewMode = 'clean';
+        overlay._atpExpandedDecisions = new Set();
+        overlay._atpCleanOverlayIds = [];
 
         const originalNames = new Map();
         const MAX_LABEL = 90;
@@ -1730,6 +1749,240 @@ function disableAlterarPreferenciaNumRegistros() {
           } catch (e) {}
         };
 
+        overlay._atpComputeAndApplyViewMode = () => {
+          try {
+            const elementRegistry = viewer.get('elementRegistry');
+            const overlays = viewer.get('overlays');
+            const viewMode = String(overlay._atpViewMode || 'clean');
+            const expanded = overlay._atpExpandedDecisions || new Set();
+
+            const clearBadges = () => {
+              try {
+                const ids = Array.isArray(overlay._atpCleanOverlayIds) ? overlay._atpCleanOverlayIds : [];
+                ids.forEach((id) => { try { overlays.remove(id); } catch (_) {} });
+                overlay._atpCleanOverlayIds = [];
+              } catch (_) {}
+            };
+
+            const setVisible = (id, visible) => {
+              try {
+                const el = elementRegistry.get(id);
+                if (!el) return;
+                const gfx = elementRegistry.getGraphics(el);
+                if (gfx) gfx.style.display = visible ? '' : 'none';
+                const lbl = elementRegistry.get(id + '_label');
+                if (lbl) {
+                  const lg = elementRegistry.getGraphics(lbl);
+                  if (lg) lg.style.display = visible ? '' : 'none';
+                }
+              } catch (_) {}
+            };
+
+            clearBadges();
+
+            if (viewMode === 'full') {
+              elementRegistry.forEach((el) => {
+                try {
+                  if (!el || !el.id) return;
+                  setVisible(el.id, true);
+                } catch (_) {}
+              });
+              return;
+            }
+
+            const nodeById = new Map();
+            const flowById = new Map();
+            const outByNode = new Map();
+            const inByNode = new Map();
+            const hiddenCountByDecision = new Map();
+
+            const ensureMapsFor = (id) => {
+              if (!id) return;
+              if (!outByNode.has(id)) outByNode.set(id, []);
+              if (!inByNode.has(id)) inByNode.set(id, []);
+            };
+
+            elementRegistry.forEach((el) => {
+              try {
+                const bo = el && el.businessObject;
+                if (!bo || !el.id) return;
+                const t = String(bo.$type || '');
+                if (t === 'bpmn:SequenceFlow') {
+                  const sid = String(bo.sourceRef && bo.sourceRef.id || '');
+                  const tid = String(bo.targetRef && bo.targetRef.id || '');
+                  if (!sid || !tid) return;
+                  flowById.set(el.id, { id: el.id, source: sid, target: tid });
+                  ensureMapsFor(sid);
+                  ensureMapsFor(tid);
+                  outByNode.get(sid).push(el.id);
+                  inByNode.get(tid).push(el.id);
+                  return;
+                }
+                const isNode = Array.isArray(bo.incoming) && Array.isArray(bo.outgoing);
+                if (!isNode) return;
+                nodeById.set(el.id, el);
+                ensureMapsFor(el.id);
+              } catch (_) {}
+            });
+
+            if (!nodeById.size) return;
+
+            const starts = [];
+            for (const [id, el] of nodeById.entries()) {
+              const t = String(el.businessObject && el.businessObject.$type || '');
+              if (t === 'bpmn:StartEvent') starts.push(id);
+            }
+            if (!starts.length) {
+              for (const [id] of nodeById.entries()) {
+                if ((inByNode.get(id) || []).length === 0) starts.push(id);
+              }
+            }
+
+            const depthMemo = new Map();
+            const depthDfs = (id, stack) => {
+              if (!id) return 0;
+              if (depthMemo.has(id)) return Number(depthMemo.get(id) || 0);
+              if (stack.has(id)) return 0;
+              stack.add(id);
+              let best = 0;
+              const outs = outByNode.get(id) || [];
+              for (const fid of outs) {
+                const f = flowById.get(fid);
+                if (!f) continue;
+                best = Math.max(best, 1 + depthDfs(f.target, stack));
+              }
+              stack.delete(id);
+              depthMemo.set(id, best);
+              return best;
+            };
+
+            const nodePriorityMemo = new Map();
+            const parseFirstInt = (txt, re) => {
+              try {
+                const m = String(txt || '').match(re);
+                if (!m || !m[1]) return Number.POSITIVE_INFINITY;
+                const v = parseInt(String(m[1]), 10);
+                return Number.isFinite(v) ? v : Number.POSITIVE_INFINITY;
+              } catch (_) {
+                return Number.POSITIVE_INFINITY;
+              }
+            };
+            const getNodePriorityMeta = (nodeId) => {
+              if (nodePriorityMemo.has(nodeId)) return nodePriorityMemo.get(nodeId);
+              let meta = {
+                priority: Number.POSITIVE_INFINITY, // prioridade explícita
+                rule: Number.POSITIVE_INFINITY,     // fallback: número da regra
+                isLocator: 0,
+                y: Number.POSITIVE_INFINITY
+              };
+              try {
+                const el = nodeById.get(nodeId);
+                const bo = el && el.businessObject;
+                const name = String(bo && bo.name || '');
+                const docText = getDocumentationText(bo);
+                const text = (name + ' ' + docText).trim();
+                const tnorm = text.toLowerCase();
+                meta = {
+                  priority: parseFirstInt(text, /(?:prioridade|prio)\s*[:#-]?\s*(\d+)/i),
+                  rule: parseFirstInt(text, /regra\s*(\d+)/i),
+                  isLocator: tnorm.includes('localizador') ? 1 : 0,
+                  y: Number(el && el.y) || Number.POSITIVE_INFINITY
+                };
+              } catch (_) {}
+              nodePriorityMemo.set(nodeId, meta);
+              return meta;
+            };
+
+            const primaryByNode = new Map();
+            for (const [id] of nodeById.entries()) {
+              const outs = (outByNode.get(id) || []).slice();
+              if (outs.length <= 1) continue;
+              outs.sort((a, b) => {
+                const fa = flowById.get(a);
+                const fb = flowById.get(b);
+                const ma = getNodePriorityMeta(fa && fa.target);
+                const mb = getNodePriorityMeta(fb && fb.target);
+                if (ma.priority !== mb.priority) return ma.priority - mb.priority;
+                if (ma.rule !== mb.rule) return ma.rule - mb.rule;
+                if (ma.isLocator !== mb.isLocator) return ma.isLocator - mb.isLocator;
+                const da = depthDfs(fa && fa.target, new Set());
+                const db = depthDfs(fb && fb.target, new Set());
+                if (da !== db) return db - da;
+                const oa = (fa && outByNode.get(fa.target) || []).length;
+                const ob = (fb && outByNode.get(fb.target) || []).length;
+                if (oa !== ob) return ob - oa;
+                if (ma.y !== mb.y) return ma.y - mb.y;
+                return String(a).localeCompare(String(b), 'pt-BR');
+              });
+              primaryByNode.set(id, outs[0]);
+              hiddenCountByDecision.set(id, Math.max(0, outs.length - 1));
+            }
+
+            const visibleNodes = new Set();
+            const visibleFlows = new Set();
+            const q = starts.slice();
+            const seen = new Set();
+            while (q.length) {
+              const id = String(q.shift() || '');
+              if (!id || seen.has(id)) continue;
+              seen.add(id);
+              visibleNodes.add(id);
+              const outs = (outByNode.get(id) || []).slice();
+              let use = outs;
+              if (outs.length > 1 && primaryByNode.has(id) && !expanded.has(id)) {
+                use = [primaryByNode.get(id)];
+              }
+              for (const fid of use) {
+                const f = flowById.get(fid);
+                if (!f) continue;
+                visibleFlows.add(fid);
+                if (f.target) q.push(f.target);
+              }
+            }
+
+            // Renderização: oculta ramos secundários no modo limpo.
+            elementRegistry.forEach((el) => {
+              try {
+                const bo = el && el.businessObject;
+                if (!bo || !el.id) return;
+                const t = String(bo.$type || '');
+                if (t === 'bpmn:SequenceFlow') {
+                  setVisible(el.id, visibleFlows.has(el.id));
+                  return;
+                }
+                const isNode = Array.isArray(bo.incoming) && Array.isArray(bo.outgoing);
+                if (!isNode) return;
+                setVisible(el.id, visibleNodes.has(el.id));
+              } catch (_) {}
+            });
+
+            // Badge para indicar decisão colapsada.
+            for (const [id, hiddenCount] of hiddenCountByDecision.entries()) {
+              try {
+                if (!hiddenCount || hiddenCount < 1) continue;
+                if (!visibleNodes.has(id)) continue;
+                if (expanded.has(id)) continue;
+                const badge = document.createElement('div');
+                badge.style.background = '#f59e0b';
+                badge.style.color = '#111827';
+                badge.style.border = '1px solid #b45309';
+                badge.style.borderRadius = '10px';
+                badge.style.padding = '1px 6px';
+                badge.style.fontSize = '11px';
+                badge.style.fontWeight = '600';
+                badge.style.cursor = 'pointer';
+                badge.textContent = '+' + String(hiddenCount) + ' ramos';
+                badge.title = 'Clique na decisão para expandir os ramos ocultos';
+                const ovId = overlays.add(id, {
+                  position: { right: -8, bottom: -8 },
+                  html: badge
+                });
+                overlay._atpCleanOverlayIds.push(ovId);
+              } catch (_) {}
+            }
+          } catch (e) {}
+        };
+
         viewer.importXML(String(fileObj.xml || '')).then(() => {
           try {
             const canvasApi = viewer.get('canvas');
@@ -1737,6 +1990,7 @@ function disableAlterarPreferenciaNumRegistros() {
             zoomValue = canvasApi.zoom();
             zoomLabel.textContent = Math.round(zoomValue * 100) + '%';
             overlay._atpApplyTruncation();
+            overlay._atpComputeAndApplyViewMode();
             try { overlay._atpApplyHoverTitles && overlay._atpApplyHoverTitles(); } catch (e) {}
           } catch (e) {}
         }).catch((e) => {
@@ -1762,6 +2016,43 @@ function disableAlterarPreferenciaNumRegistros() {
             zoomLabel.textContent = Math.round(zoomValue * 100) + '%';
           } catch (e) {}
         });
+
+        modeSel.addEventListener('change', () => {
+          try {
+            overlay._atpViewMode = String(modeSel.value || 'clean');
+            if (overlay._atpViewMode === 'full') {
+              overlay._atpExpandedDecisions = new Set();
+            }
+            overlay._atpComputeAndApplyViewMode();
+          } catch (_) {}
+        });
+
+        btnCollapseBranches.addEventListener('click', () => {
+          try {
+            overlay._atpExpandedDecisions = new Set();
+            overlay._atpViewMode = 'clean';
+            modeSel.value = 'clean';
+            overlay._atpComputeAndApplyViewMode();
+          } catch (_) {}
+        });
+
+        try {
+          const eventBus = viewer.get('eventBus');
+          eventBus.on('element.click', (ev) => {
+            try {
+              if (String(overlay._atpViewMode || 'clean') !== 'clean') return;
+              const el = ev && ev.element;
+              const bo = el && el.businessObject;
+              if (!el || !bo) return;
+              const isGateway = String(bo.$type || '').indexOf('Gateway') >= 0;
+              if (!isGateway) return;
+              if (!overlay._atpExpandedDecisions) overlay._atpExpandedDecisions = new Set();
+              if (overlay._atpExpandedDecisions.has(el.id)) overlay._atpExpandedDecisions.delete(el.id);
+              else overlay._atpExpandedDecisions.add(el.id);
+              overlay._atpComputeAndApplyViewMode();
+            } catch (_) {}
+          });
+        } catch (_) {}
 
       }).catch((e) => {
         try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao carregar bpmn-js modeler:', e); } catch(_) {}
