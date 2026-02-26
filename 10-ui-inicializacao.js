@@ -1856,43 +1856,6 @@ function disableAlterarPreferenciaNumRegistros() {
               return best;
             };
 
-            const nodePriorityMemo = new Map();
-            const parseFirstInt = (txt, re) => {
-              try {
-                const m = String(txt || '').match(re);
-                if (!m || !m[1]) return Number.POSITIVE_INFINITY;
-                const v = parseInt(String(m[1]), 10);
-                return Number.isFinite(v) ? v : Number.POSITIVE_INFINITY;
-              } catch (_) {
-                return Number.POSITIVE_INFINITY;
-              }
-            };
-            const getNodePriorityMeta = (nodeId) => {
-              if (nodePriorityMemo.has(nodeId)) return nodePriorityMemo.get(nodeId);
-              let meta = {
-                priority: Number.POSITIVE_INFINITY, // prioridade explícita
-                rule: Number.POSITIVE_INFINITY,     // fallback: número da regra
-                isLocator: 0,
-                y: Number.POSITIVE_INFINITY
-              };
-              try {
-                const el = nodeById.get(nodeId);
-                const bo = el && el.businessObject;
-                const name = String(bo && bo.name || '');
-                const docText = getDocumentationText(bo);
-                const text = (name + ' ' + docText).trim();
-                const tnorm = text.toLowerCase();
-                meta = {
-                  priority: parseFirstInt(text, /(?:prioridade|prio)\s*[:#-]?\s*(\d+)/i),
-                  rule: parseFirstInt(text, /regra\s*(\d+)/i),
-                  isLocator: tnorm.includes('localizador') ? 1 : 0,
-                  y: Number(el && el.y) || Number.POSITIVE_INFINITY
-                };
-              } catch (_) {}
-              nodePriorityMemo.set(nodeId, meta);
-              return meta;
-            };
-
             const primaryByNode = new Map();
             for (const [id] of nodeById.entries()) {
               const outs = (outByNode.get(id) || []).slice();
@@ -1900,18 +1863,12 @@ function disableAlterarPreferenciaNumRegistros() {
               outs.sort((a, b) => {
                 const fa = flowById.get(a);
                 const fb = flowById.get(b);
-                const ma = getNodePriorityMeta(fa && fa.target);
-                const mb = getNodePriorityMeta(fb && fb.target);
-                if (ma.priority !== mb.priority) return ma.priority - mb.priority;
-                if (ma.rule !== mb.rule) return ma.rule - mb.rule;
-                if (ma.isLocator !== mb.isLocator) return ma.isLocator - mb.isLocator;
                 const da = depthDfs(fa && fa.target, new Set());
                 const db = depthDfs(fb && fb.target, new Set());
                 if (da !== db) return db - da;
                 const oa = (fa && outByNode.get(fa.target) || []).length;
                 const ob = (fb && outByNode.get(fb.target) || []).length;
                 if (oa !== ob) return ob - oa;
-                if (ma.y !== mb.y) return ma.y - mb.y;
                 return String(a).localeCompare(String(b), 'pt-BR');
               });
               primaryByNode.set(id, outs[0]);
