@@ -1914,7 +1914,8 @@ function disableAlterarPreferenciaNumRegistros() {
             if (!id) return;
             const elementRegistry = viewer.get('elementRegistry');
             const el = elementRegistry && elementRegistry.get(id);
-            if (!el || String(el.type || '').toLowerCase().indexOf('connection') < 0) return;
+            const bo = el && el.businessObject;
+            if (!el || !bo || String(bo.$type || '') !== 'bpmn:SequenceFlow') return;
             const gfx = elementRegistry.getGraphics(el);
             const path = gfx && gfx.querySelector && gfx.querySelector('.djs-visual > path');
             if (!path) return;
@@ -1978,14 +1979,17 @@ function disableAlterarPreferenciaNumRegistros() {
               return;
             }
 
-            const isNode = Array.isArray(bo.incoming) && Array.isArray(bo.outgoing);
+            const isFlowNode = !!(bo && typeof bo.$instanceOf === 'function' && bo.$instanceOf('bpmn:FlowNode'));
+            const inArr = Array.from((bo && bo.incoming) || []);
+            const outArr = Array.from((bo && bo.outgoing) || []);
+            const isNode = isFlowNode || !!(inArr.length || outArr.length);
             if (!isNode) return;
 
             // Nó clicado.
             atpAddChainMarker(el.id);
 
             // Entradas: linha + nó origem.
-            for (const f of (bo.incoming || [])) {
+            for (const f of inArr) {
               const fid = String(f && f.id || '');
               if (fid) atpAddChainMarker(fid);
               const sid = String(f && f.sourceRef && f.sourceRef.id || '');
@@ -1994,7 +1998,7 @@ function disableAlterarPreferenciaNumRegistros() {
 
             // Saídas: linha + nó destino.
             // Gateway com múltiplas saídas: todas as saídas são destacadas.
-            for (const f of (bo.outgoing || [])) {
+            for (const f of outArr) {
               const fid = String(f && f.id || '');
               if (fid) atpAddChainMarker(fid);
               const tid = String(f && f.targetRef && f.targetRef.id || '');
@@ -2055,11 +2059,19 @@ function disableAlterarPreferenciaNumRegistros() {
 
         try {
           const eventBus = viewer.get('eventBus');
+          overlay._atpLastElementClickTs = 0;
           eventBus.on('element.click', (ev) => {
-            try { atpHighlightFromElement(ev && ev.element); } catch (_) {}
+            try {
+              overlay._atpLastElementClickTs = Date.now();
+              atpHighlightFromElement(ev && ev.element);
+            } catch (_) {}
           });
           eventBus.on('canvas.click', () => {
-            try { overlay._atpClearChainSelection && overlay._atpClearChainSelection(); } catch (_) {}
+            try {
+              const last = Number(overlay._atpLastElementClickTs || 0);
+              if ((Date.now() - last) < 120) return;
+              overlay._atpClearChainSelection && overlay._atpClearChainSelection();
+            } catch (_) {}
           });
         } catch (_) {}
 
