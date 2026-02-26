@@ -539,12 +539,13 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       'elk.algorithm': 'layered',
       'elk.direction': 'RIGHT',
       'elk.edgeRouting': 'ORTHOGONAL',
-      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
       'elk.layered.considerModelOrder': 'NODES_AND_EDGES',
       'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
       'elk.partitioning.activate': 'true',
-      'elk.spacing.nodeNode': '74',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '160'
+      'elk.spacing.nodeNode': '44',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '240',
+      'elk.layered.nodePlacement.favorStraightEdges': 'true'
     },
     children: nodes.map((n) => {
       const d = atpBpmnDimsByType(n.type);
