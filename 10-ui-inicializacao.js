@@ -861,13 +861,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     if (ay !== by) return ay - by;
     return a - b;
   });
-  const globalMinY = (() => {
-    let v = Number.POSITIVE_INFINITY;
-    for (const b of posMap.values()) v = Math.min(v, Number(b.y) || 0);
-    return Number.isFinite(v) ? v : 0;
-  })();
-  const VIRTUAL_LANE_GAP = 120;
-  let laneCursorY = globalMinY;
+  const VIRTUAL_LANE_GAP = 72;
+  let prevLaneBottom = null;
   for (const lane of laneOrder) {
     const ids = laneGroups.get(lane) || [];
     if (!ids.length) continue;
@@ -880,14 +875,24 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       maxY = Math.max(maxY, (Number(b.y) || 0) + (Number(b.h) || 0));
     }
     if (!Number.isFinite(minY) || !Number.isFinite(maxY)) continue;
-    const shift = laneCursorY - minY;
-    for (const id of ids) {
-      const b = posMap.get(String(id));
-      if (!b) continue;
-      b.y = (Number(b.y) || 0) + shift;
-      desiredCenterById.set(String(id), centerY(b));
+
+    // Restaura comportamento mais estável: preserva posição original
+    // e só aplica deslocamento quando a lane invade a anterior.
+    let shift = 0;
+    if (Number.isFinite(prevLaneBottom)) {
+      const requiredMinY = Number(prevLaneBottom) + VIRTUAL_LANE_GAP;
+      if (minY < requiredMinY) shift = requiredMinY - minY;
     }
-    laneCursorY += (maxY - minY) + VIRTUAL_LANE_GAP;
+    if (shift !== 0) {
+      for (const id of ids) {
+        const b = posMap.get(String(id));
+        if (!b) continue;
+        b.y = (Number(b.y) || 0) + shift;
+        desiredCenterById.set(String(id), centerY(b));
+      }
+      maxY += shift;
+    }
+    prevLaneBottom = maxY;
   }
 
   const globalMaxX = (() => {
