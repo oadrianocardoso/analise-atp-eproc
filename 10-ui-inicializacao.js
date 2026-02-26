@@ -427,23 +427,43 @@ function atpBpmnComputeFlowStageColumns(nodes, edges, inDegree) {
     }
   }
 
-  const ordered = Array.from(nodeById.keys()).sort((a, b) => {
-    const ca = Number(cols.get(a) || 0);
-    const cb = Number(cols.get(b) || 0);
-    if (ca !== cb) return ca - cb;
-    return String(a).localeCompare(String(b), 'pt-BR');
-  });
-  for (const sid of ordered) {
-    const sCol = Number(cols.get(sid));
-    if (!Number.isFinite(sCol)) continue;
-    for (const tid of (outById.get(sid) || [])) {
+  // Relaxamento por aresta para manter progressão à direita sem reutilizar colunas antigas.
+  const baseCols = new Map(cols);
+  const isForwardByBase = (sid, tid) => {
+    const bs = Number(baseCols.get(String(sid)));
+    const bt = Number(baseCols.get(String(tid)));
+    if (!Number.isFinite(bs) || !Number.isFinite(bt)) return true;
+    if (bt > bs) return true;
+    if (bt < bs) return false;
+    return String(sid).localeCompare(String(tid), 'pt-BR') < 0;
+  };
+
+  const RELAX_MAX = Math.max(4, Math.min(64, listNodes.length * 2));
+  for (let pass = 0; pass < RELAX_MAX; pass++) {
+    let moved = false;
+    for (const e of listEdges) {
+      const sid = String(e && e.source || '');
+      const tid = String(e && e.target || '');
+      if (!sid || !tid) continue;
+      const sCol = Number(cols.get(sid));
+      if (!Number.isFinite(sCol)) continue;
+
+      const sNode = nodeById.get(sid);
       const tNode = nodeById.get(tid);
+      const sKind = atpBpmnNodeKind(sNode && sNode.type);
       const tKind = atpBpmnNodeKind(tNode && tNode.type);
+
+      const forceForward = (sKind === 'locator' && tKind === 'decision');
+      if (!forceForward && !isForwardByBase(sid, tid)) continue;
+
       const proposed = atpBpmnNextColumnForKind(tKind, sCol + 1, hardMaxCol);
       const cur = Number(cols.get(tid));
-      if (!Number.isFinite(cur)) cols.set(tid, proposed);
-      else if (proposed > cur && proposed <= cur + 3) cols.set(tid, proposed);
+      if (!Number.isFinite(cur) || proposed > cur) {
+        cols.set(tid, proposed);
+        moved = true;
+      }
     }
+    if (!moved) break;
   }
 
   for (const n of listNodes) {
@@ -463,7 +483,16 @@ function atpBpmnComputeFlowStageColumns(nodes, edges, inDegree) {
     const id = String(n && n.id || '');
     if (!id || cols.has(id)) continue;
     const k = atpBpmnNodeKind(n && n.type);
-    if (k === 'start') cols.set(id, 0);
+    const preds = predById.get(id) || [];
+    let minByPred = null;
+    for (const p of preds) {
+      const cp = Number(cols.get(String(p)));
+      if (!Number.isFinite(cp)) continue;
+      const proposed = atpBpmnNextColumnForKind(k, cp + 1, hardMaxCol);
+      minByPred = Number.isFinite(minByPred) ? Math.max(minByPred, proposed) : proposed;
+    }
+    if (Number.isFinite(minByPred)) cols.set(id, Number(minByPred));
+    else if (k === 'start') cols.set(id, 0);
     else if (k === 'locator') cols.set(id, 1);
     else if (k === 'decision') cols.set(id, 2);
     else if (k === 'action') cols.set(id, 3);
@@ -720,6 +749,145 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       }
       packColumnByDesired(arr);
     }
+  }
+
+  // Lanes virtuais por caminho: separa visualmente ramos independentes.
+  const forwardOutById = new Map();
+  const forwardInById = new Map();
+  for (const n of nodes) {
+    const id = String(n && n.id || '');
+    if (!id) continue;
+    forwardOutById.set(id, []);
+    forwardInById.set(id, []);
+  }
+  for (const e of edges) {
+    const sid = String(e && e.source || '');
+    const tid = String(e && e.target || '');
+    if (!sid || !tid) continue;
+    const sCol = Number(colById.get(sid));
+    const tCol = Number(colById.get(tid));
+    if (!Number.isFinite(sCol) || !Number.isFinite(tCol)) continue;
+    if (tCol > sCol) {
+      if (!forwardOutById.has(sid)) forwardOutById.set(sid, []);
+      if (!forwardInById.has(tid)) forwardInById.set(tid, []);
+      forwardOutById.get(sid).push(tid);
+      forwardInById.get(tid).push(sid);
+    }
+  }
+
+  const laneById = new Map();
+  let laneCursor = 0;
+  const roots = Array.from(posMap.keys()).sort((a, b) => {
+    const ca = Number(colById.get(String(a)) || 0);
+    const cb = Number(colById.get(String(b)) || 0);
+    if (ca !== cb) return ca - cb;
+    const ya = centerY(posMap.get(String(a)));
+    const yb = centerY(posMap.get(String(b)));
+    if (ya !== yb) return ya - yb;
+    return String(a).localeCompare(String(b), 'pt-BR');
+  }).filter((id) => {
+    const ins = forwardInById.get(String(id)) || [];
+    const k = String(kindById.get(String(id)) || '');
+    return !ins.length || k === 'start' || (k === 'locator' && Number(inDegree.get(String(id)) || 0) === 0);
+  });
+
+  const assignLaneFrom = (rootId, initialLane) => {
+    const q = [{ id: String(rootId), lane: Number(initialLane) }];
+    const seen = new Set();
+    while (q.length) {
+      const cur = q.shift();
+      const id = String(cur && cur.id || '');
+      const lane = Number(cur && cur.lane);
+      if (!id || !Number.isFinite(lane)) continue;
+      const seenKey = id + '|' + String(lane);
+      if (seen.has(seenKey)) continue;
+      seen.add(seenKey);
+
+      if (!laneById.has(id)) laneById.set(id, lane);
+
+      const outs = (forwardOutById.get(id) || []).slice().sort((a, b) => {
+        const ya = centerY(posMap.get(String(a)));
+        const yb = centerY(posMap.get(String(b)));
+        if (ya !== yb) return ya - yb;
+        return String(a).localeCompare(String(b), 'pt-BR');
+      });
+      const isSplit = String(kindById.get(id) || '') === 'decision' && outs.length > 1;
+      for (let i = 0; i < outs.length; i++) {
+        const tid = String(outs[i] || '');
+        if (!tid) continue;
+        let tLane = lane;
+        if (isSplit && i > 0) tLane = (++laneCursor);
+        if (!laneById.has(tid)) laneById.set(tid, tLane);
+        q.push({ id: tid, lane: tLane });
+      }
+    }
+  };
+
+  for (const rid of roots) {
+    const id = String(rid || '');
+    if (!id) continue;
+    if (!laneById.has(id)) {
+      laneById.set(id, laneCursor);
+      assignLaneFrom(id, laneCursor);
+      laneCursor += 1;
+    }
+  }
+
+  // Ajusta nós de merge para a lane mediana das entradas.
+  for (const [tid, preds] of forwardInById.entries()) {
+    const arr = (preds || []).map(pid => Number(laneById.get(String(pid)))).filter(Number.isFinite).sort((a, b) => a - b);
+    if (arr.length > 1) {
+      const med = arr[Math.floor((arr.length - 1) / 2)];
+      laneById.set(String(tid), Number.isFinite(med) ? med : Number(laneById.get(String(tid)) || 0));
+    }
+  }
+
+  // Fallback de lane para nós sem marcação.
+  for (const [id] of posMap.entries()) {
+    if (laneById.has(String(id))) continue;
+    laneById.set(String(id), laneCursor++);
+  }
+
+  // Aplica espaçamento entre lanes virtuais.
+  const laneGroups = new Map();
+  for (const [id] of posMap.entries()) {
+    const lane = Number(laneById.get(String(id)) || 0);
+    if (!laneGroups.has(lane)) laneGroups.set(lane, []);
+    laneGroups.get(lane).push(String(id));
+  }
+  const laneOrder = Array.from(laneGroups.keys()).sort((a, b) => {
+    const ay = avg((laneGroups.get(a) || []).map(id => centerY(posMap.get(String(id)))));
+    const by = avg((laneGroups.get(b) || []).map(id => centerY(posMap.get(String(id)))));
+    if (ay !== by) return ay - by;
+    return a - b;
+  });
+  const globalMinY = (() => {
+    let v = Number.POSITIVE_INFINITY;
+    for (const b of posMap.values()) v = Math.min(v, Number(b.y) || 0);
+    return Number.isFinite(v) ? v : 0;
+  })();
+  const VIRTUAL_LANE_GAP = 120;
+  let laneCursorY = globalMinY;
+  for (const lane of laneOrder) {
+    const ids = laneGroups.get(lane) || [];
+    if (!ids.length) continue;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const id of ids) {
+      const b = posMap.get(String(id));
+      if (!b) continue;
+      minY = Math.min(minY, Number(b.y) || 0);
+      maxY = Math.max(maxY, (Number(b.y) || 0) + (Number(b.h) || 0));
+    }
+    if (!Number.isFinite(minY) || !Number.isFinite(maxY)) continue;
+    const shift = laneCursorY - minY;
+    for (const id of ids) {
+      const b = posMap.get(String(id));
+      if (!b) continue;
+      b.y = (Number(b.y) || 0) + shift;
+      desiredCenterById.set(String(id), centerY(b));
+    }
+    laneCursorY += (maxY - minY) + VIRTUAL_LANE_GAP;
   }
 
   const globalMaxX = (() => {
