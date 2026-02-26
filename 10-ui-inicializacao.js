@@ -333,6 +333,146 @@ function atpBpmnDimsByType(type) {
   return { width: 220, height: 86 };
 }
 
+function atpBpmnNodeKind(type) {
+  const t = String(type || '').toLowerCase();
+  if (t === 'startevent') return 'start';
+  if (t === 'endevent') return 'end';
+  if (t.indexOf('gateway') >= 0) return 'decision';
+  if (t === 'servicetask') return 'action';
+  return 'locator';
+}
+
+function atpBpmnPhaseAcceptsColumn(kind, col) {
+  const c = Number(col);
+  if (!Number.isFinite(c) || c < 0) return false;
+  if (kind === 'start') return c === 0;
+  if (kind === 'end') return c >= 2;
+  if (kind === 'locator') return c === 1 || (c > 1 && (c % 3) === 1);
+  if (kind === 'decision') return c >= 2 && (c % 3) === 2;
+  if (kind === 'action') return c >= 3 && (c % 3) === 0;
+  return c >= 1;
+}
+
+function atpBpmnNextColumnForKind(targetKind, minCol, hardMaxCol) {
+  const start = Math.max(0, Number(minCol) || 0);
+  const max = Math.max(start, Number(hardMaxCol) || start);
+  for (let c = start; c <= max; c++) {
+    if (atpBpmnPhaseAcceptsColumn(targetKind, c)) return c;
+  }
+  return max;
+}
+
+function atpBpmnComputeFlowStageColumns(nodes, edges, inDegree) {
+  const listNodes = Array.isArray(nodes) ? nodes : [];
+  const listEdges = Array.isArray(edges) ? edges : [];
+  const nodeById = new Map(listNodes.map(n => [String(n && n.id || ''), n]).filter(p => p[0]));
+  const outById = new Map();
+  const predById = new Map();
+  const cols = new Map();
+  const hardMaxCol = Math.max(12, (listNodes.length || 10) + 12);
+
+  for (const n of listNodes) {
+    const id = String(n && n.id || '');
+    if (!id) continue;
+    outById.set(id, []);
+    predById.set(id, []);
+  }
+  for (const e of listEdges) {
+    const sid = String(e && e.source || '');
+    const tid = String(e && e.target || '');
+    if (!sid || !tid) continue;
+    if (!outById.has(sid)) outById.set(sid, []);
+    if (!predById.has(tid)) predById.set(tid, []);
+    outById.get(sid).push(tid);
+    predById.get(tid).push(sid);
+  }
+
+  const seeds = [];
+  for (const n of listNodes) {
+    const id = String(n && n.id || '');
+    if (!id) continue;
+    const kind = atpBpmnNodeKind(n.type);
+    if (kind === 'start') {
+      cols.set(id, 0);
+      seeds.push(id);
+    }
+  }
+  for (const n of listNodes) {
+    const id = String(n && n.id || '');
+    if (!id || cols.has(id)) continue;
+    const kind = atpBpmnNodeKind(n.type);
+    if (kind === 'locator' && Number(inDegree.get(id) || 0) === 0) {
+      cols.set(id, 1);
+      seeds.push(id);
+    }
+  }
+
+  const q = seeds.slice();
+  const seen = new Set(q);
+  while (q.length) {
+    const sid = String(q.shift() || '');
+    if (!sid) continue;
+    const sCol = Number(cols.get(sid));
+    if (!Number.isFinite(sCol)) continue;
+    const outs = (outById.get(sid) || []).slice().sort((a, b) => String(a).localeCompare(String(b), 'pt-BR'));
+    for (const tid of outs) {
+      const tNode = nodeById.get(tid);
+      const tKind = atpBpmnNodeKind(tNode && tNode.type);
+      const proposed = atpBpmnNextColumnForKind(tKind, sCol + 1, hardMaxCol);
+      if (!cols.has(tid)) cols.set(tid, proposed);
+      if (!seen.has(tid)) {
+        seen.add(tid);
+        q.push(tid);
+      }
+    }
+  }
+
+  const ordered = Array.from(nodeById.keys()).sort((a, b) => {
+    const ca = Number(cols.get(a) || 0);
+    const cb = Number(cols.get(b) || 0);
+    if (ca !== cb) return ca - cb;
+    return String(a).localeCompare(String(b), 'pt-BR');
+  });
+  for (const sid of ordered) {
+    const sCol = Number(cols.get(sid));
+    if (!Number.isFinite(sCol)) continue;
+    for (const tid of (outById.get(sid) || [])) {
+      const tNode = nodeById.get(tid);
+      const tKind = atpBpmnNodeKind(tNode && tNode.type);
+      const proposed = atpBpmnNextColumnForKind(tKind, sCol + 1, hardMaxCol);
+      const cur = Number(cols.get(tid));
+      if (!Number.isFinite(cur)) cols.set(tid, proposed);
+      else if (proposed > cur && proposed <= cur + 3) cols.set(tid, proposed);
+    }
+  }
+
+  for (const n of listNodes) {
+    const id = String(n && n.id || '');
+    if (!id) continue;
+    if (atpBpmnNodeKind(n.type) !== 'end') continue;
+    const preds = predById.get(id) || [];
+    let maxPred = 0;
+    for (const p of preds) {
+      const cp = Number(cols.get(p));
+      if (Number.isFinite(cp)) maxPred = Math.max(maxPred, cp);
+    }
+    cols.set(id, Math.min(hardMaxCol, Math.max(Number(cols.get(id) || 0), maxPred + 1)));
+  }
+
+  for (const n of listNodes) {
+    const id = String(n && n.id || '');
+    if (!id || cols.has(id)) continue;
+    const k = atpBpmnNodeKind(n && n.type);
+    if (k === 'start') cols.set(id, 0);
+    else if (k === 'locator') cols.set(id, 1);
+    else if (k === 'decision') cols.set(id, 2);
+    else if (k === 'action') cols.set(id, 3);
+    else cols.set(id, 5);
+  }
+
+  return cols;
+}
+
 async function atpApplyElkLayoutToBpmnXml(xml) {
   const ELKClass = await atpEnsureElkLoadedForBpmn();
   const elk = new ELKClass();
@@ -382,6 +522,7 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
 
   const nodes = Array.from(nodeMap.values());
   if (!nodes.length) throw new Error('Sem nós BPMN para layout.');
+  const colById = atpBpmnComputeFlowStageColumns(nodes, edges, inDegree);
 
   const graph = {
     id: 'atp-bpmn-root',
@@ -389,15 +530,25 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       'elk.algorithm': 'layered',
       'elk.direction': 'RIGHT',
       'elk.edgeRouting': 'ORTHOGONAL',
-      'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
       'elk.layered.considerModelOrder': 'NODES_AND_EDGES',
       'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-      'elk.spacing.nodeNode': '60',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '120'
+      'elk.partitioning.activate': 'true',
+      'elk.spacing.nodeNode': '56',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '170',
+      'elk.layered.nodePlacement.favorStraightEdges': 'true'
     },
     children: nodes.map((n) => {
       const d = atpBpmnDimsByType(n.type);
-      return { id: n.id, width: d.width, height: d.height };
+      const col = Number(colById.get(String(n.id)) || 0);
+      return {
+        id: n.id,
+        width: d.width,
+        height: d.height,
+        layoutOptions: {
+          'elk.partitioning.partition': String(col)
+        }
+      };
     }),
     edges: edges.map((e) => ({ id: e.id, sources: [e.source], targets: [e.target] }))
   };
@@ -415,6 +566,58 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     });
   }
 
+  // Trava X por coluna estrutural (fase do fluxo).
+  const maxWByCol = new Map();
+  for (const [id, b] of posMap.entries()) {
+    const c = Number(colById.get(String(id)));
+    const prev = Number(maxWByCol.get(c) || 0);
+    maxWByCol.set(c, Math.max(prev, Number(b.w) || 220));
+  }
+  const colX = new Map();
+  let xCursor = 40;
+  const colsSorted = Array.from(maxWByCol.keys()).map(v => Number(v)).filter(Number.isFinite).sort((a, b) => a - b);
+  for (const c of colsSorted) {
+    const mw = Number(maxWByCol.get(c) || 220);
+    colX.set(c, xCursor);
+    xCursor += mw + 130;
+  }
+  for (const [id, b] of posMap.entries()) {
+    const c = Number(colById.get(String(id)));
+    const baseX = Number(colX.get(c) || 0);
+    const mw = Number(maxWByCol.get(c) || b.w || 220);
+    b.x = baseX + Math.max(0, ((mw - (Number(b.w) || 0)) / 2));
+  }
+
+  // Evita sobreposição vertical dentro da mesma coluna.
+  const colItems = new Map();
+  for (const [id, b] of posMap.entries()) {
+    const c = Number(colById.get(String(id)));
+    if (!colItems.has(c)) colItems.set(c, []);
+    colItems.get(c).push({ id, b });
+  }
+  const COL_MIN_GAP_Y = 24;
+  for (const c of Array.from(colItems.keys()).sort((a, b) => a - b)) {
+    const arr = colItems.get(c) || [];
+    arr.sort((a, b) => {
+      const ay = Number(a && a.b && a.b.y || 0);
+      const by = Number(b && b.b && b.b.y || 0);
+      if (ay !== by) return ay - by;
+      return String(a && a.id || '').localeCompare(String(b && b.id || ''), 'pt-BR');
+    });
+    let nextY = null;
+    for (const it of arr) {
+      if (!it || !it.b) continue;
+      const h = Math.max(20, Number(it.b.h) || 20);
+      const y = Number(it.b.y) || 0;
+      if (nextY === null) {
+        nextY = y + h + COL_MIN_GAP_Y;
+        continue;
+      }
+      if (y < nextY) it.b.y = nextY;
+      nextY = Number(it.b.y) + h + COL_MIN_GAP_Y;
+    }
+  }
+
   const edgeWps = new Map();
   for (const e of (laid.edges || [])) {
     const sec = e && Array.isArray(e.sections) ? e.sections[0] : null;
@@ -427,6 +630,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     wps.push({ x: Number(sec.endPoint.x) || 0, y: Number(sec.endPoint.y) || 0 });
     edgeWps.set(String(e.id || ''), wps);
   }
+  // Waypoints do ELK não refletem a trava manual de colunas; recalcula fallback.
+  edgeWps.clear();
   let diagram = null;
   try { diagram = doc.getElementsByTagNameNS(NS.bpmndi, 'BPMNDiagram')[0] || null; } catch (_) {}
   if (!diagram) {
