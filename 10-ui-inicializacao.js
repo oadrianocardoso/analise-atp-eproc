@@ -534,8 +534,8 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       'elk.layered.considerModelOrder': 'NODES_AND_EDGES',
       'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
       'elk.partitioning.activate': 'true',
-      'elk.spacing.nodeNode': '56',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '170',
+      'elk.spacing.nodeNode': '88',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '220',
       'elk.layered.nodePlacement.favorStraightEdges': 'true'
     },
     children: nodes.map((n) => {
@@ -579,7 +579,7 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
   for (const c of colsSorted) {
     const mw = Number(maxWByCol.get(c) || 220);
     colX.set(c, xCursor);
-    xCursor += mw + 130;
+    xCursor += mw + 200;
   }
   for (const [id, b] of posMap.entries()) {
     const c = Number(colById.get(String(id)));
@@ -595,7 +595,7 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     if (!colItems.has(c)) colItems.set(c, []);
     colItems.get(c).push({ id, b });
   }
-  const COL_MIN_GAP_Y = 24;
+  const COL_MIN_GAP_Y = 46;
   for (const c of Array.from(colItems.keys()).sort((a, b) => a - b)) {
     const arr = colItems.get(c) || [];
     arr.sort((a, b) => {
@@ -671,6 +671,47 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     bo.setAttribute('height', String(Math.round(b.h)));
     sh.appendChild(bo);
     plane.appendChild(sh);
+  }
+
+  // Índices por aresta para separar visualmente fan-out/fan-in.
+  const outIdxByEdge = new Map();
+  const outCountBySource = new Map();
+  const inIdxByEdge = new Map();
+  const inCountByTarget = new Map();
+  const bySource = new Map();
+  const byTarget = new Map();
+  for (const e of edges) {
+    const sid = String(e && e.source || '');
+    const tid = String(e && e.target || '');
+    if (!sid || !tid) continue;
+    if (!bySource.has(sid)) bySource.set(sid, []);
+    if (!byTarget.has(tid)) byTarget.set(tid, []);
+    bySource.get(sid).push(e);
+    byTarget.get(tid).push(e);
+  }
+  for (const [sid, arr] of bySource.entries()) {
+    arr.sort((a, b) => {
+      const ta = posMap.get(String(a && a.target || ''));
+      const tb = posMap.get(String(b && b.target || ''));
+      const ya = Number(ta && ta.y || 0);
+      const yb = Number(tb && tb.y || 0);
+      if (ya !== yb) return ya - yb;
+      return String(a && a.id || '').localeCompare(String(b && b.id || ''), 'pt-BR');
+    });
+    outCountBySource.set(sid, arr.length || 1);
+    arr.forEach((e, i) => outIdxByEdge.set(String(e && e.id || ''), i));
+  }
+  for (const [tid, arr] of byTarget.entries()) {
+    arr.sort((a, b) => {
+      const sa = posMap.get(String(a && a.source || ''));
+      const sb = posMap.get(String(b && b.source || ''));
+      const ya = Number(sa && sa.y || 0);
+      const yb = Number(sb && sb.y || 0);
+      if (ya !== yb) return ya - yb;
+      return String(a && a.id || '').localeCompare(String(b && b.id || ''), 'pt-BR');
+    });
+    inCountByTarget.set(tid, arr.length || 1);
+    arr.forEach((e, i) => inIdxByEdge.set(String(e && e.id || ''), i));
   }
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -766,9 +807,18 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     }
     return compactPts(out);
   };
-  const buildFallbackOrtho = (srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
+  const buildFallbackOrtho = (edge, srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
     const sc = rectCenter(srcRect);
     const tc = rectCenter(tgtRect);
+    const eid = String(edge && edge.id || '');
+    const sid = String(edge && edge.source || '');
+    const tid = String(edge && edge.target || '');
+    const outIdx = Number(outIdxByEdge.get(eid) || 0);
+    const outCnt = Number(outCountBySource.get(sid) || Math.max(1, srcOutCount || 1));
+    const inIdx = Number(inIdxByEdge.get(eid) || 0);
+    const inCnt = Number(inCountByTarget.get(tid) || Math.max(1, tgtInCount || 1));
+    const outOff = (outIdx - ((outCnt - 1) / 2)) * 12;
+    const inOff = (inIdx - ((inCnt - 1) / 2)) * 10;
     const srcSide = isGatewayType(srcMeta)
       ? sideForGatewayFan(srcRect, tgtRect, srcOutCount)
       : sideFromPoint(srcRect, tc);
@@ -782,11 +832,20 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
     if (Math.abs(p1.x - p2.x) < 0.001 || Math.abs(p1.y - p2.y) < 0.001) return [p1, p2];
     const dx = Math.abs(tc.x - sc.x);
     const dy = Math.abs(tc.y - sc.y);
+    const forward = tc.x >= sc.x;
+    if (forward) {
+      const d = Math.max(20, Math.min(80, dx * 0.32));
+      const x1 = p1.x + d + outOff;
+      const x2 = p2.x - d + inOff;
+      if (x2 > x1 + 10) {
+        return orthogonalizePts([p1, { x: x1, y: p1.y }, { x: x1, y: p2.y }, { x: x2, y: p2.y }, p2]);
+      }
+    }
     if (dx >= dy) {
-      const mx = (p1.x + p2.x) / 2;
+      const mx = ((p1.x + p2.x) / 2) + (outOff * 0.5) + (inOff * 0.5);
       return orthogonalizePts([p1, { x: mx, y: p1.y }, { x: mx, y: p2.y }, p2]);
     }
-    const my = (p1.y + p2.y) / 2;
+    const my = ((p1.y + p2.y) / 2) + (outOff * 0.35) + (inOff * 0.35);
     return orthogonalizePts([p1, { x: p1.x, y: my }, { x: p2.x, y: my }, p2]);
   };
   const snapElkEdgeToBounds = (wps, srcRect, tgtRect, srcMeta, tgtMeta, srcOutCount, tgtInCount) => {
@@ -819,7 +878,7 @@ async function atpApplyElkLayoutToBpmnXml(xml) {
       const s = posMap.get(e.source);
       const t = posMap.get(e.target);
       if (s && t) {
-        wps = buildFallbackOrtho(s, t, srcMeta, tgtMeta, srcOutCount, tgtInCount);
+        wps = buildFallbackOrtho(e, s, t, srcMeta, tgtMeta, srcOutCount, tgtInCount);
       } else {
         wps = [];
       }
@@ -1775,6 +1834,86 @@ function disableAlterarPreferenciaNumRegistros() {
           } catch (e) {}
         };
 
+        const ATP_CHAIN_MARKER = 'atp-chain-selected';
+        overlay._atpChainSelectedIds = new Set();
+        overlay._atpClearChainSelection = () => {
+          try {
+            const canvasApi = viewer.get('canvas');
+            if (!canvasApi) return;
+            for (const id of Array.from(overlay._atpChainSelectedIds || [])) {
+              try { canvasApi.removeMarker(id, ATP_CHAIN_MARKER); } catch (_) {}
+            }
+            overlay._atpChainSelectedIds = new Set();
+          } catch (_) {}
+        };
+        const atpAddChainMarker = (id) => {
+          try {
+            const sid = String(id || '');
+            if (!sid) return;
+            if (!overlay._atpChainSelectedIds) overlay._atpChainSelectedIds = new Set();
+            if (overlay._atpChainSelectedIds.has(sid)) return;
+            const canvasApi = viewer.get('canvas');
+            if (!canvasApi) return;
+            canvasApi.addMarker(sid, ATP_CHAIN_MARKER);
+            overlay._atpChainSelectedIds.add(sid);
+          } catch (_) {}
+        };
+        const atpNormalizeClickedElement = (el) => {
+          try {
+            if (!el) return null;
+            const bo = el.businessObject;
+            if (!bo) return el;
+            if (String(bo.$type || '') === 'bpmn:Label' && bo.labelTarget && bo.labelTarget.id) {
+              return viewer.get('elementRegistry').get(String(bo.labelTarget.id)) || el;
+            }
+            if (el.type === 'label' && el.labelTarget && el.labelTarget.id) {
+              return viewer.get('elementRegistry').get(String(el.labelTarget.id)) || el;
+            }
+            return el;
+          } catch (_) {
+            return el || null;
+          }
+        };
+        const atpHighlightFromElement = (rawEl) => {
+          try {
+            overlay._atpClearChainSelection && overlay._atpClearChainSelection();
+            const el = atpNormalizeClickedElement(rawEl);
+            if (!el || !el.businessObject) return;
+            const bo = el.businessObject;
+            const t = String(bo.$type || '');
+
+            if (t === 'bpmn:SequenceFlow') {
+              atpAddChainMarker(el.id);
+              if (bo.sourceRef && bo.sourceRef.id) atpAddChainMarker(String(bo.sourceRef.id));
+              if (bo.targetRef && bo.targetRef.id) atpAddChainMarker(String(bo.targetRef.id));
+              return;
+            }
+
+            const isNode = Array.isArray(bo.incoming) && Array.isArray(bo.outgoing);
+            if (!isNode) return;
+
+            // Nó clicado.
+            atpAddChainMarker(el.id);
+
+            // Entradas: linha + nó origem.
+            for (const f of (bo.incoming || [])) {
+              const fid = String(f && f.id || '');
+              if (fid) atpAddChainMarker(fid);
+              const sid = String(f && f.sourceRef && f.sourceRef.id || '');
+              if (sid) atpAddChainMarker(sid);
+            }
+
+            // Saídas: linha + nó destino.
+            // Gateway com múltiplas saídas: todas as saídas são destacadas.
+            for (const f of (bo.outgoing || [])) {
+              const fid = String(f && f.id || '');
+              if (fid) atpAddChainMarker(fid);
+              const tid = String(f && f.targetRef && f.targetRef.id || '');
+              if (tid) atpAddChainMarker(tid);
+            }
+          } catch (_) {}
+        };
+
         viewer.importXML(String(fileObj.xml || '')).then(() => {
           try {
             const canvasApi = viewer.get('canvas');
@@ -1807,6 +1946,16 @@ function disableAlterarPreferenciaNumRegistros() {
             zoomLabel.textContent = Math.round(zoomValue * 100) + '%';
           } catch (e) {}
         });
+
+        try {
+          const eventBus = viewer.get('eventBus');
+          eventBus.on('element.click', (ev) => {
+            try { atpHighlightFromElement(ev && ev.element); } catch (_) {}
+          });
+          eventBus.on('canvas.click', () => {
+            try { overlay._atpClearChainSelection && overlay._atpClearChainSelection(); } catch (_) {}
+          });
+        } catch (_) {}
 
       }).catch((e) => {
         try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao carregar bpmn-js modeler:', e); } catch(_) {}
