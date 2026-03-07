@@ -419,19 +419,29 @@ function atpComputeFluxosData(rules) {
     fluxos.push({ starts: [k], nodes: Array.from(comp).sort((a,b)=>a.localeCompare(b)) });
   }
 
-  // Acrescenta nós terminais (INCLUIR que não vira REMOVER) no fluxo em que aparecem.
+  // Acrescenta APENAS nós terminais DIRETOS (conectados a 1 passo, sem recursão).
+  // Isso evita explosão de nós terminais secundários.
   for (const fl of fluxos) {
-    const full = new Set(fl.nodes || []);
-    for (const u of (fl.nodes || [])) {
+    const nodesSnapshot = Array.from(fl.nodes || []);  // Snapshot dos nós originais
+    const directTerminals = new Set();
+    
+    // Coleta terminais diretos (INCLUIR que não são REMOVER) dos nós neste fluxo
+    for (const u of nodesSnapshot) {
       const outs = byFrom.get(u) || [];
       for (const it of outs) {
         for (const tk of (it && it.toKeys ? it.toKeys : [])) {
           if (!tk) continue;
-          if (!full.has(tk) && !allFrom.has(tk)) full.add(tk);
+          // Terminal = nunca aparece como REMOVER em nenhuma regra
+          if (!allFrom.has(tk)) {
+            directTerminals.add(tk);
+          }
         }
       }
     }
-    fl.nodes = Array.from(full).sort((a, b) => String(a).localeCompare(String(b)));
+    
+    // Monta nós finais: originais + terminais diretos (sem iteração infinita)
+    fl.nodes = Array.from(new Set([...nodesSnapshot, ...directTerminals]))
+              .sort((a, b) => String(a).localeCompare(String(b)));
   }
 
   const keyToFlow = new Map();
