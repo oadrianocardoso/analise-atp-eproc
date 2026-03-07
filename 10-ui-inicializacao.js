@@ -1739,19 +1739,36 @@ function disableAlterarPreferenciaNumRegistros() {
               return;
             }
 
-            atpApplyElkLayoutToBpmnXml(String(f.xml || ''))
-              .then((xmlElk) => {
-                const fileObj = {
-                  ...f,
-                  xml: String(xmlElk || f.xml || ''),
-                  filename: String(f.filename || ('fluxo_' + String(idx + 1).padStart(2, '0') + '.bpmn'))
-                };
-                atpOpenFlowBpmnModal(fileObj, idx);
-              })
-              .catch((err) => {
-                try { console.warn(LOG_PREFIX, '[Fluxos/UI] ELK no BPMN falhou; abrindo BPMN original:', err); } catch (_) {}
-                atpOpenFlowBpmnModal(f, idx);
-              });
+            const applier = window.__ATP_UNIQUE_LAYOUT__ && window.__ATP_UNIQUE_LAYOUT__.apply;
+            if (typeof applier === 'function') {
+              let xmlLane = String(f.xml || '');
+              try {
+                const laid = applier(xmlLane);
+                if (laid) xmlLane = String(laid);
+              } catch (errLane) {
+                try { console.warn(LOG_PREFIX, '[Fluxos/UI] Swimlane no BPMN falhou; abrindo BPMN original:', errLane); } catch (_) {}
+              }
+              const fileObj = {
+                ...f,
+                xml: xmlLane,
+                filename: String(f.filename || ('fluxo_' + String(idx + 1).padStart(2, '0') + '.bpmn'))
+              };
+              atpOpenFlowBpmnModal(fileObj, idx);
+            } else {
+              atpApplyElkLayoutToBpmnXml(String(f.xml || ''))
+                .then((xmlElk) => {
+                  const fileObj = {
+                    ...f,
+                    xml: String(xmlElk || f.xml || ''),
+                    filename: String(f.filename || ('fluxo_' + String(idx + 1).padStart(2, '0') + '.bpmn'))
+                  };
+                  atpOpenFlowBpmnModal(fileObj, idx);
+                })
+                .catch((err) => {
+                  try { console.warn(LOG_PREFIX, '[Fluxos/UI] ELK no BPMN falhou; abrindo BPMN original:', err); } catch (_) {}
+                  atpOpenFlowBpmnModal(f, idx);
+                });
+            }
           } catch (e) {
             try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao visualizar fluxo (BPMN + ELK):', e); } catch (_) {}
           }

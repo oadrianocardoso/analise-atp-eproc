@@ -350,12 +350,14 @@
   }
 
   function layoutSwimlanes(flow, opts) {
-    // Layout em SWIMLANES: cada "ramo" ou caminho tem sua própria faixa vertical
-    // Mantém nós do mesmo caminho juntos, sem mistura com outros ramos
+    // Layout em SWIMLANES:
+    // - cada branch sai para uma lane dedicada
+    // - lanes têm altura dinâmica (evita mistura quando há muitos nós)
     opts = opts || {};
-    const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 280;     // Espaço horizontal entre profundidades
-    const LANE_HEIGHT = (opts.LANE_HEIGHT != null) ? opts.LANE_HEIGHT : 150; // Altura de cada raia/branch
-    const Y_GAP = (opts.Y_GAP != null) ? opts.Y_GAP : 30;        // Espaço vertical entre nós na mesma lane
+    const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 290;
+    const LANE_HEIGHT = (opts.LANE_HEIGHT != null) ? opts.LANE_HEIGHT : 160;
+    const LANE_GAP = (opts.LANE_GAP != null) ? opts.LANE_GAP : 36;
+    const Y_GAP = (opts.Y_GAP != null) ? opts.Y_GAP : 28;
     const PAD_X = (opts.PAD_X != null) ? opts.PAD_X : 60;
     const PAD_Y = (opts.PAD_Y != null) ? opts.PAD_Y : 60;
 
@@ -371,7 +373,6 @@
       return { w: 170, h: 70 };
     };
 
-    // Calcular profundidades e grafo
     const out = {}, inc = {};
     for (const n of nodes) { out[n.id] = []; inc[n.id] = []; }
     for (const e of edges) {
@@ -380,114 +381,171 @@
       out[e.from].push(e.to);
       inc[e.to].push(e.from);
     }
+    for (const id of Object.keys(out)) out[id].sort();
+    for (const id of Object.keys(inc)) inc[id].sort();
 
-    // Encontrar raiz (start)
     let root = null;
     for (const n of nodes) { if (n.type === 'start') { root = n.id; break; } }
-    if (!root) for (const n of nodes) { if ((inc[n.id] || []).length === 0) { root = n.id; break; } }
+    if (!root) {
+      const heads = nodes.map(n => n.id).filter(id => (inc[id] || []).length === 0).sort();
+      if (heads.length) root = heads[0];
+    }
     if (!root && nodes.length) root = nodes[0].id;
     if (!root) return { __ATP_ALL_BOXES__: [], __ATP_GAP_Y_MIN__: Y_GAP };
 
-    // Calcular profundidades
+    // BFS de profundidade
     const depth = {};
-    const q = [root];
+    const qDepth = [root];
     depth[root] = 0;
-    while (q.length) {
-      const u = q.shift();
+    while (qDepth.length) {
+      const u = qDepth.shift();
       const du = depth[u] || 0;
       const kids = out[u] || [];
       for (const v of kids) {
         const cand = du + 1;
         if (depth[v] == null || cand < depth[v]) {
           depth[v] = cand;
-          q.push(v);
+          qDepth.push(v);
         }
       }
     }
     const maxD = Math.max(...Object.values(depth).concat([0]));
     for (const n of nodes) if (depth[n.id] == null) depth[n.id] = maxD + 1;
 
-    // === ALGORITMO DE SWIMLANES ===
-    // Para cada nó, achar qual "lane" ele pertence analisando seu ancestral mais próximo que diverge
-    const nodeLane = {};  // nodeId → laneIndex
+    // Atribuição de lanes por branch com propagação multi-caminho
+    const nodeLane = {};
+    let nextLane = 1;
+    const qLane = [{ id: root, lane: 0 }];
+    const seenLaneState = new Set();
 
-    function assignLanesForBranch(nodeId, lane) {
-      if (nodeLane[nodeId] != null) return;
-      nodeLane[nodeId] = lane;
+    while (qLane.length) {
+      const cur = qLane.shift();
+      const id = String(cur.id || '');
+      const lane = Number(cur.lane);
+      if (!id || !Number.isFinite(lane)) continue;
 
-      const children = out[nodeId] || [];
-      for (let i = 0; i < children.length; i++) {
-        const child = children[i];
-        // Se o nó tem múltiplos filhos (divergência), filhos normalmente herdam a mesma lane ou nova lane
-        if (children.length > 1 && i > 0) {
-          // Filhos adicionais (2º, 3º...) podem ir em lanes diferentes
-          const maxLaneUsed = Math.max(...Object.values(nodeLane).concat(lane));
-          const newLane = maxLaneUsed + 1;
-          assignLanesForBranch(child, newLane);
-        } else {
-          assignLanesForBranch(child, lane);
-        }
+      const stateKey = id + '|' + lane;
+      if (seenLaneState.has(stateKey)) continue;
+      seenLaneState.add(stateKey);
+
+      if (nodeLane[id] == null) nodeLane[id] = lane;
+      else if ((inc[id] || []).length > 1) {
+        nodeLane[id] = Math.round((Number(nodeLane[id]) + lane) / 2);
+      }
+
+      const kids = (out[id] || []).slice().sort();
+      if (!kids.length) continue;
+      if (kids.length === 1) {
+        qLane.push({ id: kids[0], lane: Number(nodeLane[id]) });
+        continue;
+      }
+
+      for (let i = 0; i < kids.length; i++) {
+        const kid = kids[i];
+        const kidLane = (i === 0) ? Number(nodeLane[id]) : nextLane++;
+        qLane.push({ id: kid, lane: kidLane });
       }
     }
 
-    // Começar do raiz com lane 0
-    assignLanesForBranch(root, 0);
-
-    // Garantir que todos os nós foram atribuídos
     for (const n of nodes) {
-      if (nodeLane[n.id] == null) nodeLane[n.id] = 0;
+      if (nodeLane[n.id] == null) nodeLane[n.id] = nextLane++;
     }
 
-    // === AUTO-RENUMERAR LANES para minimizar quantidade ===
-    const lanes = new Set(Object.values(nodeLane));
+    // Merge nodes: centraliza lane na mediana dos pais
+    const nodesByDepthAsc = nodes.slice().sort((a, b) => (depth[a.id] - depth[b.id]) || a.id.localeCompare(b.id));
+    for (const n of nodesByDepthAsc) {
+      const nid = n.id;
+      if (nid === root) continue;
+      const parents = (inc[nid] || []).map(pid => Number(nodeLane[pid])).filter(Number.isFinite).sort((a, b) => a - b);
+      if (parents.length >= 2) {
+        nodeLane[nid] = parents[Math.floor(parents.length / 2)];
+      } else if (parents.length === 1) {
+        const pid = (inc[nid] || [])[0];
+        if (((out[pid] || []).length <= 1)) nodeLane[nid] = parents[0];
+      }
+    }
+
+    // Renumera lanes para sequência compacta
+    const laneIds = Array.from(new Set(Object.values(nodeLane).map(v => Number(v)).filter(Number.isFinite))).sort((a, b) => a - b);
     const laneRemap = {};
-    let remappedIdx = 0;
-    for (const lane of Array.from(lanes).sort((a, b) => a - b)) {
-      laneRemap[lane] = remappedIdx++;
-    }
-    for (const nodeId of Object.keys(nodeLane)) {
-      nodeLane[nodeId] = laneRemap[nodeLane[nodeId]];
-    }
+    laneIds.forEach((lane, idx) => { laneRemap[lane] = idx; });
+    for (const id of Object.keys(nodeLane)) nodeLane[id] = laneRemap[nodeLane[id]];
 
-    // === CALCULAR POSIÇÕES ===
-    // Agrupar nós por profundidade
+    // Agrupa por profundidade e lane
     const byDepth = {};
     for (const n of nodes) {
-      const d = depth[n.id] || 0;
-      (byDepth[d] = byDepth[d] || []).push(n.id);
+      const d = Number(depth[n.id] || 0);
+      if (!byDepth[d]) byDepth[d] = {};
+      const ln = Number(nodeLane[n.id] || 0);
+      (byDepth[d][ln] = byDepth[d][ln] || []).push(n.id);
+    }
+    for (const d of Object.keys(byDepth)) {
+      for (const ln of Object.keys(byDepth[d])) {
+        byDepth[d][ln].sort();
+      }
+    }
+
+    // Altura real por lane com base no pior caso entre profundidades
+    const laneHeight = {};
+    for (const lane of Object.values(nodeLane)) {
+      if (laneHeight[lane] == null) laneHeight[lane] = LANE_HEIGHT;
+    }
+    for (const d of Object.keys(byDepth)) {
+      for (const lnStr of Object.keys(byDepth[d])) {
+        const ln = Number(lnStr);
+        const ids = byDepth[d][ln] || [];
+        if (!ids.length) continue;
+        let blockH = 0;
+        for (let i = 0; i < ids.length; i++) {
+          const dd = dims(byId[ids[i]]);
+          blockH += dd.h;
+          if (i < ids.length - 1) blockH += Y_GAP;
+        }
+        laneHeight[ln] = Math.max(Number(laneHeight[ln] || LANE_HEIGHT), blockH + 20);
+      }
+    }
+
+    const orderedLanes = Object.keys(laneHeight).map(Number).sort((a, b) => a - b);
+    const laneTop = {};
+    let laneCursor = PAD_Y;
+    for (const ln of orderedLanes) {
+      laneTop[ln] = laneCursor;
+      laneCursor += Number(laneHeight[ln] || LANE_HEIGHT) + LANE_GAP;
     }
 
     const layout = {};
-    for (const depthStr of Object.keys(byDepth).sort((a, b) => parseInt(a) - parseInt(b))) {
-      const d = parseInt(depthStr);
-      const nodesAtDepth = byDepth[d];
+    const orderedDepths = Object.keys(byDepth).map(Number).sort((a, b) => a - b);
+    for (const d of orderedDepths) {
       const x = PAD_X + d * X_STEP;
+      const lanesAtDepth = Object.keys(byDepth[d]).map(Number).sort((a, b) => a - b);
 
-      // Agrupar por lane
-      const byLane = {};
-      for (const nodeId of nodesAtDepth) {
-        const lane = nodeLane[nodeId];
-        (byLane[lane] = byLane[lane] || []).push(nodeId);
-      }
+      for (const ln of lanesAtDepth) {
+        const ids = byDepth[d][ln] || [];
+        if (!ids.length) continue;
 
-      // Posicionar dentro de cada lane
-      for (const laneStr of Object.keys(byLane).sort((a, b) => parseInt(a) - parseInt(b))) {
-        const lane = parseInt(laneStr);
-        const nodesInLane = byLane[lane];
-        const laneBaseY = PAD_Y + lane * LANE_HEIGHT;
+        let blockH = 0;
+        for (let i = 0; i < ids.length; i++) {
+          const dd = dims(byId[ids[i]]);
+          blockH += dd.h;
+          if (i < ids.length - 1) blockH += Y_GAP;
+        }
 
-        let y = laneBaseY;
-        for (const nodeId of nodesInLane) {
+        const laneH = Number(laneHeight[ln] || LANE_HEIGHT);
+        let y = Number(laneTop[ln] || PAD_Y) + Math.max(0, Math.round((laneH - blockH) / 2));
+
+        for (const nodeId of ids) {
           const n = byId[nodeId];
-          const d = dims(n);
-          layout[nodeId] = { x, y, w: d.w, h: d.h };
-          y += d.h + Y_GAP;
+          const dd = dims(n);
+          layout[nodeId] = { x, y, w: dd.w, h: dd.h };
+          y += dd.h + Y_GAP;
         }
       }
     }
 
     layout.__ATP_ALL_BOXES__ = nodes.map(n => ({ id: n.id, ...layout[n.id] })).filter(b => b.x != null);
     layout.__ATP_GAP_Y_MIN__ = Y_GAP;
+    layout.__ATP_LANE_TOP__ = laneTop;
+    layout.__ATP_LANE_HEIGHT__ = laneHeight;
 
     return layout;
   }
@@ -907,8 +965,9 @@
       const flow = parseBpmnToFlowModel(doc);
       // Usar layoutSwimlanes: cada branch/ramo tem sua própria lane vertical
       const layout = layoutSwimlanes(flow, { 
-        X_STEP: 280,            // Espaço entre profundidades (horizontalmente)
-        LANE_HEIGHT: 140,       // Altura de cada raia/branch
+        X_STEP: 300,            // Espaço entre profundidades (horizontalmente)
+        LANE_HEIGHT: 140,       // Altura mínima de cada raia/branch
+        LANE_GAP: 34,           // Espaço entre raias
         Y_GAP: 25,              // Espaço vertical entre nós na mesma lane
         PAD_X: 60,
         PAD_Y: 60
@@ -1898,7 +1957,14 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
         flowSigs.add(sig);
 
         fileIndex++;
-        const xmlOne = buildOne(fluxo, fileIndex);
+        let xmlOne = buildOne(fluxo, fileIndex);
+        try {
+          const applierOne = window.__ATP_UNIQUE_LAYOUT__ && window.__ATP_UNIQUE_LAYOUT__.apply;
+          if (typeof applierOne === 'function') {
+            const laid = applierOne(String(xmlOne || ''));
+            if (laid) xmlOne = String(laid);
+          }
+        } catch (_) { }
         const startK = (fluxo.starts && fluxo.starts[0]) ? norm(String(fluxo.starts[0])) : ('fluxo_' + fileIndex);
         const safe = (startK || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80);
         files.push({
