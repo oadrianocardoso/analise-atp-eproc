@@ -350,6 +350,9 @@ function atpComputeFluxosData(rules) {
   const byFrom = new Map();
   const fluxos = [];
   const assigned = new Set();
+  
+  // DEBUG: Log de controle da explosão de nós
+  window.__ATP_FLUX_DEBUG__ = (window.__ATP_FLUX_DEBUG__ || 0) + 1;
 
   for (const r of (rules || [])) {
     const fromKeys = atpClausesToKeys(r.localizadorRemover);
@@ -440,8 +443,18 @@ function atpComputeFluxosData(rules) {
     }
     
     // Monta nós finais: originais + terminais diretos (sem iteração infinita)
-    fl.nodes = Array.from(new Set([...nodesSnapshot, ...directTerminals]))
+    const finalNodes = Array.from(new Set([...nodesSnapshot, ...directTerminals]))
               .sort((a, b) => String(a).localeCompare(String(b)));
+    
+    // ⚠️ DEBUG
+    const added = directTerminals.size;
+    if (added > 0) {
+      try {
+        console.log(`[ATP][FLUXOS] Fluxo com ${nodesSnapshot.length} nós + ${added} terminais diretos = ${finalNodes.length} total`);
+      } catch (e) {}
+    }
+    
+    fl.nodes = finalNodes;
   }
 
   const keyToFlow = new Map();
@@ -451,6 +464,12 @@ function atpComputeFluxosData(rules) {
       if (!keyToFlow.has(n)) keyToFlow.set(n, i);
     }
   });
+
+  // ⚠️ DEBUG FINAL
+  try {
+    const totalNodes = fluxos.reduce((sum, fl) => sum + (fl.nodes?.length || 0), 0);
+    console.log(`[ATP][FLUXOS] Total: ${fluxos.length} fluxo(s), ${totalNodes} nós unificados`);
+  } catch (e) {}
 
   return { fluxos, keyToFlow, byFrom, startKeys, allFrom, allTo };
 }
