@@ -323,11 +323,13 @@
       }
 
       let maxY = PAD_Y;
-      const colWidth = COL_W;
+      // Espaço HORIZONTAL entre colunas (muito maior para distribuição em grid)
+      const colSpacing = colWidth * 1.3;  // Adiciona 30% extra de espaço
 
       for (let colIdx = 0; colIdx < cols.length; colIdx++) {
         const col = cols[colIdx];
-        const colX = x + colIdx * colWidth;
+        // Distribui colunas muito mais para a DIREITA
+        const colX = x + colIdx * colSpacing;
         let y = PAD_Y;
 
         for (const nodeId of col) {
@@ -762,11 +764,11 @@
       const flow = parseBpmnToFlowModel(doc);
       // Usar layoutGrid em vez de layoutDER para distribuição horizontal (mais compacta)
       const layout = layoutGrid(flow, { 
-        X_STEP: 260,        // Espaço entre profundidades
-        COL_W: 200,         // Largura entre colunas na mesma profundidade
-        Y_GAP: 35,          // Espaço vertical entre nós
-        MAX_COLS: 4,        // Máximo 4 nós por coluna antes de quebrar
-        PAD_X: 60,
+        X_STEP: 400,        // Espaço GRANDE entre profundidades (horizontal) - MUITO aumentado
+        COL_W: 250,         // Espaço entre colunas - aumentado
+        Y_GAP: 20,          // Espaço vertical mínimo
+        MAX_COLS: 1,        // MÁXIMO 1 nó por coluna (força distribuição horizontal máxima!)
+        PAD_X: 80,
         PAD_Y: 60
       });
 
