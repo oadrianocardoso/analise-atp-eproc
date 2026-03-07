@@ -410,30 +410,6 @@
     // === ALGORITMO DE SWIMLANES ===
     // Para cada nó, achar qual "lane" ele pertence analisando seu ancestral mais próximo que diverge
     const nodeLane = {};  // nodeId → laneIndex
-    const laneMap = new Map(); // Mapa de branch_id → lane_idx
-
-    function assignLane(nodeId, parentLane) {
-      if (nodeLane[nodeId] != null) return nodeLane[nodeId];
-
-      const parents = inc[nodeId] || [];
-      if (!parents.length) {
-        // Nó raiz
-        nodeLane[nodeId] = 0;
-        return 0;
-      }
-
-      if (parents.length === 1) {
-        // Nó com 1 pai: herda a lane do pai
-        const parentLane = assignLane(parents[0], undefined);
-        nodeLane[nodeId] = parentLane;
-        return parentLane;
-      }
-
-      // Nó com múltiplos pais (convergência): usa a lane do primeiro pai
-      const parentLane = assignLane(parents[0], undefined);
-      nodeLane[nodeId] = parentLane;
-      return parentLane;
-    }
 
     function assignLanesForBranch(nodeId, lane) {
       if (nodeLane[nodeId] != null) return;
@@ -445,7 +421,8 @@
         // Se o nó tem múltiplos filhos (divergência), filhos normalmente herdam a mesma lane ou nova lane
         if (children.length > 1 && i > 0) {
           // Filhos adicionais (2º, 3º...) podem ir em lanes diferentes
-          const newLane = Math.max(...Object.values(nodeLane).concat(lane)) + 1;
+          const maxLaneUsed = Math.max(...Object.values(nodeLane).concat(lane));
+          const newLane = maxLaneUsed + 1;
           assignLanesForBranch(child, newLane);
         } else {
           assignLanesForBranch(child, lane);
