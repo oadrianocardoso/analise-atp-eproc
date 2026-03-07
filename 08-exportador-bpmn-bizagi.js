@@ -245,6 +245,108 @@
     return pos;
   }
 
+  function layoutGrid(flow, opts) {
+    // Layout em GRID 2D: agrupa nós por profundidade (eixo X) 
+    // e distribui horizontalmente múltiplas colunas dentro de cada profundidade
+    opts = opts || {};
+    const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 240;     // Espaço entre profundidades (horizontal)
+    const COL_W = (opts.COL_W != null) ? opts.COL_W : 200;       // Largura entre colunas (no mesmo nível)
+    const Y_GAP = (opts.Y_GAP != null) ? opts.Y_GAP : 40;        // Espaço entre nós verticalmente
+    const PAD_X = (opts.PAD_X != null) ? opts.PAD_X : 60;
+    const PAD_Y = (opts.PAD_Y != null) ? opts.PAD_Y : 60;
+    const MAX_COLS_PER_DEPTH = (opts.MAX_COLS != null) ? opts.MAX_COLS : 4; // Máx nós por coluna
+
+    const nodes = flow.nodes || [];
+    const edges = flow.edges || [];
+    const byId = {};
+    for (const n of nodes) byId[n.id] = n;
+
+    const dims = (n) => {
+      if (n.type === 'gateway') return { w: 50, h: 50 };
+      if (n.type === 'start' || n.type === 'end') return { w: 36, h: 36 };
+      if (n.type === 'service') return { w: 150, h: 64 };
+      return { w: 170, h: 70 };
+    };
+
+    // Calcular profundidades (same as layoutDER)
+    const out = {}, inc = {};
+    for (const n of nodes) { out[n.id] = []; inc[n.id] = []; }
+    for (const e of edges) {
+      if (!out[e.from]) out[e.from] = [];
+      if (!inc[e.to]) inc[e.to] = [];
+      out[e.from].push(e.to);
+      inc[e.to].push(e.from);
+    }
+
+    let root = null;
+    for (const n of nodes) { if (n.type === 'start') { root = n.id; break; } }
+    if (!root) for (const n of nodes) { if ((inc[n.id] || []).length === 0) { root = n.id; break; } }
+    if (!root && nodes.length) root = nodes[0].id;
+    if (!root) return { __ATP_ALL_BOXES__: [], __ATP_GAP_Y_MIN__: Y_GAP };
+
+    const depth = {};
+    const q = [root];
+    depth[root] = 0;
+    while (q.length) {
+      const u = q.shift();
+      const du = depth[u] || 0;
+      const kids = out[u] || [];
+      for (const v of kids) {
+        const cand = du + 1;
+        if (depth[v] == null || cand < depth[v]) {
+          depth[v] = cand;
+          q.push(v);
+        }
+      }
+    }
+    const maxD = Math.max(...Object.values(depth).concat([0]));
+    for (const n of nodes) if (depth[n.id] == null) depth[n.id] = maxD + 1;
+
+    // Agrupar nós por profundidade
+    const byDepth = {};
+    for (const n of nodes) {
+      const d = depth[n.id] || 0;
+      (byDepth[d] = byDepth[d] || []).push(n.id);
+    }
+
+    // Distribuir nós em GRID: profundidade → coluna; dentro coluna → múltiplas linhas
+    const layout = {};
+    for (const depthStr of Object.keys(byDepth).sort((a, b) => parseInt(a) - parseInt(b))) {
+      const d = parseInt(depthStr);
+      const nodesAtDepth = byDepth[d].slice();
+      const x = PAD_X + d * X_STEP;
+
+      // Dividir nós em colunas (MAX_COLS_PER_DEPTH nós por coluna)
+      const cols = [];
+      for (let i = 0; i < nodesAtDepth.length; i += MAX_COLS_PER_DEPTH) {
+        cols.push(nodesAtDepth.slice(i, i + MAX_COLS_PER_DEPTH));
+      }
+
+      let maxY = PAD_Y;
+      const colWidth = COL_W;
+
+      for (let colIdx = 0; colIdx < cols.length; colIdx++) {
+        const col = cols[colIdx];
+        const colX = x + colIdx * colWidth;
+        let y = PAD_Y;
+
+        for (const nodeId of col) {
+          const n = byId[nodeId];
+          const d = dims(n);
+          layout[nodeId] = { x: colX, y, w: d.w, h: d.h };
+          y += d.h + Y_GAP;
+        }
+
+        maxY = Math.max(maxY, y);
+      }
+    }
+
+    layout.__ATP_ALL_BOXES__ = nodes.map(n => ({ id: n.id, ...layout[n.id] })).filter(b => b.x != null);
+    layout.__ATP_GAP_Y_MIN__ = Y_GAP;
+
+    return layout;
+  }
+
   function layoutDER(flow, opts) {
     opts = opts || {};
     const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 340;
@@ -658,7 +760,15 @@
       if (doc.getElementsByTagName('parsererror').length) return xml;
 
       const flow = parseBpmnToFlowModel(doc);
-      const layout = layoutDER(flow, { X_STEP: 340, Y_GAP_MIN: 50 });
+      // Usar layoutGrid em vez de layoutDER para distribuição horizontal (mais compacta)
+      const layout = layoutGrid(flow, { 
+        X_STEP: 260,        // Espaço entre profundidades
+        COL_W: 200,         // Largura entre colunas na mesma profundidade
+        Y_GAP: 35,          // Espaço vertical entre nós
+        MAX_COLS: 4,        // Máximo 4 nós por coluna antes de quebrar
+        PAD_X: 60,
+        PAD_Y: 60
+      });
 
       rewriteDiagramDI(doc, layout);
 

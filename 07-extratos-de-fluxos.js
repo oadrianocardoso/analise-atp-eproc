@@ -350,9 +350,6 @@ function atpComputeFluxosData(rules) {
   const byFrom = new Map();
   const fluxos = [];
   const assigned = new Set();
-  
-  // DEBUG: Log de controle da explosão de nós
-  window.__ATP_FLUX_DEBUG__ = (window.__ATP_FLUX_DEBUG__ || 0) + 1;
 
   for (const r of (rules || [])) {
     const fromKeys = atpClausesToKeys(r.localizadorRemover);
@@ -386,11 +383,6 @@ function atpComputeFluxosData(rules) {
   const startKeys = Array.from(allFrom).filter(k => !allTo.has(k)).sort((a,b)=>a.localeCompare(b));
   const allKeys = Array.from(allFrom).sort((a,b)=>a.localeCompare(b));
 
-  // ⚠️ DEBUG: Antes de calcular fluxos, mostra estatísticas
-  try {
-    console.log(`[ATP][FLUXOS] ANTES de expandFrom: ${allKeys.length} nós disponíveis, ${startKeys.length} inícios detectados, ${rules?.length || 0} regras`);
-  } catch (e) {}
-
   function expandFrom(start) {
     const q = [start];
     const seen = new Set([start]);
@@ -416,12 +408,6 @@ function atpComputeFluxosData(rules) {
     if (assigned.has(sk)) continue;
     const comp = expandFrom(sk);
     for (const n of comp) assigned.add(n);
-    
-    // ⚠️ DEBUG: Mostra composição de cada fluxo inicial
-    try {
-      console.log(`[ATP][FLUXOS] expandFrom("${sk}") encontrou ${comp.size} nós`);
-    } catch (e) {}
-    
     fluxos.push({ starts: [sk], nodes: Array.from(comp).sort((a,b)=>a.localeCompare(b)) });
   }
 
@@ -433,39 +419,19 @@ function atpComputeFluxosData(rules) {
     fluxos.push({ starts: [k], nodes: Array.from(comp).sort((a,b)=>a.localeCompare(b)) });
   }
 
-  // Acrescenta APENAS nós terminais DIRETOS (conectados a 1 passo, sem recursão).
-  // Isso evita explosão de nós terminais secundários.
+  // Acrescenta nós terminais (INCLUIR que não vira REMOVER) no fluxo em que aparecem.
   for (const fl of fluxos) {
-    const nodesSnapshot = Array.from(fl.nodes || []);  // Snapshot dos nós originais
-    const directTerminals = new Set();
-    
-    // Coleta terminais diretos (INCLUIR que não são REMOVER) dos nós neste fluxo
-    for (const u of nodesSnapshot) {
+    const full = new Set(fl.nodes || []);
+    for (const u of (fl.nodes || [])) {
       const outs = byFrom.get(u) || [];
       for (const it of outs) {
         for (const tk of (it && it.toKeys ? it.toKeys : [])) {
           if (!tk) continue;
-          // Terminal = nunca aparece como REMOVER em nenhuma regra
-          if (!allFrom.has(tk)) {
-            directTerminals.add(tk);
-          }
+          if (!full.has(tk) && !allFrom.has(tk)) full.add(tk);
         }
       }
     }
-    
-    // Monta nós finais: originais + terminais diretos (sem iteração infinita)
-    const finalNodes = Array.from(new Set([...nodesSnapshot, ...directTerminals]))
-              .sort((a, b) => String(a).localeCompare(String(b)));
-    
-    // ⚠️ DEBUG
-    const added = directTerminals.size;
-    if (added > 0) {
-      try {
-        console.log(`[ATP][FLUXOS] Fluxo com ${nodesSnapshot.length} nós + ${added} terminais diretos = ${finalNodes.length} total`);
-      } catch (e) {}
-    }
-    
-    fl.nodes = finalNodes;
+    fl.nodes = Array.from(full).sort((a, b) => String(a).localeCompare(String(b)));
   }
 
   const keyToFlow = new Map();
@@ -475,12 +441,6 @@ function atpComputeFluxosData(rules) {
       if (!keyToFlow.has(n)) keyToFlow.set(n, i);
     }
   });
-
-  // ⚠️ DEBUG FINAL
-  try {
-    const totalNodes = fluxos.reduce((sum, fl) => sum + (fl.nodes?.length || 0), 0);
-    console.log(`[ATP][FLUXOS] Total: ${fluxos.length} fluxo(s), ${totalNodes} nós unificados`);
-  } catch (e) {}
 
   return { fluxos, keyToFlow, byFrom, startKeys, allFrom, allTo };
 }
