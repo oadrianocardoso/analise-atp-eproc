@@ -350,9 +350,9 @@
   }
 
   function layoutSwimlanes(flow, opts) {
-    // Layout em SWIMLANES:
-    // - cada branch sai para uma lane dedicada
-    // - lanes têm altura dinâmica (evita mistura quando há muitos nós)
+    // Layout em SWIMLANES com "pool imaginária":
+    // - cada ramificação recebe lane própria
+    // - lanes só convergem em nós de merge (múltiplas entradas)
     opts = opts || {};
     const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 290;
     const LANE_HEIGHT = (opts.LANE_HEIGHT != null) ? opts.LANE_HEIGHT : 160;
@@ -381,7 +381,7 @@
       out[e.from].push(e.to);
       inc[e.to].push(e.from);
     }
-    for (const id of Object.keys(out)) out[id].sort();
+    for (const id of Object.keys(out)) out[id].sort((a, b) => String(a).localeCompare(String(b)));
     for (const id of Object.keys(inc)) inc[id].sort();
 
     let root = null;
@@ -393,7 +393,7 @@
     if (!root && nodes.length) root = nodes[0].id;
     if (!root) return { __ATP_ALL_BOXES__: [], __ATP_GAP_Y_MIN__: Y_GAP };
 
-    // BFS de profundidade
+    // BFS de profundidade (distância mínima ao início)
     const depth = {};
     const qDepth = [root];
     depth[root] = 0;
@@ -412,64 +412,137 @@
     const maxD = Math.max(...Object.values(depth).concat([0]));
     for (const n of nodes) if (depth[n.id] == null) depth[n.id] = maxD + 1;
 
-    // Atribuição de lanes por branch com propagação multi-caminho
-    const nodeLane = {};
-    let nextLane = 1;
-    const qLane = [{ id: root, lane: 0 }];
-    const seenLaneState = new Set();
-
-    while (qLane.length) {
-      const cur = qLane.shift();
-      const id = String(cur.id || '');
-      const lane = Number(cur.lane);
-      if (!id || !Number.isFinite(lane)) continue;
-
-      const stateKey = id + '|' + lane;
-      if (seenLaneState.has(stateKey)) continue;
-      seenLaneState.add(stateKey);
-
-      if (nodeLane[id] == null) nodeLane[id] = lane;
-      else if ((inc[id] || []).length > 1) {
-        nodeLane[id] = Math.round((Number(nodeLane[id]) + lane) / 2);
+    const keyToStr = (arr) => (arr || [0]).join('.');
+    const strToKey = (s) => String(s || '0').split('.').map(v => parseInt(v, 10)).filter(Number.isFinite);
+    const lcpKey = (arrs) => {
+      const clean = (arrs || []).filter(a => Array.isArray(a) && a.length);
+      if (!clean.length) return [0];
+      if (clean.length === 1) return clean[0].slice();
+      let len = Math.min(...clean.map(a => a.length));
+      let i = 0;
+      for (; i < len; i++) {
+        const v = clean[0][i];
+        for (let j = 1; j < clean.length; j++) {
+          if (clean[j][i] !== v) return clean[0].slice(0, i).length ? clean[0].slice(0, i) : [0];
+        }
       }
+      return clean[0].slice(0, i).length ? clean[0].slice(0, i) : [0];
+    };
+    const cmpKey = (a, b) => {
+      const aa = Array.isArray(a) ? a : strToKey(a);
+      const bb = Array.isArray(b) ? b : strToKey(b);
+      const n = Math.min(aa.length, bb.length);
+      for (let i = 0; i < n; i++) {
+        if (aa[i] !== bb[i]) return aa[i] - bb[i];
+      }
+      return aa.length - bb.length;
+    };
 
-      const kids = (out[id] || []).slice().sort();
+    // Propagação de assinaturas de branch (node -> Set<branchKey>)
+    const keySetByNode = {};
+    for (const n of nodes) keySetByNode[n.id] = new Set();
+    const stateSeen = new Set();
+    const qState = [{ id: root, key: [0] }];
+    let stateGuard = 0;
+    const STATE_MAX = 60000;
+
+    while (qState.length && stateGuard < STATE_MAX) {
+      stateGuard++;
+      const cur = qState.shift();
+      const id = String(cur && cur.id || '');
+      const keyArr = Array.isArray(cur && cur.key) ? cur.key.slice() : [0];
+      if (!id) continue;
+
+      const sk = id + '|' + keyToStr(keyArr);
+      if (stateSeen.has(sk)) continue;
+      stateSeen.add(sk);
+      keySetByNode[id].add(keyToStr(keyArr));
+
+      const kids = (out[id] || []).slice().sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
       if (!kids.length) continue;
       if (kids.length === 1) {
-        qLane.push({ id: kids[0], lane: Number(nodeLane[id]) });
+        qState.push({ id: kids[0], key: keyArr });
         continue;
       }
-
       for (let i = 0; i < kids.length; i++) {
-        const kid = kids[i];
-        const kidLane = (i === 0) ? Number(nodeLane[id]) : nextLane++;
-        qLane.push({ id: kid, lane: kidLane });
+        qState.push({ id: kids[i], key: keyArr.concat([i]) });
       }
     }
 
-    for (const n of nodes) {
-      if (nodeLane[n.id] == null) nodeLane[n.id] = nextLane++;
-    }
-
-    // Merge nodes: centraliza lane na mediana dos pais
-    const nodesByDepthAsc = nodes.slice().sort((a, b) => (depth[a.id] - depth[b.id]) || a.id.localeCompare(b.id));
+    // componentes desconexos / nós não alcançados
+    let looseSeed = 1000;
+    const nodesByDepthAsc = nodes.slice().sort((a, b) => (depth[a.id] - depth[b.id]) || String(a.id).localeCompare(String(b.id)));
     for (const n of nodesByDepthAsc) {
-      const nid = n.id;
-      if (nid === root) continue;
-      const parents = (inc[nid] || []).map(pid => Number(nodeLane[pid])).filter(Number.isFinite).sort((a, b) => a - b);
-      if (parents.length >= 2) {
-        nodeLane[nid] = parents[Math.floor(parents.length / 2)];
-      } else if (parents.length === 1) {
-        const pid = (inc[nid] || [])[0];
-        if (((out[pid] || []).length <= 1)) nodeLane[nid] = parents[0];
+      if (keySetByNode[n.id] && keySetByNode[n.id].size) continue;
+      const parents = (inc[n.id] || []).slice();
+      const parentKeys = [];
+      for (const pid of parents) {
+        for (const ks of (keySetByNode[pid] || [])) parentKeys.push(strToKey(ks));
+      }
+      const seed = parentKeys.length ? lcpKey(parentKeys) : [looseSeed++];
+      keySetByNode[n.id].add(keyToStr(seed));
+      const qLoose = [{ id: n.id, key: seed }];
+      while (qLoose.length) {
+        const cur = qLoose.shift();
+        const kids = (out[cur.id] || []).slice().sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
+        if (!kids.length) continue;
+        if (kids.length === 1) {
+          const k1 = keyToStr(cur.key);
+          if (!keySetByNode[kids[0]].has(k1)) {
+            keySetByNode[kids[0]].add(k1);
+            qLoose.push({ id: kids[0], key: cur.key.slice() });
+          }
+          continue;
+        }
+        for (let i = 0; i < kids.length; i++) {
+          const nk = cur.key.concat([i]);
+          const nks = keyToStr(nk);
+          if (keySetByNode[kids[i]].has(nks)) continue;
+          keySetByNode[kids[i]].add(nks);
+          qLoose.push({ id: kids[i], key: nk });
+        }
       }
     }
 
-    // Renumera lanes para sequência compacta
-    const laneIds = Array.from(new Set(Object.values(nodeLane).map(v => Number(v)).filter(Number.isFinite))).sort((a, b) => a - b);
-    const laneRemap = {};
-    laneIds.forEach((lane, idx) => { laneRemap[lane] = idx; });
-    for (const id of Object.keys(nodeLane)) nodeLane[id] = laneRemap[nodeLane[id]];
+    // Lane representativa por nó:
+    // - continuidade (1 entrada) segue lane do pai
+    // - merge (>=2 entradas) usa LCP das lanes de entrada
+    const repKeyByNode = {};
+    for (const n of nodesByDepthAsc) {
+      const id = n.id;
+      if (id === root) {
+        repKeyByNode[id] = [0];
+        continue;
+      }
+      const parents = (inc[id] || []).filter(pid => repKeyByNode[pid]);
+      if (parents.length >= 2) {
+        repKeyByNode[id] = lcpKey(parents.map(pid => repKeyByNode[pid]));
+        continue;
+      }
+      if (parents.length === 1) {
+        const pid = parents[0];
+        if ((out[pid] || []).length <= 1) {
+          repKeyByNode[id] = repKeyByNode[pid].slice();
+          continue;
+        }
+      }
+      const keys = Array.from(keySetByNode[id] || []);
+      if (!keys.length) {
+        repKeyByNode[id] = [looseSeed++];
+        continue;
+      }
+      const parsed = keys.map(strToKey).sort(cmpKey);
+      repKeyByNode[id] = parsed[0];
+    }
+
+    // Mapa compactado lane index
+    const uniqKeys = Array.from(new Set(nodes.map(n => keyToStr(repKeyByNode[n.id] || [0]))))
+      .map(strToKey)
+      .sort(cmpKey);
+    const laneMap = {};
+    uniqKeys.forEach((k, i) => { laneMap[keyToStr(k)] = i; });
+    const nodeLane = {};
+    for (const n of nodes) nodeLane[n.id] = laneMap[keyToStr(repKeyByNode[n.id] || [0])];
 
     // Agrupa por profundidade e lane
     const byDepth = {};
@@ -481,7 +554,7 @@
     }
     for (const d of Object.keys(byDepth)) {
       for (const ln of Object.keys(byDepth[d])) {
-        byDepth[d][ln].sort();
+        byDepth[d][ln].sort((a, b) => String(a).localeCompare(String(b)));
       }
     }
 
