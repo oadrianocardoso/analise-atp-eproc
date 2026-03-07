@@ -384,24 +384,56 @@
     for (const id of Object.keys(out)) out[id].sort((a, b) => String(a).localeCompare(String(b)));
     for (const id of Object.keys(inc)) inc[id].sort();
 
-    let root = null;
-    for (const n of nodes) { if (n.type === 'start') { root = n.id; break; } }
-    if (!root) {
-      const heads = nodes.map(n => n.id).filter(id => (inc[id] || []).length === 0).sort();
-      if (heads.length) root = heads[0];
+    // Componentes fracos: evita misturar fluxos desconexos no mesmo bloco
+    const compById = {};
+    const compNodes = new Map();
+    let compSeq = 0;
+    for (const n of nodes) {
+      const nid = n.id;
+      if (compById[nid] != null) continue;
+      const cid = compSeq++;
+      const q = [nid];
+      compById[nid] = cid;
+      const arr = [];
+      while (q.length) {
+        const u = q.shift();
+        arr.push(u);
+        const ngh = (out[u] || []).concat(inc[u] || []);
+        for (const v of ngh) {
+          if (compById[v] != null) continue;
+          compById[v] = cid;
+          q.push(v);
+        }
+      }
+      compNodes.set(cid, arr);
     }
-    if (!root && nodes.length) root = nodes[0].id;
-    if (!root) return { __ATP_ALL_BOXES__: [], __ATP_GAP_Y_MIN__: Y_GAP };
 
-    // BFS de profundidade (distância mínima ao início)
+    const rootByComp = {};
+    for (const [cid, arr] of compNodes.entries()) {
+      const ids = (arr || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
+      const set = new Set(ids);
+      let root = ids.find(id => (byId[id] && byId[id].type === 'start')) || null;
+      if (!root) root = ids.find(id => (inc[id] || []).filter(pid => set.has(pid)).length === 0) || null;
+      if (!root && ids.length) root = ids[0];
+      if (root) rootByComp[cid] = root;
+    }
+
+    // BFS de profundidade por componente (multi-root)
     const depth = {};
-    const qDepth = [root];
-    depth[root] = 0;
+    const qDepth = [];
+    for (const cid of Object.keys(rootByComp)) {
+      const rid = rootByComp[cid];
+      if (!rid) continue;
+      depth[rid] = 0;
+      qDepth.push(rid);
+    }
     while (qDepth.length) {
       const u = qDepth.shift();
       const du = depth[u] || 0;
+      const uComp = compById[u];
       const kids = out[u] || [];
       for (const v of kids) {
+        if (compById[v] !== uComp) continue;
         const cand = du + 1;
         if (depth[v] == null || cand < depth[v]) {
           depth[v] = cand;
@@ -409,8 +441,26 @@
         }
       }
     }
-    const maxD = Math.max(...Object.values(depth).concat([0]));
-    for (const n of nodes) if (depth[n.id] == null) depth[n.id] = maxD + 1;
+
+    // Preenche nós sem profundidade dentro do próprio componente
+    for (const [cid, arr] of compNodes.entries()) {
+      let changed = true;
+      let guard = 0;
+      while (changed && guard < arr.length + 3) {
+        guard++;
+        changed = false;
+        for (const id of arr) {
+          if (depth[id] != null) continue;
+          const pd = (inc[id] || [])
+            .filter(pid => compById[pid] === cid && depth[pid] != null)
+            .map(pid => Number(depth[pid]));
+          if (!pd.length) continue;
+          depth[id] = Math.min(...pd) + 1;
+          changed = true;
+        }
+      }
+      for (const id of arr) if (depth[id] == null) depth[id] = 0;
+    }
 
     const keyToStr = (arr) => (arr || [0]).join('.');
     const strToKey = (s) => String(s || '0').split('.').map(v => parseInt(v, 10)).filter(Number.isFinite);
@@ -438,7 +488,11 @@
       return aa.length - bb.length;
     };
 
-    const nodesByDepthAsc = nodes.slice().sort((a, b) => (depth[a.id] - depth[b.id]) || String(a.id).localeCompare(String(b.id)));
+    const nodesByDepthAsc = nodes.slice().sort((a, b) =>
+      (Number(compById[a.id] || 0) - Number(compById[b.id] || 0))
+      || (depth[a.id] - depth[b.id])
+      || String(a.id).localeCompare(String(b.id))
+    );
     const forwardKids = {};
     for (const id of Object.keys(out)) {
       forwardKids[id] = (out[id] || [])
@@ -453,14 +507,18 @@
     let looseSeed = 1000;
     for (const n of nodesByDepthAsc) {
       const id = n.id;
-      if (id === root) {
-        repKeyByNode[id] = [0];
+      const cid = Number(compById[id] || 0);
+      const compPrefix = cid + 1;
+      const hasForwardParent = (inc[id] || [])
+        .some(pid => repKeyByNode[pid] && compById[pid] === cid && Number(depth[pid] || 0) < Number(depth[id] || 0));
+      if (!hasForwardParent) {
+        repKeyByNode[id] = [compPrefix, 0];
         continue;
       }
 
       const parentCands = [];
       const fParents = (inc[id] || [])
-        .filter(pid => repKeyByNode[pid] && Number(depth[pid] || 0) < Number(depth[id] || 0))
+        .filter(pid => repKeyByNode[pid] && compById[pid] === cid && Number(depth[pid] || 0) < Number(depth[id] || 0))
         .sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
 
       for (const pid of fParents) {
@@ -484,14 +542,14 @@
       }
 
       const anyParents = (inc[id] || [])
-        .filter(pid => repKeyByNode[pid])
+        .filter(pid => repKeyByNode[pid] && compById[pid] === cid)
         .map(pid => repKeyByNode[pid].slice());
       if (anyParents.length >= 2) {
         repKeyByNode[id] = lcpKey(anyParents);
       } else if (anyParents.length === 1) {
         repKeyByNode[id] = anyParents[0];
       } else {
-        repKeyByNode[id] = [looseSeed++];
+        repKeyByNode[id] = [compPrefix, looseSeed++];
       }
     }
 
@@ -499,7 +557,11 @@
       .map(strToKey)
       .sort(cmpKey);
     const laneMap = {};
-    uniqKeys.forEach((k, i) => { laneMap[keyToStr(k)] = i; });
+    const laneCompMap = {};
+    uniqKeys.forEach((k, i) => {
+      laneMap[keyToStr(k)] = i;
+      laneCompMap[i] = Number(Array.isArray(k) && k.length ? k[0] : 0);
+    });
     const nodeLane = {};
     for (const n of nodes) nodeLane[n.id] = laneMap[keyToStr(repKeyByNode[n.id] || [0])];
 
@@ -540,9 +602,13 @@
     const orderedLanes = Object.keys(laneHeight).map(Number).sort((a, b) => a - b);
     const laneTop = {};
     let laneCursor = PAD_Y;
+    let prevComp = null;
     for (const ln of orderedLanes) {
+      const curComp = laneCompMap[ln];
+      if (prevComp != null && curComp != null && curComp !== prevComp) laneCursor += Math.max(40, Math.round(LANE_GAP * 1.5));
       laneTop[ln] = laneCursor;
       laneCursor += Number(laneHeight[ln] || LANE_HEIGHT) + LANE_GAP;
+      prevComp = curComp;
     }
 
     const layout = {};
