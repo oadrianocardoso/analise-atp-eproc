@@ -386,6 +386,11 @@ function atpComputeFluxosData(rules) {
   const startKeys = Array.from(allFrom).filter(k => !allTo.has(k)).sort((a,b)=>a.localeCompare(b));
   const allKeys = Array.from(allFrom).sort((a,b)=>a.localeCompare(b));
 
+  // ⚠️ DEBUG: Antes de calcular fluxos, mostra estatísticas
+  try {
+    console.log(`[ATP][FLUXOS] ANTES de expandFrom: ${allKeys.length} nós disponíveis, ${startKeys.length} inícios detectados, ${rules?.length || 0} regras`);
+  } catch (e) {}
+
   function expandFrom(start) {
     const q = [start];
     const seen = new Set([start]);
@@ -411,6 +416,12 @@ function atpComputeFluxosData(rules) {
     if (assigned.has(sk)) continue;
     const comp = expandFrom(sk);
     for (const n of comp) assigned.add(n);
+    
+    // ⚠️ DEBUG: Mostra composição de cada fluxo inicial
+    try {
+      console.log(`[ATP][FLUXOS] expandFrom("${sk}") encontrou ${comp.size} nós`);
+    } catch (e) {}
+    
     fluxos.push({ starts: [sk], nodes: Array.from(comp).sort((a,b)=>a.localeCompare(b)) });
   }
 
