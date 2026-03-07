@@ -1741,6 +1741,10 @@ function disableAlterarPreferenciaNumRegistros() {
 
             const applier = window.__ATP_UNIQUE_LAYOUT__ && window.__ATP_UNIQUE_LAYOUT__.apply;
             if (typeof applier === 'function') {
+              if (f && f.layoutApplied) {
+                atpOpenFlowBpmnModal(f, idx);
+                return;
+              }
               let xmlLane = String(f.xml || '');
               try {
                 const laid = applier(xmlLane);

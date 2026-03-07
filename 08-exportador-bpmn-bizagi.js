@@ -423,10 +423,10 @@
       for (; i < len; i++) {
         const v = clean[0][i];
         for (let j = 1; j < clean.length; j++) {
-          if (clean[j][i] !== v) return clean[0].slice(0, i).length ? clean[0].slice(0, i) : [0];
+          if (clean[j][i] !== v) return i ? clean[0].slice(0, i) : [0];
         }
       }
-      return clean[0].slice(0, i).length ? clean[0].slice(0, i) : [0];
+      return i ? clean[0].slice(0, i) : [0];
     };
     const cmpKey = (a, b) => {
       const aa = Array.isArray(a) ? a : strToKey(a);
@@ -438,104 +438,63 @@
       return aa.length - bb.length;
     };
 
-    // Propagação de assinaturas de branch (node -> Set<branchKey>)
-    const keySetByNode = {};
-    for (const n of nodes) keySetByNode[n.id] = new Set();
-    const stateSeen = new Set();
-    const qState = [{ id: root, key: [0] }];
-    let stateGuard = 0;
-    const STATE_MAX = 60000;
-
-    while (qState.length && stateGuard < STATE_MAX) {
-      stateGuard++;
-      const cur = qState.shift();
-      const id = String(cur && cur.id || '');
-      const keyArr = Array.isArray(cur && cur.key) ? cur.key.slice() : [0];
-      if (!id) continue;
-
-      const sk = id + '|' + keyToStr(keyArr);
-      if (stateSeen.has(sk)) continue;
-      stateSeen.add(sk);
-      keySetByNode[id].add(keyToStr(keyArr));
-
-      const kids = (out[id] || []).slice().sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
-      if (!kids.length) continue;
-      if (kids.length === 1) {
-        qState.push({ id: kids[0], key: keyArr });
-        continue;
-      }
-      for (let i = 0; i < kids.length; i++) {
-        qState.push({ id: kids[i], key: keyArr.concat([i]) });
-      }
-    }
-
-    // componentes desconexos / nós não alcançados
-    let looseSeed = 1000;
     const nodesByDepthAsc = nodes.slice().sort((a, b) => (depth[a.id] - depth[b.id]) || String(a.id).localeCompare(String(b.id)));
-    for (const n of nodesByDepthAsc) {
-      if (keySetByNode[n.id] && keySetByNode[n.id].size) continue;
-      const parents = (inc[n.id] || []).slice();
-      const parentKeys = [];
-      for (const pid of parents) {
-        for (const ks of (keySetByNode[pid] || [])) parentKeys.push(strToKey(ks));
-      }
-      const seed = parentKeys.length ? lcpKey(parentKeys) : [looseSeed++];
-      keySetByNode[n.id].add(keyToStr(seed));
-      const qLoose = [{ id: n.id, key: seed }];
-      while (qLoose.length) {
-        const cur = qLoose.shift();
-        const kids = (out[cur.id] || []).slice().sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
-        if (!kids.length) continue;
-        if (kids.length === 1) {
-          const k1 = keyToStr(cur.key);
-          if (!keySetByNode[kids[0]].has(k1)) {
-            keySetByNode[kids[0]].add(k1);
-            qLoose.push({ id: kids[0], key: cur.key.slice() });
-          }
-          continue;
-        }
-        for (let i = 0; i < kids.length; i++) {
-          const nk = cur.key.concat([i]);
-          const nks = keyToStr(nk);
-          if (keySetByNode[kids[i]].has(nks)) continue;
-          keySetByNode[kids[i]].add(nks);
-          qLoose.push({ id: kids[i], key: nk });
-        }
-      }
+    const forwardKids = {};
+    for (const id of Object.keys(out)) {
+      forwardKids[id] = (out[id] || [])
+        .filter(v => Number(depth[v] || 0) > Number(depth[id] || 0))
+        .sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
     }
 
-    // Lane representativa por nó:
-    // - continuidade (1 entrada) segue lane do pai
-    // - merge (>=2 entradas) usa LCP das lanes de entrada
+    // Lane representativa por nó em tempo linear:
+    // - se pai divide em N saídas, cada filho recebe chave filha estável (pKey + idx)
+    // - merges usam LCP das chaves de entrada
     const repKeyByNode = {};
+    let looseSeed = 1000;
     for (const n of nodesByDepthAsc) {
       const id = n.id;
       if (id === root) {
         repKeyByNode[id] = [0];
         continue;
       }
-      const parents = (inc[id] || []).filter(pid => repKeyByNode[pid]);
-      if (parents.length >= 2) {
-        repKeyByNode[id] = lcpKey(parents.map(pid => repKeyByNode[pid]));
-        continue;
-      }
-      if (parents.length === 1) {
-        const pid = parents[0];
-        if ((out[pid] || []).length <= 1) {
-          repKeyByNode[id] = repKeyByNode[pid].slice();
+
+      const parentCands = [];
+      const fParents = (inc[id] || [])
+        .filter(pid => repKeyByNode[pid] && Number(depth[pid] || 0) < Number(depth[id] || 0))
+        .sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
+
+      for (const pid of fParents) {
+        const pKey = repKeyByNode[pid] ? repKeyByNode[pid].slice() : [0];
+        const kids = forwardKids[pid] || [];
+        if (kids.length <= 1) {
+          parentCands.push(pKey);
           continue;
         }
+        const idx = Math.max(0, kids.indexOf(id));
+        parentCands.push(pKey.concat([idx]));
       }
-      const keys = Array.from(keySetByNode[id] || []);
-      if (!keys.length) {
-        repKeyByNode[id] = [looseSeed++];
+
+      if (parentCands.length >= 2) {
+        repKeyByNode[id] = lcpKey(parentCands);
         continue;
       }
-      const parsed = keys.map(strToKey).sort(cmpKey);
-      repKeyByNode[id] = parsed[0];
+      if (parentCands.length === 1) {
+        repKeyByNode[id] = parentCands[0];
+        continue;
+      }
+
+      const anyParents = (inc[id] || [])
+        .filter(pid => repKeyByNode[pid])
+        .map(pid => repKeyByNode[pid].slice());
+      if (anyParents.length >= 2) {
+        repKeyByNode[id] = lcpKey(anyParents);
+      } else if (anyParents.length === 1) {
+        repKeyByNode[id] = anyParents[0];
+      } else {
+        repKeyByNode[id] = [looseSeed++];
+      }
     }
 
-    // Mapa compactado lane index
     const uniqKeys = Array.from(new Set(nodes.map(n => keyToStr(repKeyByNode[n.id] || [0]))))
       .map(strToKey)
       .sort(cmpKey);
@@ -2031,18 +1990,12 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
 
         fileIndex++;
         let xmlOne = buildOne(fluxo, fileIndex);
-        try {
-          const applierOne = window.__ATP_UNIQUE_LAYOUT__ && window.__ATP_UNIQUE_LAYOUT__.apply;
-          if (typeof applierOne === 'function') {
-            const laid = applierOne(String(xmlOne || ''));
-            if (laid) xmlOne = String(laid);
-          }
-        } catch (_) { }
         const startK = (fluxo.starts && fluxo.starts[0]) ? norm(String(fluxo.starts[0])) : ('fluxo_' + fileIndex);
         const safe = (startK || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80);
         files.push({
           filename: ('fluxo_' + String(fileIndex).padStart(2, '0') + '_' + (safe || 'inicio') + '.bpmn'),
-          xml: xmlOne
+          xml: xmlOne,
+          layoutApplied: true
         });
       }
 
