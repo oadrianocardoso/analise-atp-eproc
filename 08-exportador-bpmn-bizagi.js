@@ -349,6 +349,172 @@
     return layout;
   }
 
+  function layoutSwimlanes(flow, opts) {
+    // Layout em SWIMLANES: cada "ramo" ou caminho tem sua própria faixa vertical
+    // Mantém nós do mesmo caminho juntos, sem mistura com outros ramos
+    opts = opts || {};
+    const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 280;     // Espaço horizontal entre profundidades
+    const LANE_HEIGHT = (opts.LANE_HEIGHT != null) ? opts.LANE_HEIGHT : 150; // Altura de cada raia/branch
+    const Y_GAP = (opts.Y_GAP != null) ? opts.Y_GAP : 30;        // Espaço vertical entre nós na mesma lane
+    const PAD_X = (opts.PAD_X != null) ? opts.PAD_X : 60;
+    const PAD_Y = (opts.PAD_Y != null) ? opts.PAD_Y : 60;
+
+    const nodes = flow.nodes || [];
+    const edges = flow.edges || [];
+    const byId = {};
+    for (const n of nodes) byId[n.id] = n;
+
+    const dims = (n) => {
+      if (n.type === 'gateway') return { w: 50, h: 50 };
+      if (n.type === 'start' || n.type === 'end') return { w: 36, h: 36 };
+      if (n.type === 'service') return { w: 150, h: 64 };
+      return { w: 170, h: 70 };
+    };
+
+    // Calcular profundidades e grafo
+    const out = {}, inc = {};
+    for (const n of nodes) { out[n.id] = []; inc[n.id] = []; }
+    for (const e of edges) {
+      if (!out[e.from]) out[e.from] = [];
+      if (!inc[e.to]) inc[e.to] = [];
+      out[e.from].push(e.to);
+      inc[e.to].push(e.from);
+    }
+
+    // Encontrar raiz (start)
+    let root = null;
+    for (const n of nodes) { if (n.type === 'start') { root = n.id; break; } }
+    if (!root) for (const n of nodes) { if ((inc[n.id] || []).length === 0) { root = n.id; break; } }
+    if (!root && nodes.length) root = nodes[0].id;
+    if (!root) return { __ATP_ALL_BOXES__: [], __ATP_GAP_Y_MIN__: Y_GAP };
+
+    // Calcular profundidades
+    const depth = {};
+    const q = [root];
+    depth[root] = 0;
+    while (q.length) {
+      const u = q.shift();
+      const du = depth[u] || 0;
+      const kids = out[u] || [];
+      for (const v of kids) {
+        const cand = du + 1;
+        if (depth[v] == null || cand < depth[v]) {
+          depth[v] = cand;
+          q.push(v);
+        }
+      }
+    }
+    const maxD = Math.max(...Object.values(depth).concat([0]));
+    for (const n of nodes) if (depth[n.id] == null) depth[n.id] = maxD + 1;
+
+    // === ALGORITMO DE SWIMLANES ===
+    // Para cada nó, achar qual "lane" ele pertence analisando seu ancestral mais próximo que diverge
+    const nodeLane = {};  // nodeId → laneIndex
+    const laneMap = new Map(); // Mapa de branch_id → lane_idx
+
+    function assignLane(nodeId, parentLane) {
+      if (nodeLane[nodeId] != null) return nodeLane[nodeId];
+
+      const parents = inc[nodeId] || [];
+      if (!parents.length) {
+        // Nó raiz
+        nodeLane[nodeId] = 0;
+        return 0;
+      }
+
+      if (parents.length === 1) {
+        // Nó com 1 pai: herda a lane do pai
+        const parentLane = assignLane(parents[0], undefined);
+        nodeLane[nodeId] = parentLane;
+        return parentLane;
+      }
+
+      // Nó com múltiplos pais (convergência): usa a lane do primeiro pai
+      const parentLane = assignLane(parents[0], undefined);
+      nodeLane[nodeId] = parentLane;
+      return parentLane;
+    }
+
+    function assignLanesForBranch(nodeId, lane) {
+      if (nodeLane[nodeId] != null) return;
+      nodeLane[nodeId] = lane;
+
+      const children = out[nodeId] || [];
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        // Se o nó tem múltiplos filhos (divergência), filhos normalmente herdam a mesma lane ou nova lane
+        if (children.length > 1 && i > 0) {
+          // Filhos adicionais (2º, 3º...) podem ir em lanes diferentes
+          const newLane = Math.max(...Object.values(nodeLane).concat(lane)) + 1;
+          assignLanesForBranch(child, newLane);
+        } else {
+          assignLanesForBranch(child, lane);
+        }
+      }
+    }
+
+    // Começar do raiz com lane 0
+    assignLanesForBranch(root, 0);
+
+    // Garantir que todos os nós foram atribuídos
+    for (const n of nodes) {
+      if (nodeLane[n.id] == null) nodeLane[n.id] = 0;
+    }
+
+    // === AUTO-RENUMERAR LANES para minimizar quantidade ===
+    const lanes = new Set(Object.values(nodeLane));
+    const laneRemap = {};
+    let remappedIdx = 0;
+    for (const lane of Array.from(lanes).sort((a, b) => a - b)) {
+      laneRemap[lane] = remappedIdx++;
+    }
+    for (const nodeId of Object.keys(nodeLane)) {
+      nodeLane[nodeId] = laneRemap[nodeLane[nodeId]];
+    }
+
+    // === CALCULAR POSIÇÕES ===
+    // Agrupar nós por profundidade
+    const byDepth = {};
+    for (const n of nodes) {
+      const d = depth[n.id] || 0;
+      (byDepth[d] = byDepth[d] || []).push(n.id);
+    }
+
+    const layout = {};
+    for (const depthStr of Object.keys(byDepth).sort((a, b) => parseInt(a) - parseInt(b))) {
+      const d = parseInt(depthStr);
+      const nodesAtDepth = byDepth[d];
+      const x = PAD_X + d * X_STEP;
+
+      // Agrupar por lane
+      const byLane = {};
+      for (const nodeId of nodesAtDepth) {
+        const lane = nodeLane[nodeId];
+        (byLane[lane] = byLane[lane] || []).push(nodeId);
+      }
+
+      // Posicionar dentro de cada lane
+      for (const laneStr of Object.keys(byLane).sort((a, b) => parseInt(a) - parseInt(b))) {
+        const lane = parseInt(laneStr);
+        const nodesInLane = byLane[lane];
+        const laneBaseY = PAD_Y + lane * LANE_HEIGHT;
+
+        let y = laneBaseY;
+        for (const nodeId of nodesInLane) {
+          const n = byId[nodeId];
+          const d = dims(n);
+          layout[nodeId] = { x, y, w: d.w, h: d.h };
+          y += d.h + Y_GAP;
+        }
+      }
+    }
+
+    layout.__ATP_ALL_BOXES__ = nodes.map(n => ({ id: n.id, ...layout[n.id] })).filter(b => b.x != null);
+    layout.__ATP_GAP_Y_MIN__ = Y_GAP;
+
+    return layout;
+  }
+
   function layoutDER(flow, opts) {
     opts = opts || {};
     const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 340;
@@ -762,13 +928,12 @@
       if (doc.getElementsByTagName('parsererror').length) return xml;
 
       const flow = parseBpmnToFlowModel(doc);
-      // Usar layoutGrid em vez de layoutDER para distribuição horizontal (mais compacta)
-      const layout = layoutGrid(flow, { 
-        X_STEP: 400,        // Espaço GRANDE entre profundidades (horizontal) - MUITO aumentado
-        COL_W: 250,         // Espaço entre colunas - aumentado
-        Y_GAP: 20,          // Espaço vertical mínimo
-        MAX_COLS: 1,        // MÁXIMO 1 nó por coluna (força distribuição horizontal máxima!)
-        PAD_X: 80,
+      // Usar layoutSwimlanes: cada branch/ramo tem sua própria lane vertical
+      const layout = layoutSwimlanes(flow, { 
+        X_STEP: 280,            // Espaço entre profundidades (horizontalmente)
+        LANE_HEIGHT: 140,       // Altura de cada raia/branch
+        Y_GAP: 25,              // Espaço vertical entre nós na mesma lane
+        PAD_X: 60,
         PAD_Y: 60
       });
 
