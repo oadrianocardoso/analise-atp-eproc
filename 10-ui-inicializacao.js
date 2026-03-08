@@ -1724,6 +1724,14 @@ function disableAlterarPreferenciaNumRegistros() {
         alert('Não foi possível obter as regras (tabela vazia ou não carregada).');
         return;
       }
+      if (String(viewMode || '').trim().toLowerCase() === 'rednode') {
+        if (typeof window.atpOpenFlowReactModal !== 'function') {
+          alert('Visualizador Red Node indisponível.');
+          return;
+        }
+        window.atpOpenFlowReactModal({ rules, flowIdx: idx });
+        return;
+      }
       const files = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getBpmnFilesForRules === 'function')
         ? window.ATP.extract.getBpmnFilesForRules(rules)
         : atpGetBpmnSplitFilesForRules(rules);
