@@ -350,16 +350,20 @@
   }
 
   function layoutSwimlanes(flow, opts) {
-    // Layout em SWIMLANES com "pool imaginária":
-    // - cada ramificação recebe lane própria
-    // - lanes só convergem em nós de merge (múltiplas entradas)
+    // Layout inspirado no Node-RED:
+    // - fluxo principal em colunas L -> R
+    // - cada split reserva uma banda vertical própria para cada subtree
+    // - merges ficam entre as bandas de entrada, sem colapsar todas as lanes de volta
     opts = opts || {};
-    const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 290;
-    const LANE_HEIGHT = (opts.LANE_HEIGHT != null) ? opts.LANE_HEIGHT : 160;
-    const LANE_GAP = (opts.LANE_GAP != null) ? opts.LANE_GAP : 36;
-    const Y_GAP = (opts.Y_GAP != null) ? opts.Y_GAP : 28;
+    const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 320;
+    const LANE_HEIGHT = (opts.LANE_HEIGHT != null) ? opts.LANE_HEIGHT : 170;
+    const LANE_GAP = (opts.LANE_GAP != null) ? opts.LANE_GAP : 44;
+    const Y_GAP = (opts.Y_GAP != null) ? opts.Y_GAP : 30;
     const PAD_X = (opts.PAD_X != null) ? opts.PAD_X : 60;
     const PAD_Y = (opts.PAD_Y != null) ? opts.PAD_Y : 60;
+    const ROOT_GAP_TRACKS = (opts.ROOT_GAP_TRACKS != null) ? opts.ROOT_GAP_TRACKS : 3.2;
+    const BRANCH_GAP_UNITS = (opts.BRANCH_GAP_UNITS != null) ? opts.BRANCH_GAP_UNITS : 0.9;
+    const TRACK_EPS = (opts.TRACK_EPS != null) ? opts.TRACK_EPS : 0.55;
 
     const nodes = flow.nodes || [];
     const edges = flow.edges || [];
@@ -462,108 +466,149 @@
       for (const id of arr) if (depth[id] == null) depth[id] = 0;
     }
 
-    const keyToStr = (arr) => (arr || [0]).join('.');
-    const strToKey = (s) => String(s || '0').split('.').map(v => parseInt(v, 10)).filter(Number.isFinite);
-    const lcpKey = (arrs) => {
-      const clean = (arrs || []).filter(a => Array.isArray(a) && a.length);
-      if (!clean.length) return [0];
-      if (clean.length === 1) return clean[0].slice();
-      let len = Math.min(...clean.map(a => a.length));
-      let i = 0;
-      for (; i < len; i++) {
-        const v = clean[0][i];
-        for (let j = 1; j < clean.length; j++) {
-          if (clean[j][i] !== v) return i ? clean[0].slice(0, i) : [0];
-        }
-      }
-      return i ? clean[0].slice(0, i) : [0];
-    };
-    const cmpKey = (a, b) => {
-      const aa = Array.isArray(a) ? a : strToKey(a);
-      const bb = Array.isArray(b) ? b : strToKey(b);
-      const n = Math.min(aa.length, bb.length);
-      for (let i = 0; i < n; i++) {
-        if (aa[i] !== bb[i]) return aa[i] - bb[i];
-      }
-      return aa.length - bb.length;
-    };
-
     const nodesByDepthAsc = nodes.slice().sort((a, b) =>
       (Number(compById[a.id] || 0) - Number(compById[b.id] || 0))
       || (depth[a.id] - depth[b.id])
       || String(a.id).localeCompare(String(b.id))
     );
+    const nodesByDepthDesc = nodesByDepthAsc.slice().reverse();
     const forwardKids = {};
+    const forwardParents = {};
     for (const id of Object.keys(out)) {
       forwardKids[id] = (out[id] || [])
         .filter(v => Number(depth[v] || 0) > Number(depth[id] || 0))
         .sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
     }
+    for (const id of Object.keys(inc)) {
+      forwardParents[id] = (inc[id] || [])
+        .filter(pid => Number(depth[pid] || 0) < Number(depth[id] || 0))
+        .sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
+    }
 
-    // Lane representativa por nó em tempo linear:
-    // - se pai divide em N saídas, cada filho recebe chave filha estável (pKey + idx)
-    // - merges usam LCP das chaves de entrada
-    const repKeyByNode = {};
-    let looseSeed = 1000;
+    const subtreeUnits = {};
+    for (const n of nodesByDepthDesc) {
+      const id = n.id;
+      const kids = forwardKids[id] || [];
+      if (!kids.length) {
+        subtreeUnits[id] = 1;
+        continue;
+      }
+      if (kids.length === 1) {
+        subtreeUnits[id] = Math.max(1, Number(subtreeUnits[kids[0]] || 1));
+        continue;
+      }
+      let total = 0;
+      for (let i = 0; i < kids.length; i++) {
+        total += Math.max(1, Number(subtreeUnits[kids[i]] || 1));
+        if (i < kids.length - 1) total += BRANCH_GAP_UNITS;
+      }
+      subtreeUnits[id] = Math.max(1, total);
+    }
+
+    const rootsByComp = {};
+    for (const [cid, arr] of compNodes.entries()) {
+      const ids = (arr || []).slice().sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
+      const set = new Set(ids);
+      const roots = ids.filter((id) => {
+        if (byId[id] && byId[id].type === 'start') return true;
+        return (inc[id] || []).filter(pid => set.has(pid)).length === 0;
+      });
+      rootsByComp[cid] = roots.length ? roots : (ids.length ? [ids[0]] : []);
+    }
+
+    function childTrackFromParent(parentId, childId, parentTrack) {
+      const kids = forwardKids[parentId] || [];
+      if (!kids.length) return parentTrack;
+      if (kids.length === 1) return parentTrack;
+      let totalUnits = 0;
+      for (let i = 0; i < kids.length; i++) {
+        totalUnits += Math.max(1, Number(subtreeUnits[kids[i]] || 1));
+        if (i < kids.length - 1) totalUnits += BRANCH_GAP_UNITS;
+      }
+      let cursor = -totalUnits / 2;
+      for (let i = 0; i < kids.length; i++) {
+        const kid = kids[i];
+        const unit = Math.max(1, Number(subtreeUnits[kid] || 1));
+        const center = cursor + (unit / 2);
+        if (kid === childId) return parentTrack + center;
+        cursor += unit + BRANCH_GAP_UNITS;
+      }
+      return parentTrack;
+    }
+
+    const trackByNode = {};
+    const trackSeedByComp = {};
+    const sortedCompIds = Array.from(compNodes.keys()).sort((a, b) => Number(a) - Number(b));
+    let nextRootTrack = 0;
+    for (const cid of sortedCompIds) {
+      const roots = rootsByComp[cid] || [];
+      if (trackSeedByComp[cid] == null) trackSeedByComp[cid] = nextRootTrack;
+      for (let i = 0; i < roots.length; i++) {
+        const rid = roots[i];
+        if (trackByNode[rid] == null) trackByNode[rid] = nextRootTrack;
+        nextRootTrack += ROOT_GAP_TRACKS;
+      }
+      nextRootTrack += ROOT_GAP_TRACKS;
+    }
+
     for (const n of nodesByDepthAsc) {
       const id = n.id;
-      const cid = Number(compById[id] || 0);
-      const compPrefix = cid + 1;
-      const hasForwardParent = (inc[id] || [])
-        .some(pid => repKeyByNode[pid] && compById[pid] === cid && Number(depth[pid] || 0) < Number(depth[id] || 0));
-      if (!hasForwardParent) {
-        repKeyByNode[id] = [compPrefix, 0];
-        continue;
-      }
-
-      const parentCands = [];
-      const fParents = (inc[id] || [])
-        .filter(pid => repKeyByNode[pid] && compById[pid] === cid && Number(depth[pid] || 0) < Number(depth[id] || 0))
-        .sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
-
-      for (const pid of fParents) {
-        const pKey = repKeyByNode[pid] ? repKeyByNode[pid].slice() : [0];
-        const kids = forwardKids[pid] || [];
-        if (kids.length <= 1) {
-          parentCands.push(pKey);
-          continue;
+      const parents = forwardParents[id] || [];
+      if (!parents.length) {
+        if (trackByNode[id] == null) {
+          const cid = Number(compById[id] || 0);
+          trackByNode[id] = Number(trackSeedByComp[cid] || nextRootTrack);
+          nextRootTrack += ROOT_GAP_TRACKS;
         }
-        const idx = Math.max(0, kids.indexOf(id));
-        parentCands.push(pKey.concat([idx]));
-      }
-
-      if (parentCands.length >= 2) {
-        repKeyByNode[id] = lcpKey(parentCands);
         continue;
       }
-      if (parentCands.length === 1) {
-        repKeyByNode[id] = parentCands[0];
-        continue;
+      const candTracks = [];
+      for (const pid of parents) {
+        const parentTrack = (trackByNode[pid] != null) ? Number(trackByNode[pid]) : 0;
+        candTracks.push(childTrackFromParent(pid, id, parentTrack));
       }
-
-      const anyParents = (inc[id] || [])
-        .filter(pid => repKeyByNode[pid] && compById[pid] === cid)
-        .map(pid => repKeyByNode[pid].slice());
-      if (anyParents.length >= 2) {
-        repKeyByNode[id] = lcpKey(anyParents);
-      } else if (anyParents.length === 1) {
-        repKeyByNode[id] = anyParents[0];
-      } else {
-        repKeyByNode[id] = [compPrefix, looseSeed++];
+      if (candTracks.length) {
+        const avg = candTracks.reduce((sum, v) => sum + v, 0) / candTracks.length;
+        if (trackByNode[id] == null) trackByNode[id] = avg;
+        else trackByNode[id] = (trackByNode[id] * 0.35) + (avg * 0.65);
       }
     }
 
-    const uniqKeys = Array.from(new Set(nodes.map(n => keyToStr(repKeyByNode[n.id] || [0]))))
-      .map(strToKey)
-      .sort(cmpKey);
-    const laneMap = {};
-    const laneCompMap = {};
-    uniqKeys.forEach((k, i) => {
-      laneMap[keyToStr(k)] = i;
-      laneCompMap[i] = Number(Array.isArray(k) && k.length ? k[0] : 0);
-    });
+    const rawTracks = nodes
+      .map(n => Number(trackByNode[n.id]))
+      .filter(v => Number.isFinite(v))
+      .sort((a, b) => a - b);
+    const laneCenters = [];
+    for (const t of rawTracks) {
+      if (!laneCenters.length) {
+        laneCenters.push(t);
+        continue;
+      }
+      const lastIdx = laneCenters.length - 1;
+      const last = laneCenters[lastIdx];
+      if (Math.abs(t - last) <= TRACK_EPS) {
+        laneCenters[lastIdx] = (last + t) / 2;
+      } else {
+        laneCenters.push(t);
+      }
+    }
     const nodeLane = {};
-    for (const n of nodes) nodeLane[n.id] = laneMap[keyToStr(repKeyByNode[n.id] || [0])];
+    const laneCompMap = {};
+    for (const n of nodes) {
+      const id = n.id;
+      const t = Number(trackByNode[id] || 0);
+      let bestLane = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < laneCenters.length; i++) {
+        const dist = Math.abs(t - laneCenters[i]);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestLane = i;
+        }
+      }
+      nodeLane[id] = bestLane;
+      laneCompMap[bestLane] = (laneCompMap[bestLane] == null) ? Number(compById[id] || 0) : Math.min(laneCompMap[bestLane], Number(compById[id] || 0));
+    }
 
     // Agrupa por profundidade e lane
     const byDepth = {};
@@ -575,7 +620,10 @@
     }
     for (const d of Object.keys(byDepth)) {
       for (const ln of Object.keys(byDepth[d])) {
-        byDepth[d][ln].sort((a, b) => String(a).localeCompare(String(b)));
+        byDepth[d][ln].sort((a, b) =>
+          Number(trackByNode[a] || 0) - Number(trackByNode[b] || 0)
+          || String(a).localeCompare(String(b))
+        );
       }
     }
 
@@ -1080,12 +1128,15 @@
     }
 
     return layoutSwimlanes(flow, {
-      X_STEP: 300,
-      LANE_HEIGHT: 140,
-      LANE_GAP: 34,
-      Y_GAP: 25,
+      X_STEP: 320,
+      LANE_HEIGHT: 170,
+      LANE_GAP: 44,
+      Y_GAP: 30,
       PAD_X: 60,
-      PAD_Y: 60
+      PAD_Y: 60,
+      ROOT_GAP_TRACKS: 3.2,
+      BRANCH_GAP_UNITS: 0.9,
+      TRACK_EPS: 0.55
     });
   }
 
