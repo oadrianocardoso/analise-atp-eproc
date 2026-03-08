@@ -73,7 +73,8 @@ function atpFriendlyActionName(acao) {
     clique_exportar_fluxos_bizagi: 'Exportar Fluxos para Bizagi',
     clique_dashboard_utilizacao: 'Abrir Dashboard de Utilizacao',
     clique_comparar: 'Comparar Regras',
-    clique_visualizar_fluxo: 'Visualizar Fluxo'
+    clique_visualizar_fluxo: 'Visualizar Fluxo BPMN',
+    clique_visualizar_fluxo_rednode: 'Visualizar Fluxo Red Node'
   };
   const key = String(acao || '').trim();
   return map[key] || (key || '(sem acao)');
@@ -1681,6 +1682,73 @@ function disableAlterarPreferenciaNumRegistros() {
     mo.observe(root, { childList: true, subtree: true });
   }
 
+  function atpPrepareFlowBpmnForModal(fileObj, idx, viewMode) {
+    const mode = String(viewMode || 'default').trim().toLowerCase();
+    const filename = String(fileObj && fileObj.filename || ('fluxo_' + String((idx | 0) + 1).padStart(2, '0') + '.bpmn'));
+    const baseXml = String((fileObj && (fileObj.rawXml || fileObj.xml)) || '');
+    if (!baseXml) return Promise.resolve({ ...(fileObj || {}), filename, xml: '' });
+
+    if (mode === 'rednode' || mode === 'swimlanes') {
+      let xml = String(fileObj && fileObj.xml || baseXml);
+      try {
+        const applier = window.__ATP_UNIQUE_LAYOUT__ && window.__ATP_UNIQUE_LAYOUT__.apply;
+        if (typeof applier === 'function') {
+          const laid = applier(baseXml, { mode: 'rednode' });
+          if (laid) xml = String(laid);
+        }
+      } catch (err) {
+        try { console.warn(LOG_PREFIX, '[Fluxos/UI] Layout Red Node falhou; abrindo BPMN base:', err); } catch (_) {}
+        xml = baseXml;
+      }
+      return Promise.resolve({ ...(fileObj || {}), filename, xml, viewMode: 'rednode' });
+    }
+
+    return atpApplyElkLayoutToBpmnXml(baseXml)
+      .then((xmlElk) => ({ ...(fileObj || {}), filename, xml: String(xmlElk || baseXml), viewMode: 'default' }))
+      .catch((err) => {
+        try { console.warn(LOG_PREFIX, '[Fluxos/UI] ELK no BPMN falhou; abrindo BPMN base:', err); } catch (_) {}
+        return { ...(fileObj || {}), filename, xml: baseXml, viewMode: 'default' };
+      });
+  }
+
+  function atpOpenSelectedFlowFromPicker(table, sel, viewMode) {
+    try {
+      atpRefreshFluxosPickerOptions(table);
+      const idx = parseInt(String(sel && sel.value || '-1'), 10);
+      if (!Number.isFinite(idx) || idx < 0) {
+        alert('Selecione um fluxo.');
+        return;
+      }
+      const rules = atpGetRulesState();
+      if (!rules.length) {
+        alert('Não foi possível obter as regras (tabela vazia ou não carregada).');
+        return;
+      }
+      const files = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getBpmnFilesForRules === 'function')
+        ? window.ATP.extract.getBpmnFilesForRules(rules)
+        : atpGetBpmnSplitFilesForRules(rules);
+      const f = files && files[idx];
+      if (!f || (!f.xml && !f.rawXml)) {
+        alert('Fluxo selecionado não possui BPMN gerado.');
+        return;
+      }
+
+      atpPrepareFlowBpmnForModal(f, idx, viewMode)
+        .then((prepared) => atpOpenFlowBpmnModal(prepared, idx, { viewMode }))
+        .catch((e) => {
+          try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao preparar visualização do fluxo:', e); } catch (_) {}
+          atpOpenFlowBpmnModal({
+            ...f,
+            xml: String((f && (f.rawXml || f.xml)) || ''),
+            filename: String(f && f.filename || ('fluxo_' + String(idx + 1).padStart(2, '0') + '.bpmn')),
+            viewMode
+          }, idx, { viewMode });
+        });
+    } catch (e) {
+      try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao visualizar fluxo:', e); } catch (_) {}
+    }
+  }
+
   function atpEnsureFluxosPickerUI(table) {
     try {
       const host = document.getElementById('dvFiltrosOpcionais');
@@ -1711,76 +1779,26 @@ function disableAlterarPreferenciaNumRegistros() {
         btn.type = 'button';
         btn.className = 'infraButton';
         btn.id = 'btnVisualizarFluxoATP';
-        btn.textContent = 'Visualizar Fluxo';
+        btn.textContent = 'Visualizar Fluxo BPMN';
+
+        const btnRedNode = document.createElement('button');
+        btnRedNode.type = 'button';
+        btnRedNode.className = 'infraButton';
+        btnRedNode.id = 'btnVisualizarFluxoRedNodeATP';
+        btnRedNode.textContent = 'Visualizar Fluxo Red Node';
+        btnRedNode.title = 'Abrir o fluxo com layout swimlanes inspirado no Red Node';
 
         sel.addEventListener('mousedown', () => {
           try { atpRefreshFluxosPickerOptions(table); } catch (e) {}
         }, true);
 
-        btn.addEventListener('click', () => {
-          try {
-            atpRefreshFluxosPickerOptions(table);
-            const idx = parseInt(String(sel.value || '-1'), 10);
-            if (!Number.isFinite(idx) || idx < 0) {
-              alert('Selecione um fluxo.');
-              return;
-            }
-            const rules = atpGetRulesState();
-            if (!rules.length) {
-              alert('Não foi possível obter as regras (tabela vazia ou não carregada).');
-              return;
-            }
-            const files = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getBpmnFilesForRules === 'function')
-              ? window.ATP.extract.getBpmnFilesForRules(rules)
-              : atpGetBpmnSplitFilesForRules(rules);
-            const f = files && files[idx];
-            if (!f || !f.xml) {
-              alert('Fluxo selecionado não possui BPMN gerado.');
-              return;
-            }
-
-            const applier = window.__ATP_UNIQUE_LAYOUT__ && window.__ATP_UNIQUE_LAYOUT__.apply;
-            if (typeof applier === 'function') {
-              if (f && f.layoutApplied) {
-                atpOpenFlowBpmnModal(f, idx);
-                return;
-              }
-              let xmlLane = String(f.xml || '');
-              try {
-                const laid = applier(xmlLane);
-                if (laid) xmlLane = String(laid);
-              } catch (errLane) {
-                try { console.warn(LOG_PREFIX, '[Fluxos/UI] Swimlane no BPMN falhou; abrindo BPMN original:', errLane); } catch (_) {}
-              }
-              const fileObj = {
-                ...f,
-                xml: xmlLane,
-                filename: String(f.filename || ('fluxo_' + String(idx + 1).padStart(2, '0') + '.bpmn'))
-              };
-              atpOpenFlowBpmnModal(fileObj, idx);
-            } else {
-              atpApplyElkLayoutToBpmnXml(String(f.xml || ''))
-                .then((xmlElk) => {
-                  const fileObj = {
-                    ...f,
-                    xml: String(xmlElk || f.xml || ''),
-                    filename: String(f.filename || ('fluxo_' + String(idx + 1).padStart(2, '0') + '.bpmn'))
-                  };
-                  atpOpenFlowBpmnModal(fileObj, idx);
-                })
-                .catch((err) => {
-                  try { console.warn(LOG_PREFIX, '[Fluxos/UI] ELK no BPMN falhou; abrindo BPMN original:', err); } catch (_) {}
-                  atpOpenFlowBpmnModal(f, idx);
-                });
-            }
-          } catch (e) {
-            try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao visualizar fluxo (BPMN + ELK):', e); } catch (_) {}
-          }
-        });
+        btn.addEventListener('click', () => atpOpenSelectedFlowFromPicker(table, sel, 'default'));
+        btnRedNode.addEventListener('click', () => atpOpenSelectedFlowFromPicker(table, sel, 'rednode'));
 
         wrap.appendChild(title);
         wrap.appendChild(sel);
         wrap.appendChild(btn);
+        wrap.appendChild(btnRedNode);
 
         host.insertAdjacentElement('afterend', wrap);
       }
@@ -1849,8 +1867,10 @@ function disableAlterarPreferenciaNumRegistros() {
     } catch (e) {}
   }
 
-  function atpOpenFlowBpmnModal(fileObj, flowIdx) {
+  function atpOpenFlowBpmnModal(fileObj, flowIdx, opts) {
     try {
+      const viewMode = String((opts && opts.viewMode) || (fileObj && fileObj.viewMode) || 'default').trim().toLowerCase();
+      const modeLabel = (viewMode === 'rednode' || viewMode === 'swimlanes') ? 'Red Node / Swimlanes' : 'BPMN';
 
       atpCloseRuleMapModal();
 
@@ -1865,7 +1885,7 @@ function disableAlterarPreferenciaNumRegistros() {
       const top = document.createElement('div');
       top.className = 'atp-map-top';
 
-      const titleTxt = `🧭 Visualizar Fluxo ${String((flowIdx|0)+1).padStart(2,'0')} (BPMN)`;
+      const titleTxt = `🧭 Visualizar Fluxo ${String((flowIdx|0)+1).padStart(2,'0')} (${modeLabel})`;
       top.innerHTML = `<div><div class="atp-map-title">${titleTxt}</div><div class="atp-map-sub">Arquivo: ${String(fileObj && fileObj.filename || '')}</div></div>`;
 
       const actions = document.createElement('div');

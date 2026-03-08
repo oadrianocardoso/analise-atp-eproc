@@ -1054,22 +1054,50 @@
     }
   }
 
-  function applyUniqueLayout(xml) {
+  function resolveUniqueLayoutMode(modeOrOpts) {
+    if (typeof modeOrOpts === 'string') return String(modeOrOpts || '').trim().toLowerCase();
+    if (modeOrOpts && typeof modeOrOpts === 'object' && modeOrOpts.mode != null) {
+      return String(modeOrOpts.mode || '').trim().toLowerCase();
+    }
+    return 'rednode';
+  }
+
+  function buildUniqueLayout(flow, modeOrOpts) {
+    const mode = resolveUniqueLayoutMode(modeOrOpts);
+    if (mode === 'none') return null;
+
+    if (mode === 'der' || mode === 'default') {
+      return layoutDER(flow, {
+        X_STEP: 340,
+        Y_GAP_MIN: 50,
+        PAD_X: 60,
+        PAD_Y: 60
+      });
+    }
+
+    if (mode === 'symmetric') {
+      return computeLayoutSymmetric(flow);
+    }
+
+    return layoutSwimlanes(flow, {
+      X_STEP: 300,
+      LANE_HEIGHT: 140,
+      LANE_GAP: 34,
+      Y_GAP: 25,
+      PAD_X: 60,
+      PAD_Y: 60
+    });
+  }
+
+  function applyUniqueLayout(xml, modeOrOpts) {
     try {
       const parser = new DOMParser();
       const doc = parser.parseFromString(xml, 'application/xml');
       if (doc.getElementsByTagName('parsererror').length) return xml;
 
       const flow = parseBpmnToFlowModel(doc);
-      // Usar layoutSwimlanes: cada branch/ramo tem sua própria lane vertical
-      const layout = layoutSwimlanes(flow, { 
-        X_STEP: 300,            // Espaço entre profundidades (horizontalmente)
-        LANE_HEIGHT: 140,       // Altura mínima de cada raia/branch
-        LANE_GAP: 34,           // Espaço entre raias
-        Y_GAP: 25,              // Espaço vertical entre nós na mesma lane
-        PAD_X: 60,
-        PAD_Y: 60
-      });
+      const layout = buildUniqueLayout(flow, modeOrOpts);
+      if (!layout) return xml;
 
       rewriteDiagramDI(doc, layout);
 
@@ -1084,6 +1112,16 @@
   // expõe para o builder
   window.__ATP_UNIQUE_LAYOUT__ = window.__ATP_UNIQUE_LAYOUT__ || {};
   window.__ATP_UNIQUE_LAYOUT__.apply = applyUniqueLayout;
+  window.__ATP_UNIQUE_LAYOUT__.applyRedNode = function (xml) { return applyUniqueLayout(xml, 'rednode'); };
+  window.__ATP_UNIQUE_LAYOUT__.applySwimlanes = function (xml) { return applyUniqueLayout(xml, 'swimlanes'); };
+  window.__ATP_UNIQUE_LAYOUT__.applyDER = function (xml) { return applyUniqueLayout(xml, 'der'); };
+  window.__ATP_UNIQUE_LAYOUT__.modes = Object.freeze({
+    REDNODE: 'rednode',
+    SWIMLANES: 'swimlanes',
+    DER: 'der',
+    SYMMETRIC: 'symmetric',
+    NONE: 'none'
+  });
 
   try { console.log('[ATP][LAYOUT] Layout único (Opção A) pronto'); } catch (e) { }
 })();
@@ -2036,15 +2074,22 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
         x += '  </bpmndi:BPMNDiagram>\n';
         x += '</bpmn:definitions>\n';
 
+        const rawXml = x;
+        let finalXml = rawXml;
         try {
           if (!opts || !opts.__skipUniqueLayout) {
-            x = (window.__ATP_UNIQUE_LAYOUT__ && window.__ATP_UNIQUE_LAYOUT__.apply) ? window.__ATP_UNIQUE_LAYOUT__.apply(x) : x;
+            finalXml = (window.__ATP_UNIQUE_LAYOUT__ && window.__ATP_UNIQUE_LAYOUT__.apply)
+              ? window.__ATP_UNIQUE_LAYOUT__.apply(rawXml, (opts && opts.uniqueLayoutMode) || 'rednode')
+              : rawXml;
           }
         } catch (e) {
           try { console.warn('[ATP][LAYOUT] Falha ao aplicar layout único no XML final do fluxo:', e); } catch (_) { }
         }
 
-        return x;
+        return {
+          rawXml,
+          xml: finalXml
+        };
       };
 
       for (let i = 0; i < fluxos.length; i++) {
@@ -2055,13 +2100,15 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
         flowSigs.add(sig);
 
         fileIndex++;
-        let xmlOne = buildOne(fluxo, fileIndex);
+        const built = buildOne(fluxo, fileIndex);
         const startK = (fluxo.starts && fluxo.starts[0]) ? norm(String(fluxo.starts[0])) : ('fluxo_' + fileIndex);
         const safe = (startK || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80);
         files.push({
           filename: ('fluxo_' + String(fileIndex).padStart(2, '0') + '_' + (safe || 'inicio') + '.bpmn'),
-          xml: xmlOne,
-          layoutApplied: true
+          xml: String((built && built.xml) || ''),
+          rawXml: String((built && built.rawXml) || ''),
+          layoutApplied: String((built && built.xml) || '') !== String((built && built.rawXml) || ''),
+          layoutMode: String((opts && opts.uniqueLayoutMode) || 'rednode')
         });
       }
 
