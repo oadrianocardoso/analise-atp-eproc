@@ -192,6 +192,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     const roots = [];
     let seq = 0;
     const MAX_NODES = 420;
+    let overflowNode = null;
 
     function pushChild(parentId, childId) {
       const arr = children.get(parentId) || [];
@@ -200,7 +201,24 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     }
 
     function makeNode(kind, title, subtitle, meta) {
-      if (nodes.length >= MAX_NODES) throw new Error('FLOW_TOO_LARGE');
+      if (nodes.length >= MAX_NODES) {
+        if (!overflowNode) {
+          const dims = nodeDims('cycle', 'Fluxo truncado');
+          overflowNode = {
+            id: 'atp_nr_overflow',
+            kind: 'cycle',
+            title: 'Fluxo truncado',
+            subtitle: 'Limite visual atingido para esse fluxo',
+            w: dims.w,
+            h: dims.h,
+            meta: { full: 'Fluxo truncado: limite visual atingido.' },
+            x: 0,
+            y: 0
+          };
+          nodes.push(overflowNode);
+        }
+        return overflowNode;
+      }
       const dims = nodeDims(kind, title);
       const node = {
         id: 'atp_nr_' + (++seq),
@@ -235,6 +253,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       const kind = role === 'start' ? 'start' : (!outs.length ? 'end' : 'loc');
       const sub = role === 'start' ? 'Inicio do fluxo' : (!outs.length ? 'Sem regras de saida' : 'Localizador');
       const locNode = makeNode(kind, nrTrunc(localizador, 54), sub, { full: String(localizador || '') });
+      if (locNode === overflowNode) return locNode.id;
       const nextPath = new Set(pathSet || []);
       nextPath.add(localizador);
 
@@ -242,6 +261,10 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         const ruleNode = makeNode(item && item.rule ? 'rule' : 'refine', buildRuleTitle(item), buildRuleSubtitle(item), {
           full: buildRuleTitle(item) + ' — ' + buildRuleSubtitle(item)
         });
+        if (ruleNode === overflowNode) {
+          link(locNode.id, overflowNode.id, 'cycle');
+          continue;
+        }
         link(locNode.id, ruleNode.id, 'rule');
 
         const targets = visibleTargets(item);

@@ -2419,7 +2419,17 @@ function disableAlterarPreferenciaNumRegistros() {
     } catch (e) {}
   }
 
-  init();
+  function bootATPInit() {
+    if (bootATPInit._started) return;
+    bootATPInit._started = true;
+    schedule(() => { init(); }, 1200);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootATPInit, { once: true });
+  } else {
+    bootATPInit();
+  }
 
 try { console.log('[ATP][OK] 10-ui-inicializacao.js inicializado'); } catch (e) {}
 
