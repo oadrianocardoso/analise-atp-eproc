@@ -23,7 +23,7 @@
 // @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/07-extratos-de-fluxos.js
 // @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/11-coordenador-de-fluxos.js
 // @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/10-ui-inicializacao.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/13-visualizador-fluxos-bmpnio.js
+// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/13-visualizador-fluxos-bpmnio.js
 // @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/12-monitor-de-acesso.js
 // ==/UserScript==
 
