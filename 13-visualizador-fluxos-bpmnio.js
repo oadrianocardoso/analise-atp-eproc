@@ -210,8 +210,8 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
 
     let seqId = 0;
     const nextId = (p, laneNo) => `${p}_${String(flowIdx + 1).padStart(2, '0')}_${String((laneNo | 0) + 1).padStart(2, '0')}_${++seqId}`;
-    const laneCount = Math.max(1, paths.length);
-    const lanes = paths.map((path, i) => ({
+    const pathLaneCount = Math.max(1, paths.length);
+    let lanes = paths.map((path, i) => ({
       idx: i,
       laneId: nextId('Lane', i),
       laneName: `Pool Virtual ${String(i + 1).padStart(2, '0')}`,
@@ -244,7 +244,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const allPathIdx = paths.map((_, i) => i);
     const lanePick = (setLike, fb) => {
       const arr = sortNums(Array.from(setLike || []));
-      return clamp(avg(arr, fb), 0, laneCount - 1);
+      return clamp(avg(arr, fb), 0, pathLaneCount - 1);
     };
     const pushRef = (laneIdx, id) => {
       const lane = lanes[laneIdx];
@@ -430,7 +430,30 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
 
     const flows = rawEdges.map((e) => ({ id: nextId('Flow', 0), a: e.a, b: e.b, nm: e.nm }));
 
-    const laneX = 70, laneY0 = 70, laneH = 180, laneGap = 22, stageX0 = laneX + 170;
+    // Compacta raias: remove lanes vazias e reindexa para evitar espaços verticais desnecessários.
+    const usedLaneIdx = Array.from(new Set(elements.map((e) => clamp(e.lane, 0, pathLaneCount - 1)))).sort((a, b) => a - b);
+    const laneRemap = new Map();
+    usedLaneIdx.forEach((oldIdx, newIdx) => laneRemap.set(oldIdx, newIdx));
+
+    for (const e of elements) {
+      const oldIdx = clamp(e.lane, 0, pathLaneCount - 1);
+      e.lane = laneRemap.has(oldIdx) ? laneRemap.get(oldIdx) : 0;
+    }
+
+    lanes = usedLaneIdx.map((oldIdx, newIdx) => ({
+      idx: newIdx,
+      laneId: nextId('Lane', newIdx),
+      laneName: `Pool Virtual ${String(oldIdx + 1).padStart(2, '0')}`,
+      refs: []
+    }));
+    for (const e of elements) {
+      const laneObj = lanes[e.lane];
+      if (!laneObj) continue;
+      if (!laneObj.refs.includes(e.id)) laneObj.refs.push(e.id);
+    }
+    const laneCount = Math.max(1, lanes.length);
+
+    const laneX = 70, laneY0 = 70, laneH = 120, laneGap = 8, stageX0 = laneX + 170;
     const stageStepBase = 250;
     const stageStep = stageStepBase + 100;
     const laneW = Math.max(1500, stageX0 + (endStage + 1) * stageStep + 120);
