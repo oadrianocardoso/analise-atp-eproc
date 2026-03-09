@@ -211,101 +211,227 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     let seqId = 0;
     const nextId = (p, laneNo) => `${p}_${String(flowIdx + 1).padStart(2, '0')}_${String((laneNo | 0) + 1).padStart(2, '0')}_${++seqId}`;
     const laneCount = Math.max(1, paths.length);
-    const lanes = paths.map((path, i) => ({ idx: i, laneId: nextId('Lane', i), laneName: `Pool Virtual ${String(i + 1).padStart(2, '0')}`, path, refs: [] }));
+    const lanes = paths.map((path, i) => ({
+      idx: i,
+      laneId: nextId('Lane', i),
+      laneName: `Pool Virtual ${String(i + 1).padStart(2, '0')}`,
+      path,
+      refs: []
+    }));
 
-    let trieSeq = 0;
-    const mkTrie = (tok, parent) => ({ id: 'tr_' + (++trieSeq), tok: tok || null, parent: parent || null, children: [], bySig: new Map(), leaf: new Set(), stage: null, lane: 0, gwId: '', gwStage: null, bpmnId: '', branch: '' });
-    const root = mkTrie(null, null);
+    const ensureSet = (m, k) => {
+      if (!m.has(k)) m.set(k, new Set());
+      return m.get(k);
+    };
+    const locPathSet = new Map();
+    const rulePathSet = new Map();
+    const edgeSig = (from, to, rule, implied, impliedLabel) =>
+      `${t(from)}>>>${t(to)}>>>${ruleNum(rule)}>>>${implied ? '1' : '0'}>>>${t(impliedLabel || '')}`;
     for (let p = 0; p < paths.length; p++) {
-      const path = paths[p]; let cur = root; cur.leaf.add(p);
-      const toks = Array.isArray(path && path.tokens) ? path.tokens : [];
-      for (const tok of toks) {
-        const sg = tokenSig(tok); let ch = cur.bySig.get(sg);
-        if (!ch) { ch = mkTrie(tok, cur); cur.bySig.set(sg, ch); cur.children.push(ch); }
-        ch.leaf.add(p); cur = ch;
+      const tokens = Array.isArray(paths[p] && paths[p].tokens) ? paths[p].tokens : [];
+      for (const tk of tokens) {
+        if (!tk || typeof tk !== 'object') continue;
+        if (tk.type === 'locator') {
+          const k = t(tk.key || '');
+          if (k) ensureSet(locPathSet, k).add(p);
+        } else if (tk.type === 'rule') {
+          const rs = edgeSig(tk.from, tk.to, { num: tk.ruleNum }, !!tk.implied, tk.impliedLabel);
+          ensureSet(rulePathSet, rs).add(p);
+        }
       }
     }
 
-    const setStages = (node, stage) => {
-      if (node !== root) node.stage = Number.isFinite(node.stage) ? Math.max(node.stage, stage) : stage;
-      const ch = node.children || []; if (!ch.length) return;
-      if (node !== root && ch.length > 1) { node.gwStage = (node.stage || stage) + 1; for (const c of ch) setStages(c, node.gwStage + 1); return; }
-      const nx = (node === root) ? (ch.length > 1 ? 2 : 1) : ((node.stage || stage) + 1);
-      for (const c of ch) setStages(c, nx);
+    const allPathIdx = paths.map((_, i) => i);
+    const lanePick = (setLike, fb) => {
+      const arr = sortNums(Array.from(setLike || []));
+      return clamp(avg(arr, fb), 0, laneCount - 1);
     };
-    for (const c of (root.children || [])) setStages(c, (root.children || []).length > 1 ? 2 : 1);
-
-    const nodes = [];
-    const walk = [root];
-    while (walk.length) {
-      const cur = walk.shift();
-      for (const c of (cur.children || [])) {
-        const ls = sortNums(Array.from(c.leaf));
-        c.lane = clamp(avg(ls, 0), 0, laneCount - 1);
-        nodes.push(c); walk.push(c);
-      }
-    }
-
-    const allLeaf = paths.map((_, i) => i);
-    const startLane = clamp(avg(allLeaf, 0), 0, laneCount - 1);
-    const els = [];
-    const pushEl = (type, name, doc, lane, stage) => {
-      const id = nextId(type, lane);
-      els.push({ id, type, name: t(name || ''), doc: t(doc || ''), lane, stage });
-      lanes[lane].refs.push(id);
-      return id;
+    const pushRef = (laneIdx, id) => {
+      const lane = lanes[laneIdx];
+      if (!lane) return;
+      if (!lane.refs.includes(id)) lane.refs.push(id);
     };
 
-    const startId = pushEl('startEvent', 'Inicio', '', startLane, 0);
-    let rootGwId = '';
-    if ((root.children || []).length > 1) rootGwId = pushEl('exclusiveGateway', 'Decisao', '', startLane, 1);
-
-    for (const n of nodes) {
-      const sp = tokenSpec(n.tok);
-      n.bpmnId = pushEl(sp.type, sp.name, sp.doc, n.lane, Number.isFinite(n.stage) ? n.stage : 1);
-      n.branch = sp.branch;
-    }
-    for (const n of nodes) {
-      if ((n.children || []).length > 1) n.gwId = pushEl('exclusiveGateway', 'Decisao', '', n.lane, Number.isFinite(n.gwStage) ? n.gwStage : ((n.stage || 1) + 1));
+    const locNodes = new Map();
+    for (const key of Array.from(graph.nodeSet).sort((a, b) => a.localeCompare(b, 'pt-BR'))) {
+      const lane = lanePick(locPathSet.get(key), 0);
+      const id = nextId('locator', lane);
+      const el = { id, type: 'task', name: `Localizador: ${key}`, doc: '', lane, stage: 1, key };
+      locNodes.set(key, el);
+      pushRef(lane, id);
     }
 
-    const endIds = [];
-    for (let i = 0; i < paths.length; i++) endIds[i] = pushEl('endEvent', 'Fim', '', i, null);
-
-    const flows = [];
-    const addF = (a, b, nm) => { if (!a || !b) return; flows.push({ id: nextId('Flow', 0), a, b, nm: t(nm || '') }); };
-    if ((root.children || []).length) {
-      if (rootGwId) {
-        addF(startId, rootGwId, '');
-        for (const c of root.children) addF(rootGwId, c.bpmnId, t(c.branch || ''));
-      } else addF(startId, root.children[0].bpmnId, '');
-    }
-    for (const n of nodes) {
-      const ch = n.children || [];
-      if (!ch.length) {
-        const li = sortNums(Array.from(n.leaf));
-        const pick = li.length ? li[0] : 0;
-        addF(n.bpmnId, endIds[Math.max(0, Math.min(pick, endIds.length - 1))], '');
-      } else if (ch.length === 1) addF(n.bpmnId, ch[0].bpmnId, '');
-      else {
-        addF(n.bpmnId, n.gwId, '');
-        for (const c of ch) addF(n.gwId, c.bpmnId, t(c.branch || ''));
+    const ruleNodes = new Map();
+    for (const from of graph.nodeSet) {
+      const outs = graph.out.get(from) || [];
+      for (const e of outs) {
+        const sig = edgeSig(e.from, e.to, e.rule, e.implied, e.impliedLabel);
+        if (ruleNodes.has(sig)) continue;
+        const lane = lanePick(rulePathSet.get(sig) || locPathSet.get(from), 0);
+        const num = ruleNum(e.rule);
+        const name = num ? `REGRA ${num}` : (t(e.impliedLabel || '') || 'Regra de Continuidade');
+        const doc = [
+          `REMOVER: ${t(e.from)}`,
+          `INCLUIR: ${t(e.to)}`,
+          e.rule ? (`SE: ${t(ruleCond(e.rule))}`) : '',
+          e.rule ? (`ACAO: ${t(ruleAction(e.rule))}`) : ''
+        ].filter(Boolean).join(' | ');
+        const id = nextId('rule', lane);
+        const el = { id, type: 'serviceTask', name, doc, lane, stage: 2, sig, from: e.from, to: e.to };
+        ruleNodes.set(sig, el);
+        pushRef(lane, id);
       }
+    }
+
+    const gwNodes = new Map();
+    for (const from of graph.nodeSet) {
+      const outs = graph.out.get(from) || [];
+      if (outs.length <= 1) continue;
+      const lane = lanePick(locPathSet.get(from), 0);
+      const id = nextId('exclusiveGateway', lane);
+      const el = { id, type: 'exclusiveGateway', name: 'Decisao', doc: '', lane, stage: 2, key: from };
+      gwNodes.set(from, el);
+      pushRef(lane, id);
+    }
+
+    const seedCandidates = (Array.isArray(flow.starts) ? flow.starts : []).map(t).filter((k) => graph.nodeSet.has(k));
+    const fallbackSeeds = Array.from(graph.nodeSet).filter((k) => (graph.inD.get(k) || 0) === 0).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const seeds = seedCandidates.length ? seedCandidates : (fallbackSeeds.length ? fallbackSeeds : (graph.nodeSet.size ? [Array.from(graph.nodeSet)[0]] : []));
+    if (!seeds.length) throw new Error('Fluxo sem pontos de inicio.');
+
+    const startLane = lanePick(new Set(allPathIdx), 0);
+    const startEl = { id: nextId('startEvent', startLane), type: 'startEvent', name: 'Inicio', doc: '', lane: startLane, stage: 0 };
+    pushRef(startLane, startEl.id);
+
+    let rootGw = null;
+    if (seeds.length > 1) {
+      const id = nextId('exclusiveGateway', startLane);
+      rootGw = { id, type: 'exclusiveGateway', name: 'Decisao', doc: '', lane: startLane, stage: 1 };
+      pushRef(startLane, id);
+    }
+
+    const endNodes = new Map();
+    for (const k of graph.nodeSet) {
+      const outs = graph.out.get(k) || [];
+      if (outs.length) continue;
+      const lane = lanePick(locPathSet.get(k), 0);
+      const id = nextId('endEvent', lane);
+      const el = { id, type: 'endEvent', name: 'Fim', doc: '', lane, stage: null, key: k };
+      endNodes.set(k, el);
+      pushRef(lane, id);
+    }
+
+    const stageById = new Map();
+    stageById.set(startEl.id, 0);
+    if (rootGw) stageById.set(rootGw.id, 1);
+    for (const k of seeds) stageById.set(locNodes.get(k).id, rootGw ? 2 : 1);
+    for (const e of locNodes.values()) if (!stageById.has(e.id)) stageById.set(e.id, 1);
+    for (const e of gwNodes.values()) if (!stageById.has(e.id)) stageById.set(e.id, 2);
+    for (const e of ruleNodes.values()) if (!stageById.has(e.id)) stageById.set(e.id, 2);
+
+    for (let pass = 0; pass < 120; pass++) {
+      let moved = false;
+      if (rootGw) {
+        for (const k of seeds) {
+          const loc = locNodes.get(k);
+          const cur = stageById.get(loc.id) || 1;
+          const prop = Math.max(cur, (stageById.get(rootGw.id) || 1) + 1);
+          if (prop > cur) { stageById.set(loc.id, prop); moved = true; }
+        }
+      }
+      for (const from of graph.nodeSet) {
+        const locFrom = locNodes.get(from);
+        const baseLoc = stageById.get(locFrom.id) || 1;
+        const outs = graph.out.get(from) || [];
+        if (!outs.length) continue;
+
+        if (outs.length > 1) {
+          const gw = gwNodes.get(from);
+          const gwCur = stageById.get(gw.id) || 2;
+          const gwProp = Math.max(gwCur, baseLoc + 1);
+          if (gwProp > gwCur) { stageById.set(gw.id, gwProp); moved = true; }
+          for (const e of outs) {
+            const sig = edgeSig(e.from, e.to, e.rule, e.implied, e.impliedLabel);
+            const rn = ruleNodes.get(sig);
+            const ruleCur = stageById.get(rn.id) || 2;
+            const ruleProp = Math.max(ruleCur, (stageById.get(gw.id) || gwProp) + 1);
+            if (ruleProp > ruleCur) { stageById.set(rn.id, ruleProp); moved = true; }
+            const locTo = locNodes.get(e.to);
+            const toCur = stageById.get(locTo.id) || 1;
+            const toProp = Math.max(toCur, (stageById.get(rn.id) || ruleProp) + 1);
+            if (toProp > toCur) { stageById.set(locTo.id, toProp); moved = true; }
+          }
+        } else {
+          const e = outs[0];
+          const sig = edgeSig(e.from, e.to, e.rule, e.implied, e.impliedLabel);
+          const rn = ruleNodes.get(sig);
+          const ruleCur = stageById.get(rn.id) || 2;
+          const ruleProp = Math.max(ruleCur, baseLoc + 1);
+          if (ruleProp > ruleCur) { stageById.set(rn.id, ruleProp); moved = true; }
+          const locTo = locNodes.get(e.to);
+          const toCur = stageById.get(locTo.id) || 1;
+          const toProp = Math.max(toCur, (stageById.get(rn.id) || ruleProp) + 1);
+          if (toProp > toCur) { stageById.set(locTo.id, toProp); moved = true; }
+        }
+      }
+      if (!moved) break;
     }
 
     let maxStage = 0;
-    for (const e of els) if (Number.isFinite(e.stage)) maxStage = Math.max(maxStage, e.stage);
+    for (const v of stageById.values()) maxStage = Math.max(maxStage, Number(v) || 0);
     const endStage = maxStage + 1;
-    for (const e of els) if (!Number.isFinite(e.stage)) e.stage = endStage;
 
-    const laneX = 70, laneY0 = 70, laneH = 180, laneGap = 22, stageX0 = laneX + 170, stageStep = 250;
+    const elements = [startEl];
+    if (rootGw) elements.push(rootGw);
+    for (const e of locNodes.values()) { e.stage = stageById.get(e.id) || 1; elements.push(e); }
+    for (const e of gwNodes.values()) { e.stage = stageById.get(e.id) || 2; elements.push(e); }
+    for (const e of ruleNodes.values()) { e.stage = stageById.get(e.id) || 2; elements.push(e); }
+    for (const e of endNodes.values()) { e.stage = endStage; elements.push(e); }
+
+    const flows = [];
+    const addFlow = (a, b, nm) => { if (!a || !b) return; flows.push({ id: nextId('Flow', 0), a, b, nm: t(nm || '') }); };
+    if (rootGw) {
+      addFlow(startEl.id, rootGw.id, '');
+      for (const k of seeds) addFlow(rootGw.id, locNodes.get(k).id, k);
+    } else {
+      addFlow(startEl.id, locNodes.get(seeds[0]).id, '');
+    }
+
+    for (const from of graph.nodeSet) {
+      const fromLoc = locNodes.get(from);
+      const outs = graph.out.get(from) || [];
+      if (!outs.length) continue;
+
+      if (outs.length > 1) {
+        const gw = gwNodes.get(from);
+        addFlow(fromLoc.id, gw.id, '');
+        for (const e of outs) {
+          const sig = edgeSig(e.from, e.to, e.rule, e.implied, e.impliedLabel);
+          const rn = ruleNodes.get(sig);
+          addFlow(gw.id, rn.id, ruleNum(e.rule) ? (`Regra ${ruleNum(e.rule)}`) : '');
+          addFlow(rn.id, locNodes.get(e.to).id, '');
+        }
+      } else {
+        const e = outs[0];
+        const sig = edgeSig(e.from, e.to, e.rule, e.implied, e.impliedLabel);
+        const rn = ruleNodes.get(sig);
+        addFlow(fromLoc.id, rn.id, '');
+        addFlow(rn.id, locNodes.get(e.to).id, '');
+      }
+    }
+
+    for (const [k, endEl] of endNodes.entries()) addFlow(locNodes.get(k).id, endEl.id, '');
+
+    const laneX = 70, laneY0 = 70, laneH = 180, laneGap = 22, stageX0 = laneX + 170;
+    const stageStepBase = 250;
+    const stageStep = stageStepBase + 100;
     const laneW = Math.max(1500, stageX0 + (endStage + 1) * stageStep + 120);
     const laneBounds = new Map();
     for (const ln of lanes) laneBounds.set(ln.laneId, { x: laneX, y: laneY0 + ln.idx * (laneH + laneGap), w: laneW, h: laneH });
     const cyLane = (idx) => Math.round((laneY0 + idx * (laneH + laneGap)) + laneH / 2);
 
     const bounds = new Map();
-    for (const e of els) {
+    for (const e of elements) {
       const d = dims(e.type), cx = Math.round(stageX0 + e.stage * stageStep), cy = cyLane(clamp(e.lane, 0, laneCount - 1));
       bounds.set(e.id, { x: Math.round(cx - d.w / 2), y: Math.round(cy - d.h / 2), w: d.w, h: d.h });
     }
@@ -339,7 +465,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       x.push('      </bpmn:lane>');
     }
     x.push('    </bpmn:laneSet>');
-    for (const e of els) {
+    for (const e of elements) {
       if (e.type === 'startEvent') x.push(`    <bpmn:startEvent id="${e.id}" name="${esc(e.name)}" />`);
       else if (e.type === 'endEvent') x.push(`    <bpmn:endEvent id="${e.id}" name="${esc(e.name)}" />`);
       else if (e.type === 'serviceTask') {
@@ -362,7 +488,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       x.push(`        <dc:Bounds x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" />`);
       x.push('      </bpmndi:BPMNShape>');
     }
-    for (const e of els) {
+    for (const e of elements) {
       const b = bounds.get(e.id); if (!b) continue;
       x.push(`      <bpmndi:BPMNShape id="DI_${e.id}" bpmnElement="${e.id}">`);
       x.push(`        <dc:Bounds x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" />`);
