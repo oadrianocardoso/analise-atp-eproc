@@ -471,14 +471,49 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const laneX = 70, laneY0 = 70, laneH = 120, laneGap = 8, stageX0 = laneX + 170;
     const stageStepBase = 250;
     const stageStep = stageStepBase + 100;
-    const laneW = Math.max(1500, stageX0 + (endStage + 1) * stageStep + 120);
+    const minNodeGap = 36;
+
+    // Evita sobreposicao horizontal na mesma raia: se colidir, desloca para a direita.
+    const laneElements = new Map();
+    for (const e of elements) {
+      const li = clamp(e.lane, 0, laneCount - 1);
+      if (!laneElements.has(li)) laneElements.set(li, []);
+      laneElements.get(li).push(e);
+    }
+    const xById = new Map();
+    let maxRight = stageX0;
+    for (const arr of laneElements.values()) {
+      arr.sort((a, b) => {
+        const as = Number(a && a.stage) || 0;
+        const bs = Number(b && b.stage) || 0;
+        if (as !== bs) return as - bs;
+        return t(a && a.id || '').localeCompare(t(b && b.id || ''), 'pt-BR');
+      });
+      let prevRight = Number.NEGATIVE_INFINITY;
+      for (const el of arr) {
+        const d = dims(el.type);
+        const baseCx = Math.round(stageX0 + (Number(el.stage) || 0) * stageStep);
+        let cx = baseCx;
+        if (Number.isFinite(prevRight)) {
+          const minCx = Math.round(prevRight + minNodeGap + (d.w / 2));
+          if (cx < minCx) cx = minCx;
+        }
+        xById.set(el.id, cx);
+        prevRight = cx + (d.w / 2);
+        if (prevRight > maxRight) maxRight = prevRight;
+      }
+    }
+
+    const laneW = Math.max(1500, Math.round(maxRight + 120));
     const laneBounds = new Map();
     for (const ln of lanes) laneBounds.set(ln.laneId, { x: laneX, y: laneY0 + ln.idx * (laneH + laneGap), w: laneW, h: laneH });
     const cyLane = (idx) => Math.round((laneY0 + idx * (laneH + laneGap)) + laneH / 2);
 
     const bounds = new Map();
     for (const e of elements) {
-      const d = dims(e.type), cx = Math.round(stageX0 + e.stage * stageStep), cy = cyLane(clamp(e.lane, 0, laneCount - 1));
+      const d = dims(e.type);
+      const cx = Math.round(Number(xById.get(e.id)) || (stageX0 + (Number(e.stage) || 0) * stageStep));
+      const cy = cyLane(clamp(e.lane, 0, laneCount - 1));
       bounds.set(e.id, { x: Math.round(cx - d.w / 2), y: Math.round(cy - d.h / 2), w: d.w, h: d.h });
     }
     const way = new Map();
