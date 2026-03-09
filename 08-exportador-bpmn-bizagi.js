@@ -350,20 +350,18 @@
   }
 
   function layoutSwimlanes(flow, opts) {
-    // Layout inspirado no Node-RED:
-    // - fluxo principal em colunas L -> R
-    // - cada split reserva uma banda vertical própria para cada subtree
-    // - merges ficam entre as bandas de entrada, sem colapsar todas as lanes de volta
+    // Layout Swimlanes "do zero":
+    // - identifica divergências (nó com múltiplos filhos)
+    // - cada branch recebe lane dedicada
+    // - nós do mesmo caminho mantêm a lane
+    // - profundidade em colunas L -> R
     opts = opts || {};
-    const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 320;
-    const LANE_HEIGHT = (opts.LANE_HEIGHT != null) ? opts.LANE_HEIGHT : 170;
-    const LANE_GAP = (opts.LANE_GAP != null) ? opts.LANE_GAP : 44;
-    const Y_GAP = (opts.Y_GAP != null) ? opts.Y_GAP : 30;
+    const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 300;
+    const LANE_HEIGHT = (opts.LANE_HEIGHT != null) ? opts.LANE_HEIGHT : 140;
+    const LANE_GAP = (opts.LANE_GAP != null) ? opts.LANE_GAP : 34;
+    const Y_GAP = (opts.Y_GAP != null) ? opts.Y_GAP : 25;
     const PAD_X = (opts.PAD_X != null) ? opts.PAD_X : 60;
     const PAD_Y = (opts.PAD_Y != null) ? opts.PAD_Y : 60;
-    const ROOT_GAP_TRACKS = (opts.ROOT_GAP_TRACKS != null) ? opts.ROOT_GAP_TRACKS : 3.2;
-    const BRANCH_GAP_UNITS = (opts.BRANCH_GAP_UNITS != null) ? opts.BRANCH_GAP_UNITS : 0.9;
-    const TRACK_EPS = (opts.TRACK_EPS != null) ? opts.TRACK_EPS : 0.55;
 
     const nodes = flow.nodes || [];
     const edges = flow.edges || [];
@@ -386,231 +384,82 @@
       inc[e.to].push(e.from);
     }
     for (const id of Object.keys(out)) out[id].sort((a, b) => String(a).localeCompare(String(b)));
-    for (const id of Object.keys(inc)) inc[id].sort();
+    for (const id of Object.keys(inc)) inc[id].sort((a, b) => String(a).localeCompare(String(b)));
 
-    // Componentes fracos: evita misturar fluxos desconexos no mesmo bloco
-    const compById = {};
-    const compNodes = new Map();
-    let compSeq = 0;
-    for (const n of nodes) {
-      const nid = n.id;
-      if (compById[nid] != null) continue;
-      const cid = compSeq++;
-      const q = [nid];
-      compById[nid] = cid;
-      const arr = [];
-      while (q.length) {
-        const u = q.shift();
-        arr.push(u);
-        const ngh = (out[u] || []).concat(inc[u] || []);
-        for (const v of ngh) {
-          if (compById[v] != null) continue;
-          compById[v] = cid;
-          q.push(v);
-        }
-      }
-      compNodes.set(cid, arr);
-    }
-
-    const rootByComp = {};
-    for (const [cid, arr] of compNodes.entries()) {
-      const ids = (arr || []).slice().sort((a, b) => String(a).localeCompare(String(b)));
-      const set = new Set(ids);
-      let root = ids.find(id => (byId[id] && byId[id].type === 'start')) || null;
-      if (!root) root = ids.find(id => (inc[id] || []).filter(pid => set.has(pid)).length === 0) || null;
-      if (!root && ids.length) root = ids[0];
-      if (root) rootByComp[cid] = root;
-    }
-
-    // BFS de profundidade por componente (multi-root)
+    // Profundidade por BFS multi-root (mantém estrutura L -> R)
     const depth = {};
-    const qDepth = [];
-    for (const cid of Object.keys(rootByComp)) {
-      const rid = rootByComp[cid];
-      if (!rid) continue;
-      depth[rid] = 0;
-      qDepth.push(rid);
-    }
-    while (qDepth.length) {
-      const u = qDepth.shift();
-      const du = depth[u] || 0;
-      const uComp = compById[u];
-      const kids = out[u] || [];
-      for (const v of kids) {
-        if (compById[v] !== uComp) continue;
+    const roots = nodes
+      .filter(n => n.type === 'start' || (inc[n.id] || []).length === 0)
+      .map(n => n.id);
+    if (!roots.length && nodes.length) roots.push(nodes[0].id);
+
+    const q = roots.slice();
+    for (const r of roots) depth[r] = 0;
+    while (q.length) {
+      const u = q.shift();
+      const du = Number(depth[u] || 0);
+      for (const v of (out[u] || [])) {
         const cand = du + 1;
         if (depth[v] == null || cand < depth[v]) {
           depth[v] = cand;
-          qDepth.push(v);
+          q.push(v);
         }
       }
     }
+    const maxD = Math.max(...Object.values(depth).concat([0]));
+    for (const n of nodes) if (depth[n.id] == null) depth[n.id] = maxD + 1;
 
-    // Preenche nós sem profundidade dentro do próprio componente
-    for (const [cid, arr] of compNodes.entries()) {
-      let changed = true;
-      let guard = 0;
-      while (changed && guard < arr.length + 3) {
-        guard++;
-        changed = false;
-        for (const id of arr) {
-          if (depth[id] != null) continue;
-          const pd = (inc[id] || [])
-            .filter(pid => compById[pid] === cid && depth[pid] != null)
-            .map(pid => Number(depth[pid]));
-          if (!pd.length) continue;
-          depth[id] = Math.min(...pd) + 1;
-          changed = true;
-        }
-      }
-      for (const id of arr) if (depth[id] == null) depth[id] = 0;
-    }
-
-    const nodesByDepthAsc = nodes.slice().sort((a, b) =>
-      (Number(compById[a.id] || 0) - Number(compById[b.id] || 0))
-      || (depth[a.id] - depth[b.id])
+    const ordered = nodes.slice().sort((a, b) =>
+      Number(depth[a.id] || 0) - Number(depth[b.id] || 0)
       || String(a.id).localeCompare(String(b.id))
     );
-    const nodesByDepthDesc = nodesByDepthAsc.slice().reverse();
-    const forwardKids = {};
-    const forwardParents = {};
-    for (const id of Object.keys(out)) {
-      forwardKids[id] = (out[id] || [])
-        .filter(v => Number(depth[v] || 0) > Number(depth[id] || 0))
-        .sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
-    }
-    for (const id of Object.keys(inc)) {
-      forwardParents[id] = (inc[id] || [])
-        .filter(pid => Number(depth[pid] || 0) < Number(depth[id] || 0))
-        .sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
+
+    // Atribuição de lanes:
+    // - raiz ganha lane nova
+    // - filho único herda lane do pai
+    // - split cria lanes novas para ramos adicionais
+    const laneByNode = {};
+    let nextLane = 0;
+    const allocLane = () => nextLane++;
+
+    for (const r of roots.sort((a, b) => String(a).localeCompare(String(b)))) {
+      if (laneByNode[r] == null) laneByNode[r] = allocLane();
     }
 
-    const subtreeUnits = {};
-    for (const n of nodesByDepthDesc) {
+    for (const n of ordered) {
       const id = n.id;
-      const kids = forwardKids[id] || [];
-      if (!kids.length) {
-        subtreeUnits[id] = 1;
-        continue;
+      const parents = (inc[id] || []).filter(pid => Number(depth[pid] || 0) < Number(depth[id] || 0));
+      if (laneByNode[id] == null) {
+        if (!parents.length) laneByNode[id] = allocLane();
+        else laneByNode[id] = laneByNode[parents[0]] != null ? laneByNode[parents[0]] : allocLane();
       }
+
+      const kids = (out[id] || [])
+        .filter(k => Number(depth[k] || 0) > Number(depth[id] || 0))
+        .sort((a, b) => (Number(depth[a] || 0) - Number(depth[b] || 0)) || String(a).localeCompare(String(b)));
+
+      if (!kids.length) continue;
       if (kids.length === 1) {
-        subtreeUnits[id] = Math.max(1, Number(subtreeUnits[kids[0]] || 1));
+        const k = kids[0];
+        if (laneByNode[k] == null) laneByNode[k] = laneByNode[id];
         continue;
       }
-      let total = 0;
+
       for (let i = 0; i < kids.length; i++) {
-        total += Math.max(1, Number(subtreeUnits[kids[i]] || 1));
-        if (i < kids.length - 1) total += BRANCH_GAP_UNITS;
-      }
-      subtreeUnits[id] = Math.max(1, total);
-    }
-
-    const rootsByComp = {};
-    for (const [cid, arr] of compNodes.entries()) {
-      const ids = (arr || []).slice().sort((a, b) => (depth[a] - depth[b]) || String(a).localeCompare(String(b)));
-      const set = new Set(ids);
-      const roots = ids.filter((id) => {
-        if (byId[id] && byId[id].type === 'start') return true;
-        return (inc[id] || []).filter(pid => set.has(pid)).length === 0;
-      });
-      rootsByComp[cid] = roots.length ? roots : (ids.length ? [ids[0]] : []);
-    }
-
-    function childTrackFromParent(parentId, childId, parentTrack) {
-      const kids = forwardKids[parentId] || [];
-      if (!kids.length) return parentTrack;
-      if (kids.length === 1) return parentTrack;
-      let totalUnits = 0;
-      for (let i = 0; i < kids.length; i++) {
-        totalUnits += Math.max(1, Number(subtreeUnits[kids[i]] || 1));
-        if (i < kids.length - 1) totalUnits += BRANCH_GAP_UNITS;
-      }
-      let cursor = -totalUnits / 2;
-      for (let i = 0; i < kids.length; i++) {
-        const kid = kids[i];
-        const unit = Math.max(1, Number(subtreeUnits[kid] || 1));
-        const center = cursor + (unit / 2);
-        if (kid === childId) return parentTrack + center;
-        cursor += unit + BRANCH_GAP_UNITS;
-      }
-      return parentTrack;
-    }
-
-    const trackByNode = {};
-    const trackSeedByComp = {};
-    const sortedCompIds = Array.from(compNodes.keys()).sort((a, b) => Number(a) - Number(b));
-    let nextRootTrack = 0;
-    for (const cid of sortedCompIds) {
-      const roots = rootsByComp[cid] || [];
-      if (trackSeedByComp[cid] == null) trackSeedByComp[cid] = nextRootTrack;
-      for (let i = 0; i < roots.length; i++) {
-        const rid = roots[i];
-        if (trackByNode[rid] == null) trackByNode[rid] = nextRootTrack;
-        nextRootTrack += ROOT_GAP_TRACKS;
-      }
-      nextRootTrack += ROOT_GAP_TRACKS;
-    }
-
-    for (const n of nodesByDepthAsc) {
-      const id = n.id;
-      const parents = forwardParents[id] || [];
-      if (!parents.length) {
-        if (trackByNode[id] == null) {
-          const cid = Number(compById[id] || 0);
-          trackByNode[id] = Number(trackSeedByComp[cid] || nextRootTrack);
-          nextRootTrack += ROOT_GAP_TRACKS;
-        }
-        continue;
-      }
-      const candTracks = [];
-      for (const pid of parents) {
-        const parentTrack = (trackByNode[pid] != null) ? Number(trackByNode[pid]) : 0;
-        candTracks.push(childTrackFromParent(pid, id, parentTrack));
-      }
-      if (candTracks.length) {
-        const avg = candTracks.reduce((sum, v) => sum + v, 0) / candTracks.length;
-        if (trackByNode[id] == null) trackByNode[id] = avg;
-        else trackByNode[id] = (trackByNode[id] * 0.35) + (avg * 0.65);
+        const k = kids[i];
+        if (laneByNode[k] != null) continue;
+        laneByNode[k] = (i === 0) ? laneByNode[id] : allocLane();
       }
     }
 
-    const rawTracks = nodes
-      .map(n => Number(trackByNode[n.id]))
-      .filter(v => Number.isFinite(v))
-      .sort((a, b) => a - b);
-    const laneCenters = [];
-    for (const t of rawTracks) {
-      if (!laneCenters.length) {
-        laneCenters.push(t);
-        continue;
-      }
-      const lastIdx = laneCenters.length - 1;
-      const last = laneCenters[lastIdx];
-      if (Math.abs(t - last) <= TRACK_EPS) {
-        laneCenters[lastIdx] = (last + t) / 2;
-      } else {
-        laneCenters.push(t);
-      }
-    }
+    // Normaliza índice de lane para ordem compacta top->bottom
+    const usedLanes = Array.from(new Set(nodes.map(n => Number(laneByNode[n.id] || 0)))).sort((a, b) => a - b);
+    const laneOrder = {};
+    usedLanes.forEach((ln, idx) => { laneOrder[ln] = idx; });
     const nodeLane = {};
-    const laneCompMap = {};
-    for (const n of nodes) {
-      const id = n.id;
-      const t = Number(trackByNode[id] || 0);
-      let bestLane = 0;
-      let bestDist = Infinity;
-      for (let i = 0; i < laneCenters.length; i++) {
-        const dist = Math.abs(t - laneCenters[i]);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestLane = i;
-        }
-      }
-      nodeLane[id] = bestLane;
-      laneCompMap[bestLane] = (laneCompMap[bestLane] == null) ? Number(compById[id] || 0) : Math.min(laneCompMap[bestLane], Number(compById[id] || 0));
-    }
+    for (const n of nodes) nodeLane[n.id] = Number(laneOrder[Number(laneByNode[n.id] || 0)] || 0);
 
-    // Agrupa por profundidade e lane
+    // Agrupa nós por profundidade e lane
     const byDepth = {};
     for (const n of nodes) {
       const d = Number(depth[n.id] || 0);
@@ -620,18 +469,13 @@
     }
     for (const d of Object.keys(byDepth)) {
       for (const ln of Object.keys(byDepth[d])) {
-        byDepth[d][ln].sort((a, b) =>
-          Number(trackByNode[a] || 0) - Number(trackByNode[b] || 0)
-          || String(a).localeCompare(String(b))
-        );
+        byDepth[d][ln].sort((a, b) => String(a).localeCompare(String(b)));
       }
     }
 
-    // Altura real por lane com base no pior caso entre profundidades
+    // Altura por lane baseada no maior bloco da lane entre todas as profundidades
     const laneHeight = {};
-    for (const lane of Object.values(nodeLane)) {
-      if (laneHeight[lane] == null) laneHeight[lane] = LANE_HEIGHT;
-    }
+    for (const ln of Object.values(nodeLane)) if (laneHeight[ln] == null) laneHeight[ln] = LANE_HEIGHT;
     for (const d of Object.keys(byDepth)) {
       for (const lnStr of Object.keys(byDepth[d])) {
         const ln = Number(lnStr);
@@ -643,20 +487,16 @@
           blockH += dd.h;
           if (i < ids.length - 1) blockH += Y_GAP;
         }
-        laneHeight[ln] = Math.max(Number(laneHeight[ln] || LANE_HEIGHT), blockH + 20);
+        laneHeight[ln] = Math.max(Number(laneHeight[ln] || LANE_HEIGHT), blockH + 18);
       }
     }
 
     const orderedLanes = Object.keys(laneHeight).map(Number).sort((a, b) => a - b);
     const laneTop = {};
-    let laneCursor = PAD_Y;
-    let prevComp = null;
+    let cursor = PAD_Y;
     for (const ln of orderedLanes) {
-      const curComp = laneCompMap[ln];
-      if (prevComp != null && curComp != null && curComp !== prevComp) laneCursor += Math.max(40, Math.round(LANE_GAP * 1.5));
-      laneTop[ln] = laneCursor;
-      laneCursor += Number(laneHeight[ln] || LANE_HEIGHT) + LANE_GAP;
-      prevComp = curComp;
+      laneTop[ln] = cursor;
+      cursor += Number(laneHeight[ln] || LANE_HEIGHT) + LANE_GAP;
     }
 
     const layout = {};
@@ -664,24 +504,19 @@
     for (const d of orderedDepths) {
       const x = PAD_X + d * X_STEP;
       const lanesAtDepth = Object.keys(byDepth[d]).map(Number).sort((a, b) => a - b);
-
       for (const ln of lanesAtDepth) {
         const ids = byDepth[d][ln] || [];
         if (!ids.length) continue;
-
         let blockH = 0;
         for (let i = 0; i < ids.length; i++) {
           const dd = dims(byId[ids[i]]);
           blockH += dd.h;
           if (i < ids.length - 1) blockH += Y_GAP;
         }
-
         const laneH = Number(laneHeight[ln] || LANE_HEIGHT);
         let y = Number(laneTop[ln] || PAD_Y) + Math.max(0, Math.round((laneH - blockH) / 2));
-
         for (const nodeId of ids) {
-          const n = byId[nodeId];
-          const dd = dims(n);
+          const dd = dims(byId[nodeId]);
           layout[nodeId] = { x, y, w: dd.w, h: dd.h };
           y += dd.h + Y_GAP;
         }
@@ -692,7 +527,6 @@
     layout.__ATP_GAP_Y_MIN__ = Y_GAP;
     layout.__ATP_LANE_TOP__ = laneTop;
     layout.__ATP_LANE_HEIGHT__ = laneHeight;
-
     return layout;
   }
 
@@ -949,6 +783,7 @@
 
   function rewriteDiagramDI(doc, layout) {
     const NS = {
+      bpmn: 'http://www.omg.org/spec/BPMN/20100524/MODEL',
       bpmndi: 'http://www.omg.org/spec/BPMN/20100524/DI',
       dc: 'http://www.omg.org/spec/DD/20100524/DC',
       di: 'http://www.omg.org/spec/DD/20100524/DI'
@@ -976,13 +811,14 @@
 
       let sf = null;
       try {
-
-        const esc = (window.CSS && CSS.escape) ? CSS.escape(flowId) : flowId.replace(/"/g, '\\"');
-        sf = doc.querySelector('sequenceFlow[id="' + esc + '"]');
-      } catch (e) {
-        // fallback manual
-        const sfs = Array.from(doc.getElementsByTagName('sequenceFlow'));
-        sf = sfs.find(x => x.getAttribute('id') === flowId) || null;
+        const sfsNs = Array.from(doc.getElementsByTagNameNS(NS.bpmn, 'sequenceFlow'));
+        sf = sfsNs.find(x => x.getAttribute('id') === flowId) || null;
+      } catch (_) { }
+      if (!sf) {
+        try {
+          const sfsAny = Array.from(doc.getElementsByTagName('sequenceFlow'));
+          sf = sfsAny.find(x => x.getAttribute('id') === flowId) || null;
+        } catch (_) { }
       }
       if (!sf) continue;
 
@@ -991,104 +827,12 @@
       const srcB = src ? getB(src) : null;
       const tgtB = tgt ? getB(tgt) : null;
       if (!srcB || !tgtB) continue;
-
-      // Roteamento via Hubs Virtuais + Anti-sobreposição de linhas (layout-only)
-      const nodeCat = layout.__ATP_NODE_CAT__ || null;
-      const hubs = layout.__ATP_HUBS__ || null;
-      const channelX = (layout.__ATP_CHANNEL_X__ != null) ? layout.__ATP_CHANNEL_X__ : null;
-      const boxes = layout.__ATP_ALL_BOXES__ || [];
-      const GAP = layout.__ATP_GAP_Y_MIN__ || 50;
-
-      const segIntersectsBox = (x1, y1, x2, y2, b) => {
-        // segmentos ortogonais (h/v) com margem
-        const left = b.x - 10, right = b.x + b.w + 10, top = b.y - 10, bottom = b.y + b.h + 10;
-        if (x1 === x2) { // vertical
-          const x = x1;
-          const yMin = Math.min(y1, y2), yMax = Math.max(y1, y2);
-          if (x >= left && x <= right && yMax >= top && yMin <= bottom) return true;
-        } else if (y1 === y2) { // horizontal
-          const y = y1;
-          const xMin = Math.min(x1, x2), xMax = Math.max(x1, x2);
-          if (y >= top && y <= bottom && xMax >= left && xMin <= right) return true;
-        }
-        return false;
-      };
-
-      const pathHitsAnyBox = (pts, ignoreIds) => {
-        const ignore = new Set(ignoreIds || []);
-        for (let i = 0; i < pts.length - 1; i++) {
-          const a = pts[i], c = pts[i + 1];
-          for (const b of boxes) {
-            if (ignore.has(b.id)) continue;
-            if (segIntersectsBox(a.x, a.y, c.x, c.y, b)) return true;
-          }
-        }
-        return false;
-      };
-
-      const s = { x: srcB.x + srcB.w, y: srcB.y + srcB.h / 2 };
-      const t = { x: tgtB.x, y: tgtB.y + tgtB.h / 2 };
-
-      let wps;
-
-      const cat = (nodeCat && nodeCat[tgt]) ? nodeCat[tgt] : '';
-      const hub = (cat && hubs) ? hubs[cat] : null;
-
-      const buildRoute = (midX, viaHub, forcedChannelX) => {
-        if (viaHub && hub && (forcedChannelX != null)) {
-          return [
-            { x: s.x, y: s.y },
-            { x: forcedChannelX, y: s.y },
-            { x: forcedChannelX, y: hub.y },
-            { x: hub.x, y: hub.y },
-            { x: t.x, y: hub.y },
-            { x: t.x, y: t.y }
-          ];
-        }
-        return [
-          { x: s.x, y: s.y },
-          { x: midX, y: s.y },
-          { x: midX, y: t.y },
-          { x: t.x, y: t.y }
-        ];
-      };
-
-      let midX = Math.round((s.x + t.x) / 2);
-      midX = Math.max(midX, s.x + 30);
-      midX = Math.min(midX, t.x - 30);
-
-      // tenta com hub primeiro
-      if (hub && channelX != null) {
-        wps = buildRoute(midX, true, channelX);
-        if (pathHitsAnyBox(wps, [src, tgt])) {
-          let ok = false;
-          for (let k = 1; k <= 20; k++) {
-            const tryChannel = channelX - 40 * k;
-            const alt = buildRoute(midX, true, tryChannel);
-            if (!pathHitsAnyBox(alt, [src, tgt])) { wps = alt; ok = true; break; }
-          }
-          if (!ok) wps = buildRoute(midX, false, null);
-        }
-      } else {
-        wps = buildRoute(midX, false, null);
-      }
-
-      // se ainda colidir, empurra midX para fora até limpar
-      if (pathHitsAnyBox(wps, [src, tgt])) {
-        let ok = false;
-        for (let step = 1; step <= 30; step++) {
-          const tryX = midX + 40 * step;
-          const alt = buildRoute(tryX, false, null);
-          if (!pathHitsAnyBox(alt, [src, tgt])) { wps = alt; ok = true; break; }
-        }
-        if (!ok) {
-          for (let step = 1; step <= 30; step++) {
-            const tryX = midX - 40 * step;
-            const alt = buildRoute(tryX, false, null);
-            if (!pathHitsAnyBox(alt, [src, tgt])) { wps = alt; ok = true; break; }
-          }
-        }
-      }
+      const wps = routeOrthogonalAvoidBoxes(
+        srcB,
+        tgtB,
+        layout.__ATP_ALL_BOXES__ || [],
+        [src, tgt]
+      );
 
       const old = Array.from(ed.getElementsByTagNameNS(NS.di, 'waypoint'));
       old.forEach(n => n.parentNode.removeChild(n));
@@ -1102,53 +846,21 @@
     }
   }
 
-  function resolveUniqueLayoutMode(modeOrOpts) {
-    if (typeof modeOrOpts === 'string') return String(modeOrOpts || '').trim().toLowerCase();
-    if (modeOrOpts && typeof modeOrOpts === 'object' && modeOrOpts.mode != null) {
-      return String(modeOrOpts.mode || '').trim().toLowerCase();
-    }
-    return 'rednode';
-  }
-
-  function buildUniqueLayout(flow, modeOrOpts) {
-    const mode = resolveUniqueLayoutMode(modeOrOpts);
-    if (mode === 'none') return null;
-
-    if (mode === 'der' || mode === 'default') {
-      return layoutDER(flow, {
-        X_STEP: 340,
-        Y_GAP_MIN: 50,
-        PAD_X: 60,
-        PAD_Y: 60
-      });
-    }
-
-    if (mode === 'symmetric') {
-      return computeLayoutSymmetric(flow);
-    }
-
-    return layoutSwimlanes(flow, {
-      X_STEP: 320,
-      LANE_HEIGHT: 170,
-      LANE_GAP: 44,
-      Y_GAP: 30,
-      PAD_X: 60,
-      PAD_Y: 60,
-      ROOT_GAP_TRACKS: 3.2,
-      BRANCH_GAP_UNITS: 0.9,
-      TRACK_EPS: 0.55
-    });
-  }
-
-  function applyUniqueLayout(xml, modeOrOpts) {
+  function applyUniqueLayout(xml) {
     try {
       const parser = new DOMParser();
       const doc = parser.parseFromString(xml, 'application/xml');
       if (doc.getElementsByTagName('parsererror').length) return xml;
 
       const flow = parseBpmnToFlowModel(doc);
-      const layout = buildUniqueLayout(flow, modeOrOpts);
-      if (!layout) return xml;
+      const layout = layoutSwimlanes(flow, {
+        X_STEP: 300,
+        LANE_HEIGHT: 140,
+        LANE_GAP: 34,
+        Y_GAP: 25,
+        PAD_X: 60,
+        PAD_Y: 60
+      });
 
       rewriteDiagramDI(doc, layout);
 
@@ -1163,16 +875,7 @@
   // expõe para o builder
   window.__ATP_UNIQUE_LAYOUT__ = window.__ATP_UNIQUE_LAYOUT__ || {};
   window.__ATP_UNIQUE_LAYOUT__.apply = applyUniqueLayout;
-  window.__ATP_UNIQUE_LAYOUT__.applyRedNode = function (xml) { return applyUniqueLayout(xml, 'rednode'); };
-  window.__ATP_UNIQUE_LAYOUT__.applySwimlanes = function (xml) { return applyUniqueLayout(xml, 'swimlanes'); };
-  window.__ATP_UNIQUE_LAYOUT__.applyDER = function (xml) { return applyUniqueLayout(xml, 'der'); };
-  window.__ATP_UNIQUE_LAYOUT__.modes = Object.freeze({
-    REDNODE: 'rednode',
-    SWIMLANES: 'swimlanes',
-    DER: 'der',
-    SYMMETRIC: 'symmetric',
-    NONE: 'none'
-  });
+  window.__ATP_UNIQUE_LAYOUT__.applySwimlanes = applyUniqueLayout;
 
   try { console.log('[ATP][LAYOUT] Layout único (Opção A) pronto'); } catch (e) { }
 })();
@@ -2130,7 +1833,7 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
         try {
           if (!opts || !opts.__skipUniqueLayout) {
             finalXml = (window.__ATP_UNIQUE_LAYOUT__ && window.__ATP_UNIQUE_LAYOUT__.apply)
-              ? window.__ATP_UNIQUE_LAYOUT__.apply(rawXml, (opts && opts.uniqueLayoutMode) || 'rednode')
+              ? window.__ATP_UNIQUE_LAYOUT__.apply(rawXml)
               : rawXml;
           }
         } catch (e) {
@@ -2159,7 +1862,7 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
           xml: String((built && built.xml) || ''),
           rawXml: String((built && built.rawXml) || ''),
           layoutApplied: String((built && built.xml) || '') !== String((built && built.rawXml) || ''),
-          layoutMode: String((opts && opts.uniqueLayoutMode) || 'rednode')
+          layoutMode: 'swimlanes'
         });
       }
 

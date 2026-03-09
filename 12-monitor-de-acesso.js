@@ -76,7 +76,6 @@ try { console.log('[ATP][LOAD] 12-monitor-de-acesso.js carregado com sucesso'); 
       if (target.closest('#btnExtratoFluxosATP')) return 'clique_gerar_extrato_fluxos';
       if (target.closest('#btnExtratoFluxosBPMNGrid_ATP')) return 'clique_exportar_fluxos_bizagi';
       if (target.closest('#btnVisualizarFluxoATP')) return 'clique_visualizar_fluxo';
-      if (target.closest('#btnVisualizarFluxoRedNodeATP')) return 'clique_visualizar_fluxo_rednode';
       if (target.closest('#btnDashboardUsoATP')) return 'clique_dashboard_utilizacao';
       if (target.closest('.atp-compare-btn')) return 'clique_comparar';
       return '';
