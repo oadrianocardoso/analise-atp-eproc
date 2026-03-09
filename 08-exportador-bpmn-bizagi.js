@@ -1041,13 +1041,8 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
         const data = atpComputeFluxosData(rules || []);
         const list = (data && Array.isArray(data.fluxos)) ? data.fluxos : [];
         fluxos = list.map((fl) => ({
-          starts: Array.isArray(fl && fl.starts)
-            ? fl.starts.filter(k => allFrom.has(k))
-            : [],
-          nodes: Array.from(new Set(
-            (Array.isArray(fl && fl.nodes) ? fl.nodes : Array.from((fl && fl.nodes) || []))
-              .filter(k => allFrom.has(k))
-          ))
+          starts: Array.isArray(fl && fl.starts) ? fl.starts.slice() : [],
+          nodes: Array.isArray(fl && fl.nodes) ? fl.nodes.slice() : Array.from((fl && fl.nodes) || [])
         })).filter(fl => Array.isArray(fl.nodes) && fl.nodes.length);
       }
     } catch (_) {
@@ -1091,15 +1086,12 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
       }
     }
 
-    const __takenNodes = new Set();
     fluxos = fluxos
       .map((fl) => {
-        const nodes = Array.from(new Set((fl && fl.nodes ? fl.nodes : []).filter(k => allFrom.has(k))));
-        const disjointNodes = nodes.filter(k => !__takenNodes.has(k));
-        if (!disjointNodes.length) return null;
-        for (const n of disjointNodes) __takenNodes.add(n);
-        const starts = Array.from(new Set((fl && fl.starts ? fl.starts : []).filter(k => disjointNodes.includes(k))));
-        return { starts: starts.length ? starts : [disjointNodes[0]], nodes: disjointNodes };
+        const nodes = Array.from(new Set((fl && fl.nodes ? fl.nodes : []).filter(Boolean)));
+        if (!nodes.length) return null;
+        const starts = Array.from(new Set((fl && fl.starts ? fl.starts : []).filter(k => nodes.includes(k))));
+        return { starts: starts.length ? starts : [nodes[0]], nodes };
       })
       .filter(Boolean);
 
@@ -1867,11 +1859,6 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
 
       for (let i = 0; i < fluxos.length; i++) {
         const fluxo = fluxos[i];
-        const nodes = Array.from(fluxo.nodes || []);
-        const sig = nodes.slice().sort().join('||');
-        if (flowSigs.has(sig)) continue;
-        flowSigs.add(sig);
-
         fileIndex++;
         const built = buildOne(fluxo, fileIndex);
         const startK = (fluxo.starts && fluxo.starts[0]) ? norm(String(fluxo.starts[0])) : ('fluxo_' + fileIndex);
