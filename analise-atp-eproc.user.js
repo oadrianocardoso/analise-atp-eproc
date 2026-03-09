@@ -1,11 +1,11 @@
 ﻿// ==UserScript==
-// @name         Análise de ATP eProc (bpmn)
+// @name         Análise de ATP eProc (bmpn)
 // @namespace    https://github.com/oadrianocardoso/analise-atp-eproc
 // @description  Script para análise avançada de regras de ATP no eProc, com detecção de colisões e geração de relatórios.
 // @author       ADRIANO AUGUSTO CARDOSO E SANTOS
-// @version      10.76
-// @downloadURL  https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/analise-atp-eproc.user.js
-// @updateURL    https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/analise-atp-eproc.user.js
+// @version      10.76  
+// @downloadURL  https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/analise-atp-eproc.user.js
+// @updateURL    https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/analise-atp-eproc.user.js
 // @homepageURL  https://github.com/oadrianocardoso/analise-atp-eproc
 // @supportURL   https://github.com/oadrianocardoso/analise-atp-eproc/issues
 // @run-at       document-start
@@ -14,17 +14,17 @@
 // @match        *://*/*/controlador.php?acao=automatizar_localizadores*
 // @match        *://*/*/*/controlador.php?acao=automatizar_localizadores*
 // @grant        none
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/01-config.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/02-utilitarios.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/03-logs.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/04-styles.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/05-extrator-de-dados.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/06-analisador-de-colisoes.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/07-extratos-de-fluxos.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/11-coordenador-de-fluxos.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/10-ui-inicializacao.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/13-visualizador-fluxos-bpmnio.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bpmn/12-monitor-de-acesso.js
+// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/01-config.js
+// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/02-utilitarios.js
+// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/03-logs.js
+// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/04-styles.js
+// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/05-extrator-de-dados.js
+// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/06-analisador-de-colisoes.js
+// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/07-extratos-de-fluxos.js
+// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/11-coordenador-de-fluxos.js
+// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/10-ui-inicializacao.js
+// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/13-visualizador-fluxos-bmpnio.js
+// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/12-monitor-de-acesso.js
 // ==/UserScript==
 
 /*
@@ -36,7 +36,7 @@ RESUMO DO SISTEMA (ATP)
 - Detecta conflitos entre regras e marca visualmente a tabela.
 - Gera relatório de colisões em TXT.
 - Gera extrato de fluxos em TXT.
-- Visualiza fluxos detectados em BPMN.io (swimlanes por caminho, sem mistura entre caminhos independentes).
+- Visualiza fluxos detectados em bmpn.io (swimlanes por caminho, sem mistura entre caminhos independentes).
 
 2) COMO O FLUXO INTERNO FUNCIONA
 - Configuração e constantes globais: 01-config.js
@@ -48,7 +48,7 @@ RESUMO DO SISTEMA (ATP)
 - Geração de extrato de fluxos (texto): 07-extratos-de-fluxos.js
 - Coordenação de dados de fluxos para UI: 11-coordenador-de-fluxos.js
 - Inicialização da UI, filtros e eventos: 10-ui-inicializacao.js
-- Visualizador BPMN.io por fluxos detectados: 13-visualizador-fluxos-bpmnio.js
+- Visualizador bmpn.io por fluxos detectados: 13-visualizador-fluxos-bmpnio.js
 
 3) COLISÕES DETECTADAS (RESUMO)
 - Colisão Total
