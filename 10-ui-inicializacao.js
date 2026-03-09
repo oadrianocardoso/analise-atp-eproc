@@ -70,10 +70,9 @@ function atpFriendlyActionName(acao) {
     clique_filtrar_regras_conflitantes: 'Filtrar Regras Conflitantes',
     clique_gerar_relatorio_colisoes: 'Gerar Relatorio de Conflitos',
     clique_gerar_extrato_fluxos: 'Gerar Extrato de Fluxos',
-    clique_exportar_fluxos_bizagi: 'Exportar Fluxos para Bizagi',
+    clique_visualizar_fluxo: 'Visualizar Fluxos (BPMN.io)',
     clique_dashboard_utilizacao: 'Abrir Dashboard de Utilizacao',
-    clique_comparar: 'Comparar Regras',
-    clique_visualizar_fluxo: 'Visualizar Fluxo BPMN (Swimlanes)'
+    clique_comparar: 'Comparar Regras'
   };
   const key = String(acao || '').trim();
   return map[key] || (key || '(sem acao)');
@@ -1260,7 +1259,7 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
   try {
     if (!host) return;
     if (host.querySelector('#btnGerarRelatorioColisoes')) {
-      atpEnsureDashboardIcon(host, host.querySelector('#btnExtratoFluxosBPMNGrid_ATP'));
+      atpEnsureDashboardIcon(host, host.querySelector('#btnExtratoFluxosATP'));
       return;
     }
 
@@ -1488,64 +1487,6 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
       }
     });
 
-    const btnBPMNGrid = document.createElement('button');
-    btnBPMNGrid.type = 'button';
-    btnBPMNGrid.className = 'infraButton';
-    btnBPMNGrid.id = 'btnExtratoFluxosBPMNGrid_ATP';
-    btnBPMNGrid.textContent = '🗂️ Exportar Fluxos Para Bizagi';
-    btnBPMNGrid.style.marginLeft = '8px';
-
-    btnBPMNGrid.addEventListener('mouseenter', () => { btnBPMNGrid.style.background = '#e5e7eb'; });
-    btnBPMNGrid.addEventListener('mouseleave', () => { btnBPMNGrid.style.background = '#f3f4f6'; });
-
-    btnBPMNGrid.addEventListener('click', function () {
-      try {
-        var table = tableRef || findTable();
-        if (!table) return;
-
-        try { ensureColumns(table); } catch (e) { }
-        var cols = null;
-        try { cols = mapColumns(table); } catch (e) { cols = null; }
-        if (!cols) cols = {};
-
-        const rules = parseRules(table, cols);
-        atpSetRulesState(rules);
-
-        atpEnsureJSZip().then(function (JSZip) {
-          try {
-            const files = atpBuildFluxosBPMN(rules, { layout: 'grid', splitFiles: true });
-            if (!files || !files.length) {
-              console.warn(LOG_PREFIX, '[ATP][Fluxos/BPMN] ZIP vazio: nenhum BPMN foi gerado.');
-              return;
-            }
-
-            var zip = new JSZip();
-            files.forEach(function (f) {
-              zip.file(f.filename, f.xml);
-            });
-
-            zip.generateAsync({ type: 'blob' }).then(function (blob) {
-              var url = URL.createObjectURL(blob);
-              var a = document.createElement('a');
-              a.href = url;
-              a.download = 'extrato_fluxos_ATP_grid.zip';
-              document.body.appendChild(a);
-              a.click();
-              setTimeout(function () { URL.revokeObjectURL(url); try { a.remove(); } catch (e) { } }, 0);
-            }).catch(function (e) {
-              console.warn(LOG_PREFIX, '[ATP][Fluxos/BPMN] Falha ao gerar ZIP', e);
-            });
-          } catch (e) {
-            console.warn(LOG_PREFIX, '[ATP][Fluxos/BPMN] Falha ao montar BPMNs', e);
-          }
-        }).catch(function (e) {
-          console.warn(LOG_PREFIX, '[ATP][Fluxos/BPMN] Não foi possível carregar JSZip', e);
-        });
-      } catch (e) {
-        console.warn(LOG_PREFIX, 'Falha ao exportar BPMN (Grid)', e);
-      }
-    });
-
     const btnDashboard = document.createElement('button');
     btnDashboard.type = 'button';
     btnDashboard.id = 'btnDashboardUsoATP';
@@ -1557,13 +1498,11 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
     if (afterLabelEl && afterLabelEl.parentNode === host) {
       const anchor = afterLabelEl.nextSibling;
       host.insertBefore(btnFluxos, anchor);
-      host.insertBefore(btnBPMNGrid, anchor);
       host.insertBefore(btnDashboard, anchor);
       host.insertBefore(btn, btnFluxos);
     } else {
       host.appendChild(btn);
       host.appendChild(btnFluxos);
-      host.appendChild(btnBPMNGrid);
       host.appendChild(btnDashboard);
     }
   } catch (e) { }
@@ -1667,7 +1606,6 @@ function disableAlterarPreferenciaNumRegistros() {
     ensureColumns(table);
     updateAllRemoverLupasByTooltipText(table);
     addOnlyConflictsCheckbox(table, () => schedule(() => applyFilter(table), 0));
-    try { atpEnsureFluxosPickerUI(table); } catch (e) {}
     recalc(table);
     table.addEventListener('change', () => schedule(() => recalc(table), 200), true);
     const root = table.parentElement || document.body;
