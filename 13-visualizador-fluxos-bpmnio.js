@@ -225,6 +225,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       return m.get(k);
     };
     const locPathSet = new Map();
+    const locBirthPathSet = new Map();
     const rulePathSet = new Map();
     const edgeSig = (from, to, rule, implied, impliedLabel) =>
       `${t(from)}>>>${t(to)}>>>${ruleNum(rule)}>>>${implied ? '1' : '0'}>>>${t(impliedLabel || '')}`;
@@ -240,13 +241,19 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     };
     for (let p = 0; p < paths.length; p++) {
       const tokens = Array.isArray(paths[p] && paths[p].tokens) ? paths[p].tokens : [];
-      for (const tk of tokens) {
+      for (let i = 0; i < tokens.length; i++) {
+        const tk = tokens[i];
         if (!tk || typeof tk !== 'object') continue;
         if (tk.type === 'locator') {
           const k = t(tk.key || '');
-          if (k) ensureSet(locPathSet, k).add(p);
+          if (!k) continue;
+          ensureSet(locPathSet, k).add(p);
+          const prev = i > 0 ? tokens[i - 1] : null;
+          const bornHere = (i === 0) || (prev && prev.type === 'rule' && t(prev.to || '') === k);
+          if (bornHere) ensureSet(locBirthPathSet, k).add(p);
         } else if (tk.type === 'rule') {
-          ensureSet(rulePathSet, ruleTokKey(tk)).add(p);
+          const rk = ruleTokKey(tk);
+          ensureSet(rulePathSet, rk).add(p);
         }
       }
     }
@@ -264,7 +271,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
 
     const locNodes = new Map();
     for (const key of Array.from(graph.nodeSet).sort((a, b) => a.localeCompare(b, 'pt-BR'))) {
-      const lane = lanePick(locPathSet.get(key), 0);
+      const lane = lanePick(locBirthPathSet.get(key) || locPathSet.get(key), 0);
       const id = nextId('locator', lane);
       const el = { id, type: 'task', name: `Localizador: ${key}`, doc: '', lane, stage: 1, key };
       locNodes.set(key, el);
@@ -277,7 +284,13 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       for (const e of outs) {
         const sig = ruleEdgeKey(e);
         if (ruleNodes.has(sig)) continue;
-        const lane = lanePick(rulePathSet.get(sig) || locPathSet.get(from), 0);
+        const fromLane = locNodes.get(t(e.from || '')) ? Number(locNodes.get(t(e.from || '')).lane) : NaN;
+        const toLane = locNodes.get(t(e.to || '')) ? Number(locNodes.get(t(e.to || '')).lane) : NaN;
+        const laneByPaths = lanePick(rulePathSet.get(sig) || locPathSet.get(from), Number.isFinite(toLane) ? toLane : (Number.isFinite(fromLane) ? fromLane : 0));
+        let lane = laneByPaths;
+        if (Number.isFinite(toLane)) {
+          lane = clamp(Math.round((laneByPaths + toLane) / 2), 0, pathLaneCount - 1);
+        }
         const num = ruleNum(e.rule);
         const name = num ? `REGRA ${num}` : (t(e.impliedLabel || '') || 'Regra de Continuidade');
         const doc = [
@@ -290,6 +303,33 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         const el = { id, type: 'serviceTask', name, doc, lane, stage: 2, sig, from: e.from, to: e.to };
         ruleNodes.set(sig, el);
         pushRef(lane, id);
+      }
+    }
+
+    // Se varias regras levam ao mesmo localizador de saida, mantem proximidade vertical.
+    const rulesByOutLocator = new Map();
+    for (const rn of ruleNodes.values()) {
+      const toKey = t(rn && rn.to || '');
+      if (!toKey) continue;
+      if (!rulesByOutLocator.has(toKey)) rulesByOutLocator.set(toKey, []);
+      rulesByOutLocator.get(toKey).push(rn);
+    }
+    const laneOffset = (idx) => (idx === 0 ? 0 : (idx % 2 ? -Math.ceil(idx / 2) : Math.ceil(idx / 2)));
+    for (const [toKey, arr] of rulesByOutLocator.entries()) {
+      if (!Array.isArray(arr) || arr.length <= 1) continue;
+      const baseLane = locNodes.get(toKey) ? Number(locNodes.get(toKey).lane) : lanePick(locPathSet.get(toKey), 0);
+      arr.sort((a, b) => {
+        const an = Number(ruleNum({ num: t(a && a.name || '').replace(/^REGRA\s+/i, '') }));
+        const bn = Number(ruleNum({ num: t(b && b.name || '').replace(/^REGRA\s+/i, '') }));
+        const af = Number.isFinite(an), bf = Number.isFinite(bn);
+        if (af && bf && an !== bn) return an - bn;
+        if (af && !bf) return -1;
+        if (!af && bf) return 1;
+        return t(a && a.id || '').localeCompare(t(b && b.id || ''), 'pt-BR');
+      });
+      for (let i = 0; i < arr.length; i++) {
+        const rn = arr[i];
+        rn.lane = clamp(baseLane + laneOffset(i), 0, pathLaneCount - 1);
       }
     }
 
@@ -445,28 +485,14 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
 
     const flows = rawEdges.map((e) => ({ id: nextId('Flow', 0), a: e.a, b: e.b, nm: e.nm }));
 
-    // Compacta raias: remove lanes vazias e reindexa para evitar espaços verticais desnecessários.
-    const usedLaneIdx = Array.from(new Set(elements.map((e) => clamp(e.lane, 0, pathLaneCount - 1)))).sort((a, b) => a - b);
-    const laneRemap = new Map();
-    usedLaneIdx.forEach((oldIdx, newIdx) => laneRemap.set(oldIdx, newIdx));
-
+    // Mantem uma pool virtual por caminho (sem compactar raias).
+    for (const ln of lanes) ln.refs = [];
     for (const e of elements) {
-      const oldIdx = clamp(e.lane, 0, pathLaneCount - 1);
-      e.lane = laneRemap.has(oldIdx) ? laneRemap.get(oldIdx) : 0;
-    }
-
-    lanes = usedLaneIdx.map((oldIdx, newIdx) => ({
-      idx: newIdx,
-      laneId: nextId('Lane', newIdx),
-      laneName: `Pool Virtual ${String(oldIdx + 1).padStart(2, '0')}`,
-      refs: []
-    }));
-    for (const e of elements) {
-      const laneObj = lanes[e.lane];
+      const laneObj = lanes[clamp(e.lane, 0, pathLaneCount - 1)];
       if (!laneObj) continue;
       if (!laneObj.refs.includes(e.id)) laneObj.refs.push(e.id);
     }
-    const laneCount = Math.max(1, lanes.length);
+    const laneCount = Math.max(1, pathLaneCount);
 
     const laneX = 70, laneY0 = 70, laneH = 120, laneGap = 8, stageX0 = laneX + 170;
     const stageStepBase = 250;
