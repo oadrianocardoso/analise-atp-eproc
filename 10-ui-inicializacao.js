@@ -1725,11 +1725,14 @@ function disableAlterarPreferenciaNumRegistros() {
         return;
       }
       if (String(viewMode || '').trim().toLowerCase() === 'rednode') {
-        if (typeof window.atpOpenFlowReactModal !== 'function') {
+        const openRedNode = (typeof window.atpOpenFlowDrawflowModal === 'function')
+          ? window.atpOpenFlowDrawflowModal
+          : window.atpOpenFlowReactModal;
+        if (typeof openRedNode !== 'function') {
           alert('Visualizador Red Node indisponível.');
           return;
         }
-        window.atpOpenFlowReactModal({ rules, flowIdx: idx });
+        openRedNode({ rules, flowIdx: idx });
         return;
       }
       const files = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getBpmnFilesForRules === 'function')

@@ -6,6 +6,8 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
   const MODAL_ID = 'atpNodeRedModal';
   const STYLE_ID = 'atp-drawflow-style';
   const DRAWFLOW_CSS_URL = 'https://cdn.jsdelivr.net/npm/drawflow@0.0.60/dist/drawflow.min.css';
+  const DRAWFLOW_JS_URL = 'https://cdn.jsdelivr.net/npm/drawflow@0.0.60/dist/drawflow.min.js';
+  let ATP_DRAWFLOW_PROMISE = null;
 
   function dfEsc(value) {
     if (typeof esc === 'function') return esc(value);
@@ -46,21 +48,10 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
           #eef2f7;
         background-size:24px 24px;
       }
-      .atp-df-canvas{
-        position:absolute;
-        inset:0;
-      }
-      .atp-df-canvas #drawflow{
-        width:100%;
-        height:100%;
-        background:transparent;
-      }
-      .atp-df-canvas .drawflow{
-        background:transparent;
-      }
-      .atp-df-canvas .drawflow .parent-drawflow{
-        background:transparent;
-      }
+      .atp-df-canvas{position:absolute;inset:0;}
+      .atp-df-canvas #drawflow{width:100%;height:100%;background:transparent;}
+      .atp-df-canvas .drawflow{background:transparent;}
+      .atp-df-canvas .drawflow .parent-drawflow{background:transparent;}
       .atp-df-canvas .drawflow-node{
         width:auto !important;
         min-width:220px;
@@ -69,16 +60,13 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
         box-shadow:0 10px 24px rgba(15,23,42,.12) !important;
         background:#fff !important;
       }
-      .atp-df-canvas .drawflow-node .drawflow_content_node{
-        padding:0 !important;
-        background:transparent !important;
-      }
+      .atp-df-canvas .drawflow-node .drawflow_content_node{padding:0 !important;background:transparent !important;}
       .atp-df-node{
         width:100%;
         min-width:220px;
         max-width:260px;
         box-sizing:border-box;
-        padding:10px 14px 10px 14px;
+        padding:10px 14px;
         font-family:Arial, Helvetica, sans-serif;
       }
       .atp-df-node-title{
@@ -127,26 +115,51 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       .atp-df-canvas .atp-df-kind-refine .input{border-color:#4338ca;background:#6366f1;}
       .atp-df-canvas .atp-df-kind-end .output,
       .atp-df-canvas .atp-df-kind-end .input{border-color:#16a34a;background:#22c55e;}
-      .atp-df-canvas svg .connection path{
-        stroke:#64748b !important;
-        stroke-width:3px !important;
-        fill:none !important;
-      }
-      .atp-df-canvas .connection.node_in_node-rule path,
-      .atp-df-canvas .connection.node_in_node-refine path{
-        stroke:#f97316 !important;
-      }
-      .atp-df-canvas .connection.node_in_node-loc path,
-      .atp-df-canvas .connection.node_in_node-end path{
-        stroke:#0f766e !important;
-      }
-      .atp-df-help{
-        font-size:11px;
-        color:#475569;
-        margin-left:10px;
-      }
+      .atp-df-canvas svg .connection path{stroke:#64748b !important;stroke-width:3px !important;fill:none !important;}
+      .atp-df-help{font-size:11px;color:#475569;margin-left:10px;}
     `;
     document.head.appendChild(st);
+  }
+
+  function ensureDrawflowLoaded() {
+    if (typeof window.Drawflow === 'function') return Promise.resolve(window.Drawflow);
+    if (ATP_DRAWFLOW_PROMISE) return ATP_DRAWFLOW_PROMISE;
+
+    ATP_DRAWFLOW_PROMISE = new Promise((resolve, reject) => {
+      try {
+        const existing = document.querySelector('script[data-atp-drawflow-js="1"]')
+          || document.querySelector(`script[src="${DRAWFLOW_JS_URL}"]`);
+        if (existing) {
+          existing.addEventListener('load', () => {
+            if (typeof window.Drawflow === 'function') resolve(window.Drawflow);
+            else reject(new Error('Drawflow carregou sem expor window.Drawflow'));
+          }, { once: true });
+          existing.addEventListener('error', () => reject(new Error('Falha ao carregar Drawflow.')), { once: true });
+          setTimeout(() => {
+            if (typeof window.Drawflow === 'function') resolve(window.Drawflow);
+          }, 300);
+          return;
+        }
+
+        const s = document.createElement('script');
+        s.src = DRAWFLOW_JS_URL;
+        s.async = true;
+        s.setAttribute('data-atp-drawflow-js', '1');
+        s.onload = () => {
+          if (typeof window.Drawflow === 'function') resolve(window.Drawflow);
+          else reject(new Error('Drawflow carregou sem expor window.Drawflow'));
+        };
+        s.onerror = () => reject(new Error('Falha ao carregar Drawflow.'));
+        document.head.appendChild(s);
+      } catch (e) {
+        reject(e);
+      }
+    }).catch((e) => {
+      ATP_DRAWFLOW_PROMISE = null;
+      throw e;
+    });
+
+    return ATP_DRAWFLOW_PROMISE;
   }
 
   function getRulesStateFallback() {
@@ -205,12 +218,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     const nodeSet = new Set(Array.isArray(flow && flow.nodes) ? flow.nodes : []);
     const starts = Array.isArray(flow && flow.starts) && flow.starts.length ? flow.starts.slice() : Array.from(nodeSet).slice(0, 1);
     const byFrom = (data && data.byFrom instanceof Map) ? data.byFrom : new Map();
-    const graph = {
-      nodes: [],
-      edges: [],
-      roots: [],
-      byKey: new Map()
-    };
+    const graph = { nodes: [], edges: [], roots: [], byKey: new Map() };
     let seq = 0;
 
     function addNode(key, kind, title, subtitle, meta) {
@@ -253,9 +261,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       return addNode(makeGraphKey('loc', localizador), kind, dfTrunc(localizador, 54), sub, { full: String(localizador || '') });
     }
 
-    for (const key of Array.from(nodeSet).sort((a, b) => String(a).localeCompare(String(b)))) {
-      localNode(key);
-    }
+    for (const key of Array.from(nodeSet).sort((a, b) => String(a).localeCompare(String(b)))) localNode(key);
 
     for (const from of Array.from(nodeSet).sort((a, b) => String(a).localeCompare(String(b)))) {
       const source = localNode(from);
@@ -263,9 +269,8 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       items.forEach((item, idx) => {
         const targets = Array.from(new Set((item && item.toKeys ? item.toKeys : []).filter((tk) => nodeSet.has(tk))));
         if (!targets.length) return;
-        const ruleKey = makeGraphKey('rule', `${from}::${idx}::${buildRuleTitle(item)}`);
         const ruleNode = addNode(
-          ruleKey,
+          makeGraphKey('rule', `${from}::${idx}::${buildRuleTitle(item)}`),
           item && item.rule ? 'rule' : 'refine',
           buildRuleTitle(item),
           buildRuleSubtitle(item),
@@ -293,13 +298,14 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       inc.set(n.id, []);
     }
     for (const e of (graph.edges || [])) {
-      if (!out.has(e.from)) out.set(e.from, []);
-      if (!inc.has(e.to)) inc.set(e.to, []);
       out.get(e.from).push(e.to);
       inc.get(e.to).push(e.from);
     }
 
-    const roots = (graph.roots || []).length ? graph.roots.slice() : (graph.nodes || []).filter((n) => (inc.get(n.id) || []).length === 0).map((n) => n.id);
+    const roots = (graph.roots || []).length
+      ? graph.roots.slice()
+      : (graph.nodes || []).filter((n) => (inc.get(n.id) || []).length === 0).map((n) => n.id);
+
     const depth = {};
     const q = roots.slice();
     roots.forEach((id) => { depth[id] = 0; });
@@ -318,105 +324,25 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
     let maxDepth = 0;
     for (const n of (graph.nodes || [])) {
       if (depth[n.id] == null) depth[n.id] = 0;
-      maxDepth = Math.max(maxDepth, depth[n.id]);
       n.depth = depth[n.id];
+      maxDepth = Math.max(maxDepth, n.depth);
     }
-
-    const order = {};
-    let dfsOrder = 0;
-    const seen = new Set();
-    function dfs(id) {
-      if (seen.has(id)) return;
-      seen.add(id);
-      order[id] = dfsOrder++;
-      const kids = (out.get(id) || []).slice().sort((a, b) => {
-        const aa = byId.get(a); const bb = byId.get(b);
-        return String((aa && aa.title) || '').localeCompare(String((bb && bb.title) || ''));
-      });
-      kids.forEach(dfs);
-    }
-    roots.forEach(dfs);
-    (graph.nodes || []).forEach((n) => { if (order[n.id] == null) order[n.id] = dfsOrder++; });
 
     const byDepth = {};
-    for (const n of (graph.nodes || [])) {
-      const d = Number(depth[n.id] || 0);
-      (byDepth[d] = byDepth[d] || []).push(n.id);
-    }
-    for (const d of Object.keys(byDepth)) {
-      byDepth[d].sort((a, b) => Number(order[a] || 0) - Number(order[b] || 0));
-    }
-
-    const rank = {};
-    for (const d of Object.keys(byDepth)) {
-      byDepth[d].forEach((id, idx) => { rank[id] = idx; });
-    }
-
-    const avg = (arr) => arr.length ? (arr.reduce((s, v) => s + v, 0) / arr.length) : null;
-    for (let pass = 0; pass < 6; pass++) {
-      for (let d = 1; d <= maxDepth; d++) {
-        const ids = (byDepth[d] || []).slice();
-        ids.sort((a, b) => {
-          const pa = avg((inc.get(a) || []).map((id) => Number(rank[id] || 0)));
-          const pb = avg((inc.get(b) || []).map((id) => Number(rank[id] || 0)));
-          const va = pa == null ? Number(rank[a] || 0) : pa;
-          const vb = pb == null ? Number(rank[b] || 0) : pb;
-          return va - vb || Number(order[a] || 0) - Number(order[b] || 0);
-        });
-        byDepth[d] = ids;
-        ids.forEach((id, idx) => { rank[id] = idx; });
-      }
-      for (let d = maxDepth - 1; d >= 0; d--) {
-        const ids = (byDepth[d] || []).slice();
-        ids.sort((a, b) => {
-          const ca = avg((out.get(a) || []).map((id) => Number(rank[id] || 0)));
-          const cb = avg((out.get(b) || []).map((id) => Number(rank[id] || 0)));
-          const va = ca == null ? Number(rank[a] || 0) : ca;
-          const vb = cb == null ? Number(rank[b] || 0) : cb;
-          return va - vb || Number(order[a] || 0) - Number(order[b] || 0);
-        });
-        byDepth[d] = ids;
-        ids.forEach((id, idx) => { rank[id] = idx; });
-      }
-    }
-
-    const targetY = {};
-    for (let d = 0; d <= maxDepth; d++) {
-      const ids = byDepth[d] || [];
-      ids.forEach((id, idx) => { targetY[id] = idx * 110; });
-    }
-
-    for (let pass = 0; pass < 8; pass++) {
-      for (let d = 1; d <= maxDepth; d++) {
-        for (const id of (byDepth[d] || [])) {
-          const ps = inc.get(id) || [];
-          if (!ps.length) continue;
-          const mid = avg(ps.map((pid) => Number(targetY[pid] || 0)));
-          targetY[id] = (targetY[id] * 0.45) + (mid * 0.55);
-        }
-      }
-      for (let d = maxDepth - 1; d >= 0; d--) {
-        for (const id of (byDepth[d] || [])) {
-          const cs = out.get(id) || [];
-          if (!cs.length) continue;
-          const mid = avg(cs.map((cid) => Number(targetY[cid] || 0)));
-          targetY[id] = (targetY[id] * 0.55) + (mid * 0.45);
-        }
-      }
-    }
+    for (const n of (graph.nodes || [])) (byDepth[n.depth] = byDepth[n.depth] || []).push(n.id);
+    for (const d of Object.keys(byDepth)) byDepth[d].sort((a, b) => String(a).localeCompare(String(b)));
 
     let maxY = 0;
     for (let d = 0; d <= maxDepth; d++) {
-      const ids = (byDepth[d] || []).slice().sort((a, b) => Number(targetY[a] || 0) - Number(targetY[b] || 0));
+      const ids = byDepth[d] || [];
       let cursorY = 60;
       for (const id of ids) {
         const node = byId.get(id);
         if (!node) continue;
-        const top = Math.max(cursorY, Math.round(Number(targetY[id] || 0) + 60));
         node.x = 80 + d * 310;
-        node.y = top;
-        cursorY = top + 120;
-        maxY = Math.max(maxY, top);
+        node.y = cursorY;
+        cursorY += 120;
+        maxY = Math.max(maxY, node.y);
       }
     }
 
@@ -429,6 +355,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
   function closeNodeRedModal() {
     const el = document.getElementById(MODAL_ID);
     if (!el) return;
+    try { window.removeEventListener('resize', el._atpResizeHandler); } catch (_) { }
     try { el.remove(); } catch (_) { }
   }
 
@@ -451,7 +378,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
       editor.canvas_y = ty;
       editor.precanvas.style.transform = `translate(${tx}px, ${ty}px) scale(${zoom})`;
       if (modal._atpZoomLabel) modal._atpZoomLabel.textContent = Math.round(zoom * 100) + '%';
-    } catch (e) { }
+    } catch (_) { }
   }
 
   function syncZoomLabel(modal) {
@@ -464,176 +391,174 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
 
   function nodeHtml(node) {
     return [
-      `<div class="atp-df-node">`,
+      '<div class="atp-df-node">',
       `<div class="atp-df-node-title">${dfEsc(node.title)}</div>`,
       `<div class="atp-df-node-sub">${dfEsc(node.subtitle || '')}</div>`,
-      `</div>`
+      '</div>'
     ].join('');
   }
 
   function openFlowNodeRedModal(opts) {
     try {
       ensureDrawflowAssets();
-      closeNodeRedModal();
-      try { if (typeof atpCloseRuleMapModal === 'function') atpCloseRuleMapModal(); } catch (_) { }
+      return ensureDrawflowLoaded().then(() => {
+        closeNodeRedModal();
+        try { if (typeof atpCloseRuleMapModal === 'function') atpCloseRuleMapModal(); } catch (_) { }
 
-      if (typeof window.Drawflow !== 'function') {
-        alert('Drawflow nao foi carregado.');
-        return Promise.resolve();
-      }
-
-      const rules = Array.isArray(opts && opts.rules) ? opts.rules : getRulesStateFallback();
-      if (!rules.length) {
-        alert('Nao foi possivel obter as regras carregadas.');
-        return Promise.resolve();
-      }
-
-      const data = resolveFluxosData(rules);
-      const fluxos = Array.isArray(data && data.fluxos) ? data.fluxos : [];
-      const flowIdx = Math.max(0, Number(opts && opts.flowIdx) || 0);
-      const flow = fluxos[flowIdx];
-      if (!flow) {
-        alert('Fluxo selecionado nao encontrado.');
-        return Promise.resolve();
-      }
-
-      const graph = buildDrawflowGraph(flow, data);
-      const bounds = layoutGraph(graph);
-
-      const overlay = document.createElement('div');
-      overlay.id = MODAL_ID;
-      overlay.className = 'atp-map-overlay';
-      overlay.addEventListener('click', (ev) => { if (ev.target === overlay) closeNodeRedModal(); });
-
-      const box = document.createElement('div');
-      box.className = 'atp-map-box';
-
-      const top = document.createElement('div');
-      top.className = 'atp-map-top';
-      const starts = (flow && flow.starts && flow.starts.length) ? flow.starts.join(' | ') : '(sem inicio)';
-      top.innerHTML = `<div><div class="atp-map-title">🧭 Fluxo ${String(flowIdx + 1).padStart(2, '0')} (Drawflow)</div><div class="atp-map-sub">${dfEsc(starts)}<span class="atp-df-help">${graph.nodes.length} nos unicos</span></div></div>`;
-
-      const actions = document.createElement('div');
-      actions.className = 'atp-map-actions';
-
-      const btnZoomOut = document.createElement('button');
-      btnZoomOut.type = 'button';
-      btnZoomOut.className = 'atp-map-btn';
-      btnZoomOut.textContent = '-';
-
-      const zoomLabel = document.createElement('span');
-      zoomLabel.className = 'atp-map-zoom';
-      zoomLabel.textContent = '100%';
-
-      const btnZoomIn = document.createElement('button');
-      btnZoomIn.type = 'button';
-      btnZoomIn.className = 'atp-map-btn';
-      btnZoomIn.textContent = '+';
-
-      const btnFit = document.createElement('button');
-      btnFit.type = 'button';
-      btnFit.className = 'atp-map-btn';
-      btnFit.textContent = 'Fit';
-
-      const btnClose = document.createElement('button');
-      btnClose.type = 'button';
-      btnClose.className = 'atp-map-btn';
-      btnClose.textContent = 'Fechar';
-      btnClose.addEventListener('click', closeNodeRedModal);
-
-      actions.appendChild(btnZoomOut);
-      actions.appendChild(zoomLabel);
-      actions.appendChild(btnZoomIn);
-      actions.appendChild(btnFit);
-      actions.appendChild(btnClose);
-      top.appendChild(actions);
-
-      const body = document.createElement('div');
-      body.className = 'atp-map-body';
-
-      const wrap = document.createElement('div');
-      wrap.className = 'atp-df-wrap';
-
-      const canvas = document.createElement('div');
-      canvas.className = 'atp-df-canvas';
-      const drawflowHost = document.createElement('div');
-      drawflowHost.id = 'drawflow';
-      canvas.appendChild(drawflowHost);
-      wrap.appendChild(canvas);
-      body.appendChild(wrap);
-
-      box.appendChild(top);
-      box.appendChild(body);
-      overlay.appendChild(box);
-      document.body.appendChild(overlay);
-
-      const editor = new window.Drawflow(drawflowHost);
-      editor.reroute = false;
-      editor.force_first_input = false;
-      editor.editor_mode = 'fixed';
-      editor.start();
-
-      const byId = new Map();
-      for (const node of graph.nodes) {
-        const inputs = Math.max(1, node.inputs.length || (node.kind === 'start' ? 0 : 1));
-        const outputs = Math.max(1, node.outputs.length || (node.kind === 'end' ? 0 : 1));
-        const className = 'atp-df-kind-' + node.kind + ' node-' + node.kind;
-        const drawflowId = editor.addNode(
-          node.kind,
-          inputs,
-          outputs,
-          node.x,
-          node.y,
-          className,
-          { key: node.key, kind: node.kind, title: node.title },
-          nodeHtml(node)
-        );
-        byId.set(node.id, {
-          drawflowId,
-          inputIndex: new Map(),
-          outputIndex: new Map()
-        });
-      }
-
-      const inputCounters = new Map();
-      const outputCounters = new Map();
-      for (const edge of graph.edges) {
-        const src = byId.get(edge.from);
-        const tgt = byId.get(edge.to);
-        if (!src || !tgt) continue;
-        const so = (outputCounters.get(edge.from) || 0) + 1;
-        const ti = (inputCounters.get(edge.to) || 0) + 1;
-        outputCounters.set(edge.from, so);
-        inputCounters.set(edge.to, ti);
-        try {
-          editor.addConnection(src.drawflowId, tgt.drawflowId, `output_${so}`, `input_${ti}`);
-        } catch (e) {
-          try { editor.addConnection(src.drawflowId, tgt.drawflowId, 'output_1', 'input_1'); } catch (_) { }
+        const rules = Array.isArray(opts && opts.rules) ? opts.rules : getRulesStateFallback();
+        if (!rules.length) {
+          alert('Nao foi possivel obter as regras carregadas.');
+          return Promise.resolve();
         }
-      }
 
-      overlay._atpDrawflow = editor;
-      overlay._atpViewport = wrap;
-      overlay._atpBounds = bounds;
-      overlay._atpZoomLabel = zoomLabel;
+        const data = resolveFluxosData(rules);
+        const fluxos = Array.isArray(data && data.fluxos) ? data.fluxos : [];
+        const flowIdx = Math.max(0, Number(opts && opts.flowIdx) || 0);
+        const flow = fluxos[flowIdx];
+        if (!flow) {
+          alert('Fluxo selecionado nao encontrado.');
+          return Promise.resolve();
+        }
 
-      btnZoomOut.addEventListener('click', () => {
-        try { editor.zoom_out(); } catch (_) { }
-        syncZoomLabel(overlay);
+        const graph = buildDrawflowGraph(flow, data);
+        const bounds = layoutGraph(graph);
+
+        const overlay = document.createElement('div');
+        overlay.id = MODAL_ID;
+        overlay.className = 'atp-map-overlay';
+        overlay.addEventListener('click', (ev) => { if (ev.target === overlay) closeNodeRedModal(); });
+
+        const box = document.createElement('div');
+        box.className = 'atp-map-box';
+
+        const top = document.createElement('div');
+        top.className = 'atp-map-top';
+        const starts = (flow && flow.starts && flow.starts.length) ? flow.starts.join(' | ') : '(sem inicio)';
+        top.innerHTML = `<div><div class="atp-map-title">Fluxo ${String(flowIdx + 1).padStart(2, '0')} (Drawflow)</div><div class="atp-map-sub">${dfEsc(starts)}<span class="atp-df-help">${graph.nodes.length} nos unicos</span></div></div>`;
+
+        const actions = document.createElement('div');
+        actions.className = 'atp-map-actions';
+
+        const btnZoomOut = document.createElement('button');
+        btnZoomOut.type = 'button';
+        btnZoomOut.className = 'atp-map-btn';
+        btnZoomOut.textContent = '-';
+
+        const zoomLabel = document.createElement('span');
+        zoomLabel.className = 'atp-map-zoom';
+        zoomLabel.textContent = '100%';
+
+        const btnZoomIn = document.createElement('button');
+        btnZoomIn.type = 'button';
+        btnZoomIn.className = 'atp-map-btn';
+        btnZoomIn.textContent = '+';
+
+        const btnFit = document.createElement('button');
+        btnFit.type = 'button';
+        btnFit.className = 'atp-map-btn';
+        btnFit.textContent = 'Fit';
+
+        const btnClose = document.createElement('button');
+        btnClose.type = 'button';
+        btnClose.className = 'atp-map-btn';
+        btnClose.textContent = 'Fechar';
+        btnClose.addEventListener('click', closeNodeRedModal);
+
+        actions.appendChild(btnZoomOut);
+        actions.appendChild(zoomLabel);
+        actions.appendChild(btnZoomIn);
+        actions.appendChild(btnFit);
+        actions.appendChild(btnClose);
+        top.appendChild(actions);
+
+        const body = document.createElement('div');
+        body.className = 'atp-map-body';
+
+        const wrap = document.createElement('div');
+        wrap.className = 'atp-df-wrap';
+
+        const canvas = document.createElement('div');
+        canvas.className = 'atp-df-canvas';
+        const drawflowHost = document.createElement('div');
+        drawflowHost.id = 'drawflow';
+        canvas.appendChild(drawflowHost);
+        wrap.appendChild(canvas);
+        body.appendChild(wrap);
+
+        box.appendChild(top);
+        box.appendChild(body);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        const editor = new window.Drawflow(drawflowHost);
+        editor.reroute = false;
+        editor.force_first_input = false;
+        editor.editor_mode = 'fixed';
+        editor.start();
+
+        const byId = new Map();
+        for (const node of graph.nodes) {
+          const inputs = Math.max(1, node.inputs.length || (node.kind === 'start' ? 0 : 1));
+          const outputs = Math.max(1, node.outputs.length || (node.kind === 'end' ? 0 : 1));
+          const className = 'atp-df-kind-' + node.kind + ' node-' + node.kind;
+          const drawflowId = editor.addNode(
+            node.kind,
+            inputs,
+            outputs,
+            node.x,
+            node.y,
+            className,
+            { key: node.key, kind: node.kind, title: node.title },
+            nodeHtml(node)
+          );
+          byId.set(node.id, { drawflowId });
+        }
+
+        const inputCounters = new Map();
+        const outputCounters = new Map();
+        for (const edge of graph.edges) {
+          const src = byId.get(edge.from);
+          const tgt = byId.get(edge.to);
+          if (!src || !tgt) continue;
+          const so = (outputCounters.get(edge.from) || 0) + 1;
+          const ti = (inputCounters.get(edge.to) || 0) + 1;
+          outputCounters.set(edge.from, so);
+          inputCounters.set(edge.to, ti);
+          try {
+            editor.addConnection(src.drawflowId, tgt.drawflowId, `output_${so}`, `input_${ti}`);
+          } catch (e) {
+            try { editor.addConnection(src.drawflowId, tgt.drawflowId, 'output_1', 'input_1'); } catch (_) { }
+          }
+        }
+
+        overlay._atpDrawflow = editor;
+        overlay._atpViewport = wrap;
+        overlay._atpBounds = bounds;
+        overlay._atpZoomLabel = zoomLabel;
+
+        btnZoomOut.addEventListener('click', () => {
+          try { editor.zoom_out(); } catch (_) { }
+          syncZoomLabel(overlay);
+        });
+        btnZoomIn.addEventListener('click', () => {
+          try { editor.zoom_in(); } catch (_) { }
+          syncZoomLabel(overlay);
+        });
+        btnFit.addEventListener('click', () => fitEditor(overlay));
+
+        overlay._atpResizeHandler = () => fitEditor(overlay);
+        window.addEventListener('resize', overlay._atpResizeHandler);
+        setTimeout(() => {
+          fitEditor(overlay);
+          syncZoomLabel(overlay);
+        }, 60);
+
+        return Promise.resolve();
+      }).catch((e) => {
+        try { console.warn('[ATP][DF] Falha ao carregar Drawflow:', e); } catch (_) { }
+        alert('Falha ao carregar Drawflow para abrir o fluxo.');
+        return Promise.reject(e);
       });
-      btnZoomIn.addEventListener('click', () => {
-        try { editor.zoom_in(); } catch (_) { }
-        syncZoomLabel(overlay);
-      });
-      btnFit.addEventListener('click', () => fitEditor(overlay));
-
-      window.addEventListener('resize', overlay._atpResizeHandler = () => fitEditor(overlay));
-      setTimeout(() => {
-        fitEditor(overlay);
-        syncZoomLabel(overlay);
-      }, 60);
-
-      return Promise.resolve();
     } catch (e) {
       try { console.warn('[ATP][DF] Falha ao abrir visualizador Drawflow:', e); } catch (_) { }
       alert('Falha ao abrir visualizador Drawflow.');
@@ -642,7 +567,9 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxo-reactflow-elk.js carregado 
   }
 
   window.atpOpenFlowReactModal = openFlowNodeRedModal;
+  window.atpOpenFlowDrawflowModal = openFlowNodeRedModal;
   window.atpCloseFlowReactModal = closeNodeRedModal;
+  window.atpCloseFlowDrawflowModal = closeNodeRedModal;
 
   try { console.log('[ATP][OK] 13-visualizador-fluxo-reactflow-elk.js inicializado com Drawflow'); } catch (e) { }
 })();
