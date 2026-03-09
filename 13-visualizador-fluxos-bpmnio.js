@@ -321,80 +321,17 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       pushRef(lane, id);
     }
 
-    const stageById = new Map();
-    stageById.set(startEl.id, 0);
-    if (rootGw) stageById.set(rootGw.id, 1);
-    for (const k of seeds) stageById.set(locNodes.get(k).id, rootGw ? 2 : 1);
-    for (const e of locNodes.values()) if (!stageById.has(e.id)) stageById.set(e.id, 1);
-    for (const e of gwNodes.values()) if (!stageById.has(e.id)) stageById.set(e.id, 2);
-    for (const e of ruleNodes.values()) if (!stageById.has(e.id)) stageById.set(e.id, 2);
+    const rawEdges = [];
+    const pushRawEdge = (a, b, nm) => {
+      if (!a || !b) return;
+      rawEdges.push({ a, b, nm: t(nm || '') });
+    };
 
-    for (let pass = 0; pass < 120; pass++) {
-      let moved = false;
-      if (rootGw) {
-        for (const k of seeds) {
-          const loc = locNodes.get(k);
-          const cur = stageById.get(loc.id) || 1;
-          const prop = Math.max(cur, (stageById.get(rootGw.id) || 1) + 1);
-          if (prop > cur) { stageById.set(loc.id, prop); moved = true; }
-        }
-      }
-      for (const from of graph.nodeSet) {
-        const locFrom = locNodes.get(from);
-        const baseLoc = stageById.get(locFrom.id) || 1;
-        const outs = graph.out.get(from) || [];
-        if (!outs.length) continue;
-
-        if (outs.length > 1) {
-          const gw = gwNodes.get(from);
-          const gwCur = stageById.get(gw.id) || 2;
-          const gwProp = Math.max(gwCur, baseLoc + 1);
-          if (gwProp > gwCur) { stageById.set(gw.id, gwProp); moved = true; }
-          for (const e of outs) {
-            const sig = edgeSig(e.from, e.to, e.rule, e.implied, e.impliedLabel);
-            const rn = ruleNodes.get(sig);
-            const ruleCur = stageById.get(rn.id) || 2;
-            const ruleProp = Math.max(ruleCur, (stageById.get(gw.id) || gwProp) + 1);
-            if (ruleProp > ruleCur) { stageById.set(rn.id, ruleProp); moved = true; }
-            const locTo = locNodes.get(e.to);
-            const toCur = stageById.get(locTo.id) || 1;
-            const toProp = Math.max(toCur, (stageById.get(rn.id) || ruleProp) + 1);
-            if (toProp > toCur) { stageById.set(locTo.id, toProp); moved = true; }
-          }
-        } else {
-          const e = outs[0];
-          const sig = edgeSig(e.from, e.to, e.rule, e.implied, e.impliedLabel);
-          const rn = ruleNodes.get(sig);
-          const ruleCur = stageById.get(rn.id) || 2;
-          const ruleProp = Math.max(ruleCur, baseLoc + 1);
-          if (ruleProp > ruleCur) { stageById.set(rn.id, ruleProp); moved = true; }
-          const locTo = locNodes.get(e.to);
-          const toCur = stageById.get(locTo.id) || 1;
-          const toProp = Math.max(toCur, (stageById.get(rn.id) || ruleProp) + 1);
-          if (toProp > toCur) { stageById.set(locTo.id, toProp); moved = true; }
-        }
-      }
-      if (!moved) break;
-    }
-
-    let maxStage = 0;
-    for (const v of stageById.values()) maxStage = Math.max(maxStage, Number(v) || 0);
-    const endStage = maxStage + 1;
-
-    const elements = [startEl];
-    if (rootGw) elements.push(rootGw);
-    for (const e of locNodes.values()) { e.stage = stageById.get(e.id) || 1; elements.push(e); }
-    for (const e of gwNodes.values()) { e.stage = stageById.get(e.id) || 2; elements.push(e); }
-    for (const e of ruleNodes.values()) { e.stage = stageById.get(e.id) || 2; elements.push(e); }
-    for (const e of endNodes.values()) { e.stage = endStage; elements.push(e); }
-
-    const flows = [];
-    const addFlow = (a, b, nm) => { if (!a || !b) return; flows.push({ id: nextId('Flow', 0), a, b, nm: t(nm || '') }); };
     if (rootGw) {
-      addFlow(startEl.id, rootGw.id, '');
-      for (const k of seeds) addFlow(rootGw.id, locNodes.get(k).id, k);
+      pushRawEdge(startEl.id, rootGw.id, '');
+      for (const k of seeds) pushRawEdge(rootGw.id, locNodes.get(k).id, k);
     } else {
-      addFlow(startEl.id, locNodes.get(seeds[0]).id, '');
+      pushRawEdge(startEl.id, locNodes.get(seeds[0]).id, '');
     }
 
     for (const from of graph.nodeSet) {
@@ -404,23 +341,94 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
 
       if (outs.length > 1) {
         const gw = gwNodes.get(from);
-        addFlow(fromLoc.id, gw.id, '');
+        pushRawEdge(fromLoc.id, gw.id, '');
         for (const e of outs) {
           const sig = edgeSig(e.from, e.to, e.rule, e.implied, e.impliedLabel);
           const rn = ruleNodes.get(sig);
-          addFlow(gw.id, rn.id, ruleNum(e.rule) ? (`Regra ${ruleNum(e.rule)}`) : '');
-          addFlow(rn.id, locNodes.get(e.to).id, '');
+          pushRawEdge(gw.id, rn.id, ruleNum(e.rule) ? (`Regra ${ruleNum(e.rule)}`) : '');
+          pushRawEdge(rn.id, locNodes.get(e.to).id, '');
         }
       } else {
         const e = outs[0];
         const sig = edgeSig(e.from, e.to, e.rule, e.implied, e.impliedLabel);
         const rn = ruleNodes.get(sig);
-        addFlow(fromLoc.id, rn.id, '');
-        addFlow(rn.id, locNodes.get(e.to).id, '');
+        pushRawEdge(fromLoc.id, rn.id, '');
+        pushRawEdge(rn.id, locNodes.get(e.to).id, '');
       }
     }
 
-    for (const [k, endEl] of endNodes.entries()) addFlow(locNodes.get(k).id, endEl.id, '');
+    for (const [k, endEl] of endNodes.entries()) pushRawEdge(locNodes.get(k).id, endEl.id, '');
+
+    const adj = new Map();
+    const addAdj = (a, b) => {
+      if (!adj.has(a)) adj.set(a, []);
+      adj.get(a).push(b);
+    };
+    for (const e of rawEdges) addAdj(e.a, e.b);
+
+    const stageById = new Map();
+    const setInf = (id) => stageById.set(id, Number.POSITIVE_INFINITY);
+    setInf(startEl.id);
+    if (rootGw) setInf(rootGw.id);
+    for (const e of locNodes.values()) setInf(e.id);
+    for (const e of gwNodes.values()) setInf(e.id);
+    for (const e of ruleNodes.values()) setInf(e.id);
+    for (const e of endNodes.values()) setInf(e.id);
+
+    stageById.set(startEl.id, 0);
+    const q = [startEl.id];
+    while (q.length) {
+      const cur = q.shift();
+      const base = stageById.get(cur);
+      if (!Number.isFinite(base)) continue;
+      const outs = adj.get(cur) || [];
+      for (const nxt of outs) {
+        const cand = base + 1;
+        const old = stageById.get(nxt);
+        if (!Number.isFinite(old) || cand < old) {
+          stageById.set(nxt, cand);
+          q.push(nxt);
+        }
+      }
+    }
+
+    for (const e of locNodes.values()) if (!Number.isFinite(stageById.get(e.id))) stageById.set(e.id, 1);
+    for (const e of gwNodes.values()) if (!Number.isFinite(stageById.get(e.id))) stageById.set(e.id, 2);
+    for (const e of ruleNodes.values()) if (!Number.isFinite(stageById.get(e.id))) stageById.set(e.id, 2);
+    if (rootGw && !Number.isFinite(stageById.get(rootGw.id))) stageById.set(rootGw.id, 1);
+
+    const nonEndStageSet = new Set();
+    for (const [id, st] of stageById.entries()) {
+      if (!Number.isFinite(st)) continue;
+      let isEnd = false;
+      for (const e of endNodes.values()) { if (e.id === id) { isEnd = true; break; } }
+      if (!isEnd) nonEndStageSet.add(st);
+    }
+    const sortedStages = Array.from(nonEndStageSet).sort((a, b) => a - b);
+    const remap = new Map();
+    sortedStages.forEach((s, i) => remap.set(s, i));
+    for (const [id, st] of Array.from(stageById.entries())) {
+      if (!Number.isFinite(st)) continue;
+      if (remap.has(st)) stageById.set(id, remap.get(st));
+    }
+
+    let maxStage = 0;
+    for (const [id, v] of stageById.entries()) {
+      let isEnd = false;
+      for (const e of endNodes.values()) { if (e.id === id) { isEnd = true; break; } }
+      if (isEnd) continue;
+      maxStage = Math.max(maxStage, Number(v) || 0);
+    }
+    const endStage = maxStage + 1;
+
+    const elements = [startEl];
+    if (rootGw) elements.push(rootGw);
+    for (const e of locNodes.values()) { e.stage = stageById.get(e.id) || 1; elements.push(e); }
+    for (const e of gwNodes.values()) { e.stage = stageById.get(e.id) || 2; elements.push(e); }
+    for (const e of ruleNodes.values()) { e.stage = stageById.get(e.id) || 2; elements.push(e); }
+    for (const e of endNodes.values()) { e.stage = endStage; elements.push(e); }
+
+    const flows = rawEdges.map((e) => ({ id: nextId('Flow', 0), a: e.a, b: e.b, nm: e.nm }));
 
     const laneX = 70, laneY0 = 70, laneH = 180, laneGap = 22, stageX0 = laneX + 170;
     const stageStepBase = 250;
