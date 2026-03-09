@@ -6,8 +6,9 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
   const BTN_ID = 'btnVisualizarFluxosBpmnIoATP';
   const MODAL_ID = 'atpFluxoBpmnIoModal';
   const SEL_ID = 'atpSelFluxoBpmnIo';
-  const SRC = 'https://unpkg.com/bpmn-js@18.1.1/dist/bpmn-navigated-viewer.development.js';
-  const PROM_KEY = '__ATP_BPMNIO_VIEWER_PROMISE__';
+  const SRC = 'https://unpkg.com/bpmn-js@18.1.1/dist/bpmn-modeler.development.js';
+  const PROM_KEY = '__ATP_BPMNIO_MODELER_PROMISE__';
+  const SCRIPT_ATTR = 'data-atp-bpmnio-modeler';
   const CSS = [
     'https://unpkg.com/bpmn-js@18.1.1/dist/assets/diagram-js.css',
     'https://unpkg.com/bpmn-js@18.1.1/dist/assets/bpmn-js.css',
@@ -36,7 +37,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
   }
 
   function ensureViewer() {
-    if (window.BpmnJS && window.BpmnJS.prototype && window.BpmnJS.prototype.__ATP_BPMNIO_NAV__) return Promise.resolve(window.BpmnJS);
+    if (window.BpmnJS && window.BpmnJS.prototype && (window.BpmnJS.prototype.__ATP_BPMNIO_MODELER__ || typeof window.BpmnJS.prototype.createDiagram === 'function')) return Promise.resolve(window.BpmnJS);
     try { const gp = window[PROM_KEY]; if (gp && typeof gp.then === 'function') return gp; } catch (_) {}
     if (PROM) return PROM;
     PROM = new Promise((resolve, reject) => {
@@ -44,10 +45,10 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         ensureCss();
         const done = () => {
           if (!window.BpmnJS) { reject(new Error('BpmnJS indisponivel')); return; }
-          try { window.BpmnJS.prototype.__ATP_BPMNIO_NAV__ = true; } catch (_) {}
+          try { window.BpmnJS.prototype.__ATP_BPMNIO_MODELER__ = true; } catch (_) {}
           resolve(window.BpmnJS);
         };
-        const ex = document.querySelector('script[data-atp-bpmnio-viewer="1"]') || document.querySelector('script[src*="bpmn-navigated-viewer.development.js"]');
+        const ex = document.querySelector(`script[${SCRIPT_ATTR}="1"]`) || document.querySelector('script[src*="bpmn-modeler.development.js"]');
         if (ex) {
           if (window.BpmnJS) { done(); return; }
           ex.addEventListener('load', done, { once: true });
@@ -55,7 +56,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
           return;
         }
         const s = document.createElement('script');
-        s.src = SRC; s.async = true; s.setAttribute('data-atp-bpmnio-viewer', '1');
+        s.src = SRC; s.async = true; s.setAttribute(SCRIPT_ATTR, '1');
         s.onload = done; s.onerror = (e) => reject(e || new Error('Falha ao carregar bpmn.io'));
         document.head.appendChild(s);
       } catch (e) { reject(e); }
@@ -547,6 +548,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
   function closeModal() {
     const el = document.getElementById(MODAL_ID);
     if (!el) return;
+    try { if (typeof el._atpClearChainSelection === 'function') el._atpClearChainSelection(); } catch (_) {}
     try { const viewer = el._atpBpmnIoViewer; if (viewer && typeof viewer.destroy === 'function') viewer.destroy(); } catch (_) {}
     try { el.remove(); } catch (_) {}
   }
@@ -573,7 +575,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const top = document.createElement('div'); top.className = 'atp-map-top';
     const titleWrap = document.createElement('div');
     const title = document.createElement('div'); title.className = 'atp-map-title'; title.textContent = 'Visualizador de Fluxos (BPMN.io - Arvore de Decisao)';
-    const sub = document.createElement('div'); sub.className = 'atp-map-sub'; sub.textContent = 'Cada caminho vai para sua pool virtual (raia dedicada), sem mistura de nos entre caminhos.';
+    const sub = document.createElement('div'); sub.className = 'atp-map-sub'; sub.textContent = 'Cada caminho vai para sua pool virtual (raia dedicada), sem mistura de nos entre caminhos. Clique em um item para destacar impacto de 1 nivel.';
     titleWrap.appendChild(title); titleWrap.appendChild(sub);
     const actions = document.createElement('div'); actions.className = 'atp-map-actions';
 
@@ -595,10 +597,191 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const canvas = document.createElement('div'); canvas.className = 'atp-map-canvas'; body.appendChild(canvas);
     box.appendChild(top); box.appendChild(body); overlay.appendChild(box); document.body.appendChild(overlay);
 
-    const st = { data, viewer: null, xml: '', filename: '', zoom: 1 };
+    const st = { data, viewer: null, xml: '', filename: '', zoom: 1, chainIds: new Set(), chainMarkerBackup: new Map(), impactBound: false, lastElementClickTs: 0 };
+    const ATP_CHAIN_MARKER = 'atp-chain-selected';
     const setZoom = (v) => { const n = Number(v); if (!Number.isFinite(n)) return; st.zoom = n; zoomLab.textContent = Math.round(n * 100) + '%'; };
+    const extractMarkerId = (markerUrl) => {
+      const m = String(markerUrl || '').match(/url\(#([^)]+)\)/);
+      return m && m[1] ? String(m[1]) : '';
+    };
+    const ensureOrangeMarker = (baseMarkerId) => {
+      try {
+        const svg = canvas && canvas.querySelector ? canvas.querySelector('svg') : null;
+        if (!svg || !baseMarkerId) return '';
+        let defs = svg.querySelector('defs');
+        if (!defs) {
+          defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+          svg.insertBefore(defs, svg.firstChild || null);
+        }
+        const markers = Array.from(defs.querySelectorAll('marker'));
+        let base = null;
+        for (const m of markers) { if (String(m.id || '') === String(baseMarkerId)) { base = m; break; } }
+        if (!base) return '';
+        const orangeId = String(baseMarkerId) + '__atp_orange';
+        for (const m of markers) { if (String(m.id || '') === orangeId) return orangeId; }
+        const clone = base.cloneNode(true);
+        clone.setAttribute('id', orangeId);
+        const paints = Array.from(clone.querySelectorAll('*'));
+        for (const p of paints) {
+          try {
+            if (p.hasAttribute('stroke')) p.setAttribute('stroke', '#f97316');
+            if (p.hasAttribute('fill') && String(p.getAttribute('fill') || '').toLowerCase() !== 'none') p.setAttribute('fill', '#f97316');
+            p.setAttribute('style', String(p.getAttribute('style') || '')
+              .replace(/stroke\s*:[^;]+;?/gi, '')
+              .replace(/fill\s*:[^;]+;?/gi, '')
+              + ';stroke:#f97316;fill:#f97316;');
+          } catch (_) {}
+        }
+        defs.appendChild(clone);
+        return orangeId;
+      } catch (_) {
+        return '';
+      }
+    };
+    const clearChainSelection = () => {
+      try {
+        if (!st.viewer) return;
+        const elementRegistry = st.viewer.get('elementRegistry');
+        const canvasApi = st.viewer.get('canvas');
+        if (!canvasApi) return;
+        for (const [id, prev] of Array.from(st.chainMarkerBackup || [])) {
+          try {
+            const el = elementRegistry && elementRegistry.get(id);
+            if (!el) continue;
+            const gfx = elementRegistry.getGraphics(el);
+            const path = gfx && gfx.querySelector && gfx.querySelector('.djs-visual > path');
+            if (!path) continue;
+            const prevEnd = String(prev && prev.end || '');
+            const prevStart = String(prev && prev.start || '');
+            if (prevEnd) path.setAttribute('marker-end', prevEnd); else path.removeAttribute('marker-end');
+            if (prevStart) path.setAttribute('marker-start', prevStart); else path.removeAttribute('marker-start');
+          } catch (_) {}
+        }
+        st.chainMarkerBackup = new Map();
+        for (const id of Array.from(st.chainIds || [])) {
+          try { canvasApi.removeMarker(id, ATP_CHAIN_MARKER); } catch (_) {}
+        }
+        st.chainIds = new Set();
+      } catch (_) {}
+    };
+    overlay._atpClearChainSelection = clearChainSelection;
+    const colorConnectionArrow = (connId) => {
+      try {
+        if (!st.viewer) return;
+        const id = String(connId || '');
+        if (!id) return;
+        const elementRegistry = st.viewer.get('elementRegistry');
+        const el = elementRegistry && elementRegistry.get(id);
+        const bo = el && el.businessObject;
+        if (!el || !bo || String(bo.$type || '') !== 'bpmn:SequenceFlow') return;
+        const gfx = elementRegistry.getGraphics(el);
+        const path = gfx && gfx.querySelector && gfx.querySelector('.djs-visual > path');
+        if (!path) return;
+        if (!st.chainMarkerBackup.has(id)) {
+          st.chainMarkerBackup.set(id, {
+            end: String(path.getAttribute('marker-end') || ''),
+            start: String(path.getAttribute('marker-start') || '')
+          });
+        }
+        const mEndId = extractMarkerId(path.getAttribute('marker-end'));
+        const mStartId = extractMarkerId(path.getAttribute('marker-start'));
+        const endOrange = ensureOrangeMarker(mEndId);
+        const startOrange = ensureOrangeMarker(mStartId);
+        if (endOrange) path.setAttribute('marker-end', 'url(#' + endOrange + ')');
+        if (startOrange) path.setAttribute('marker-start', 'url(#' + startOrange + ')');
+      } catch (_) {}
+    };
+    const addChainMarker = (id) => {
+      try {
+        if (!st.viewer) return;
+        const sid = String(id || '');
+        if (!sid || st.chainIds.has(sid)) return;
+        const canvasApi = st.viewer.get('canvas');
+        if (!canvasApi) return;
+        canvasApi.addMarker(sid, ATP_CHAIN_MARKER);
+        st.chainIds.add(sid);
+        colorConnectionArrow(sid);
+      } catch (_) {}
+    };
+    const normalizeClickedElement = (el) => {
+      try {
+        if (!el) return null;
+        const bo = el.businessObject;
+        if (!bo) return el;
+        if (String(bo.$type || '') === 'bpmn:Label' && bo.labelTarget && bo.labelTarget.id) {
+          return st.viewer.get('elementRegistry').get(String(bo.labelTarget.id)) || el;
+        }
+        if (el.type === 'label' && el.labelTarget && el.labelTarget.id) {
+          return st.viewer.get('elementRegistry').get(String(el.labelTarget.id)) || el;
+        }
+        return el;
+      } catch (_) {
+        return el || null;
+      }
+    };
+    const highlightImpactFromElement = (rawEl) => {
+      try {
+        clearChainSelection();
+        if (!st.viewer) return;
+        const el = normalizeClickedElement(rawEl);
+        if (!el || !el.businessObject) return;
+        const bo = el.businessObject;
+        const bType = String(bo.$type || '');
+
+        if (bType === 'bpmn:SequenceFlow') {
+          addChainMarker(el.id);
+          if (bo.sourceRef && bo.sourceRef.id) addChainMarker(String(bo.sourceRef.id));
+          if (bo.targetRef && bo.targetRef.id) addChainMarker(String(bo.targetRef.id));
+          return;
+        }
+
+        const incoming = Array.from((bo && bo.incoming) || []);
+        const outgoing = Array.from((bo && bo.outgoing) || []);
+        const isFlowNode = !!(bo && typeof bo.$instanceOf === 'function' && bo.$instanceOf('bpmn:FlowNode'));
+        if (!isFlowNode && !incoming.length && !outgoing.length) return;
+
+        addChainMarker(el.id);
+        for (const f of incoming) {
+          const fid = String(f && f.id || '');
+          const sid = String(f && f.sourceRef && f.sourceRef.id || '');
+          if (fid) addChainMarker(fid);
+          if (sid) addChainMarker(sid);
+        }
+        for (const f of outgoing) {
+          const fid = String(f && f.id || '');
+          const tid = String(f && f.targetRef && f.targetRef.id || '');
+          if (fid) addChainMarker(fid);
+          if (tid) addChainMarker(tid);
+        }
+      } catch (_) {}
+    };
+    const bindImpactHandlers = () => {
+      try {
+        if (!st.viewer || st.impactBound) return;
+        st.impactBound = true;
+        const eventBus = st.viewer.get('eventBus');
+        if (!eventBus) return;
+        eventBus.on('element.click', (ev) => {
+          try {
+            st.lastElementClickTs = Date.now();
+            highlightImpactFromElement(ev && ev.element);
+          } catch (_) {}
+        });
+        eventBus.on('canvas.click', () => {
+          try {
+            if ((Date.now() - Number(st.lastElementClickTs || 0)) < 120) return;
+            clearChainSelection();
+          } catch (_) {}
+        });
+      } catch (_) {}
+    };
     const importXml = (xml) => ensureViewer().then((BpmnJS) => {
-      if (!st.viewer) { st.viewer = new BpmnJS({ container: canvas }); overlay._atpBpmnIoViewer = st.viewer; }
+      if (!st.viewer) {
+        st.viewer = new BpmnJS({ container: canvas, keyboard: { bindTo: overlay } });
+        overlay._atpBpmnIoViewer = st.viewer;
+        bindImpactHandlers();
+      }
+      clearChainSelection();
       return st.viewer.importXML(xml).then(() => { const cv = st.viewer.get('canvas'); cv.zoom('fit-viewport'); setZoom(cv.zoom()); });
     });
     const render = () => {
