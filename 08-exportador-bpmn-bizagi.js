@@ -350,11 +350,10 @@
   }
 
   function layoutSwimlanes(flow, opts) {
-    // Layout Swimlanes "do zero":
-    // - identifica divergências (nó com múltiplos filhos)
-    // - cada branch recebe lane dedicada
-    // - nós do mesmo caminho mantêm a lane
-    // - profundidade em colunas L -> R
+    // Layout Swimlanes com isolamento de caminhos:
+    // - split cria novas lanes por branch
+    // - merges não puxam ramos para a mesma lane antiga
+    // - cada caminho mantém faixa dedicada (L -> R)
     opts = opts || {};
     const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 300;
     const LANE_HEIGHT = (opts.LANE_HEIGHT != null) ? opts.LANE_HEIGHT : 140;
@@ -414,50 +413,76 @@
       || String(a.id).localeCompare(String(b.id))
     );
 
-    // Atribuição de lanes:
-    // - raiz ganha lane nova
-    // - filho único herda lane do pai
-    // - split cria lanes novas para ramos adicionais
-    const laneByNode = {};
-    let nextLane = 0;
-    const allocLane = () => nextLane++;
+    const laneTokenByNode = {};
+    const laneAnchorByToken = {};
+    let laneSeq = 0;
+    const allocToken = (anchor) => {
+      const t = 'L' + (++laneSeq);
+      laneAnchorByToken[t] = Number.isFinite(Number(anchor)) ? Number(anchor) : laneSeq;
+      return t;
+    };
+    const uniq = (arr) => Array.from(new Set((arr || []).filter(Boolean)));
+    const rootsSorted = roots.slice().sort((a, b) => String(a).localeCompare(String(b)));
 
-    for (const r of roots.sort((a, b) => String(a).localeCompare(String(b)))) {
-      if (laneByNode[r] == null) laneByNode[r] = allocLane();
+    for (let i = 0; i < rootsSorted.length; i++) {
+      const r = rootsSorted[i];
+      if (!laneTokenByNode[r]) laneTokenByNode[r] = allocToken(i);
     }
 
     for (const n of ordered) {
       const id = n.id;
-      const parents = (inc[id] || []).filter(pid => Number(depth[pid] || 0) < Number(depth[id] || 0));
-      if (laneByNode[id] == null) {
-        if (!parents.length) laneByNode[id] = allocLane();
-        else laneByNode[id] = laneByNode[parents[0]] != null ? laneByNode[parents[0]] : allocLane();
+      const parents = (inc[id] || [])
+        .filter(pid => Number(depth[pid] || 0) < Number(depth[id] || 0))
+        .sort((a, b) => String(a).localeCompare(String(b)));
+
+      if (!laneTokenByNode[id]) {
+        const parentTokens = uniq(parents.map(p => laneTokenByNode[p]));
+        if (!parentTokens.length) {
+          laneTokenByNode[id] = allocToken(laneSeq + 1);
+        } else if (parentTokens.length === 1) {
+          laneTokenByNode[id] = parentTokens[0];
+        } else {
+          const avg = parentTokens.reduce((s, t) => s + Number(laneAnchorByToken[t] || 0), 0) / parentTokens.length;
+          laneTokenByNode[id] = allocToken(avg + 0.001);
+        }
       }
 
       const kids = (out[id] || [])
         .filter(k => Number(depth[k] || 0) > Number(depth[id] || 0))
         .sort((a, b) => (Number(depth[a] || 0) - Number(depth[b] || 0)) || String(a).localeCompare(String(b)));
-
       if (!kids.length) continue;
+
       if (kids.length === 1) {
         const k = kids[0];
-        if (laneByNode[k] == null) laneByNode[k] = laneByNode[id];
+        if (!laneTokenByNode[k]) laneTokenByNode[k] = laneTokenByNode[id];
         continue;
       }
 
+      const baseToken = laneTokenByNode[id];
+      const baseAnchor = Number(laneAnchorByToken[baseToken] || 0);
+      const half = (kids.length - 1) / 2;
       for (let i = 0; i < kids.length; i++) {
         const k = kids[i];
-        if (laneByNode[k] != null) continue;
-        laneByNode[k] = (i === 0) ? laneByNode[id] : allocLane();
+        if (laneTokenByNode[k]) continue;
+        const childAnchor = baseAnchor + (i - half);
+        laneTokenByNode[k] = allocToken(childAnchor);
       }
     }
 
-    // Normaliza índice de lane para ordem compacta top->bottom
-    const usedLanes = Array.from(new Set(nodes.map(n => Number(laneByNode[n.id] || 0)))).sort((a, b) => a - b);
-    const laneOrder = {};
-    usedLanes.forEach((ln, idx) => { laneOrder[ln] = idx; });
+    const usedTokens = uniq(nodes.map(n => laneTokenByNode[n.id]))
+      .sort((a, b) => {
+        const da = Number(laneAnchorByToken[a] || 0);
+        const db = Number(laneAnchorByToken[b] || 0);
+        if (da !== db) return da - db;
+        return String(a).localeCompare(String(b));
+      });
+    const laneOrderByToken = {};
+    for (let i = 0; i < usedTokens.length; i++) laneOrderByToken[usedTokens[i]] = i;
     const nodeLane = {};
-    for (const n of nodes) nodeLane[n.id] = Number(laneOrder[Number(laneByNode[n.id] || 0)] || 0);
+    for (const n of nodes) {
+      const t = laneTokenByNode[n.id] || usedTokens[0] || allocToken(0);
+      nodeLane[n.id] = Number(laneOrderByToken[t] || 0);
+    }
 
     // Agrupa nós por profundidade e lane
     const byDepth = {};
@@ -1016,9 +1041,14 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
         const data = atpComputeFluxosData(rules || []);
         const list = (data && Array.isArray(data.fluxos)) ? data.fluxos : [];
         fluxos = list.map((fl) => ({
-          starts: Array.isArray(fl && fl.starts) ? fl.starts.slice() : [],
-          nodes: Array.isArray(fl && fl.nodes) ? fl.nodes.slice() : Array.from(fl && fl.nodes || [])
-        }));
+          starts: Array.isArray(fl && fl.starts)
+            ? fl.starts.filter(k => allFrom.has(k))
+            : [],
+          nodes: Array.from(new Set(
+            (Array.isArray(fl && fl.nodes) ? fl.nodes : Array.from((fl && fl.nodes) || []))
+              .filter(k => allFrom.has(k))
+          ))
+        })).filter(fl => Array.isArray(fl.nodes) && fl.nodes.length);
       }
     } catch (_) {
       fluxos = [];
@@ -1061,18 +1091,17 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
       }
     }
 
-    for (const fl of fluxos) {
-      const full = new Set(fl.nodes);
-      for (const u of fl.nodes) {
-        const outs = outGlobal.get(u);
-        if (!outs) continue;
-        for (const v of outs) {
-          if (!v) continue;
-          if (!full.has(v) && !allFrom.has(v)) full.add(v);
-        }
-      }
-      fl.nodes = Array.from(full);
-    }
+    const __takenNodes = new Set();
+    fluxos = fluxos
+      .map((fl) => {
+        const nodes = Array.from(new Set((fl && fl.nodes ? fl.nodes : []).filter(k => allFrom.has(k))));
+        const disjointNodes = nodes.filter(k => !__takenNodes.has(k));
+        if (!disjointNodes.length) return null;
+        for (const n of disjointNodes) __takenNodes.add(n);
+        const starts = Array.from(new Set((fl && fl.starts ? fl.starts : []).filter(k => disjointNodes.includes(k))));
+        return { starts: starts.length ? starts : [disjointNodes[0]], nodes: disjointNodes };
+      })
+      .filter(Boolean);
 
     const flowSigs = new Set();
 
@@ -1099,17 +1128,7 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
         const nodes = Array.from((fluxo && fluxo.nodes) ? fluxo.nodes : []);
 
         const nodeSet = new Set(nodes);
-
-        const terminalSet = new Set();
-        for (const n of nodes) {
-          const outs = outGlobal.get(n);
-          if (!outs) continue;
-          for (const t of outs) {
-            if (!t) continue;
-            if (!nodeSet.has(t)) terminalSet.add(t);
-          }
-        }
-        const nodesAll = nodes.concat(Array.from(terminalSet));
+        const nodesAll = nodes.slice();
         const nodeSetAll = new Set(nodesAll);
         const startId = 'Start_' + procId;
         x += '    <bpmn:startEvent id="' + startId + '" name="Início"/>\n';
@@ -1909,8 +1928,6 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
       const nodesSet = new Set((fl && fl.nodes) ? Array.from(fl.nodes) : []);
       if (!nodesSet.size) continue;
 
-      if (!nodesSet.size) continue;
-
       const nodes = Array.from(nodesSet);
       const nodeSet = new Set(nodes);
 
@@ -1920,7 +1937,7 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
         const outs = outGlobal.get(u);
         if (!outs) continue;
         for (const v of outs) {
-          if (!__nodeSet.has(v)) continue;
+          if (!nodeSet.has(v)) continue;
           edges.push([u, v]);
           if (!out.has(u)) out.set(u, []);
           out.get(u).push(v);
