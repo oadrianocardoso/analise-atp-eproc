@@ -38,13 +38,22 @@ function injectStyle() {
       .atp-map-btn:hover{background:#eef2f7;}
       .atp-map-body{flex:1;padding:0;overflow:hidden;position:relative;}
       .atp-map-canvas{width:100%;height:100%;}
-      .atp-map-canvas .djs-container, .atp-map-canvas .djs-container svg{width:100% !important;height:100% !important;}
-      .atp-map-canvas .bjs-container, .atp-map-canvas .bjs-container svg{width:100% !important;height:100% !important;}
-      .atp-map-canvas svg{display:block;}
-      .atp-map-canvas .djs-container{min-height:100%;}
-      .atp-map-canvas .djs-connection.selected .djs-visual > path{stroke:#f97316 !important;stroke-width:2.8px !important;}
-      .atp-map-canvas .djs-connection.hover .djs-visual > path{stroke:#fb923c !important;}
-      .atp-map-canvas .djs-connection.atp-chain-selected .djs-visual > path{stroke:#f97316 !important;stroke-width:2.8px !important;}
+	      .atp-map-canvas .djs-container, .atp-map-canvas .djs-container svg{width:100% !important;height:100% !important;}
+	      .atp-map-canvas .bjs-container, .atp-map-canvas .bjs-container svg{width:100% !important;height:100% !important;}
+	      .atp-map-canvas svg{display:block;}
+	      .atp-map-canvas .djs-container{min-height:100%;}
+	      .atp-map-canvas .djs-shape[data-element-id^="Lane_"] .djs-visual > rect,
+	      .atp-map-canvas .djs-shape[data-element-id^="Lane_"] .djs-visual > path{
+	        stroke:transparent !important;
+	        stroke-width:0 !important;
+	        fill:transparent !important;
+	      }
+	      .atp-map-canvas .djs-shape[data-element-id^="Lane_"] .djs-outline{
+	        stroke:transparent !important;
+	      }
+	      .atp-map-canvas .djs-connection.selected .djs-visual > path{stroke:#f97316 !important;stroke-width:2.8px !important;}
+	      .atp-map-canvas .djs-connection.hover .djs-visual > path{stroke:#fb923c !important;}
+	      .atp-map-canvas .djs-connection.atp-chain-selected .djs-visual > path{stroke:#f97316 !important;stroke-width:2.8px !important;}
       .atp-map-canvas .djs-shape.atp-chain-selected .djs-visual > rect,
       .atp-map-canvas .djs-shape.atp-chain-selected .djs-visual > polygon,
       .atp-map-canvas .djs-shape.atp-chain-selected .djs-visual > circle,
@@ -142,10 +151,6 @@ function ensureColumns(table) {
   try {
     if (!table) return;
 
-    const dtOn = (table.classList && table.classList.contains('dataTable')) ||
-      table.closest('.dataTables_wrapper');
-    if (dtOn) return;
-
     const thead = table.querySelector('thead');
     if (thead) {
       const hr = thead.querySelector('tr');
@@ -170,47 +175,47 @@ function ensureColumns(table) {
       }
     }
 
-    const tbody = table.querySelector('tbody');
-    if (!tbody) return;
+    const tbodys = table.tBodies?.length ? Array.from(table.tBodies) : [table.querySelector('tbody')].filter(Boolean);
+    tbodys.forEach(tbody => {
+      const trs = Array.from(tbody.querySelectorAll('tr'));
+      trs.forEach(tr => {
+        const existing = tr.querySelector('td[data-atp-col="conflita"]');
 
-    const trs = tbody.querySelectorAll('tr');
-    trs.forEach(tr => {
-      const existing = tr.querySelector('td[data-atp-col="conflita"]');
+        if (existing) {
+          try {
+            const tds0 = Array.from(tr.children).filter(n => n && n.tagName === 'TD');
+            const tdAcoes0 = (function () {
+              try {
+                if (!tds0.length) return null;
 
-      if (existing) {
+                const byIcons = tds0.find(td => td !== existing && td.querySelector && td.querySelector('i.material-icons, .material-icons, .custom-switch'));
+                if (byIcons) return byIcons;
+                return tds0[tds0.length - 1];
+              } catch (e) { return null; }
+            })();
+            if (tdAcoes0 && existing.nextSibling !== tdAcoes0) {
+              tr.insertBefore(existing, tdAcoes0);
+            }
+          } catch (e) { }
+          return;
+        }
+        const td = document.createElement('td');
+        td.dataset.atpCol = 'conflita';
+        td.textContent = '';
         try {
-          const tds0 = Array.from(tr.children).filter(n => n && n.tagName === 'TD');
-          const tdAcoes0 = (function () {
+          const tds = Array.from(tr.children).filter(n => n && n.tagName === 'TD');
+          const tdAcoes = (function () {
             try {
-              if (!tds0.length) return null;
-
-              const byIcons = tds0.find(td => td !== existing && td.querySelector && td.querySelector('i.material-icons, .material-icons, .custom-switch'));
+              if (!tds.length) return null;
+              const byIcons = tds.find(x => x.querySelector && x.querySelector('i.material-icons, .material-icons, .custom-switch'));
               if (byIcons) return byIcons;
-              return tds0[tds0.length - 1];
+              return tds[tds.length - 1];
             } catch (e) { return null; }
           })();
-          if (tdAcoes0 && existing.nextSibling !== tdAcoes0) {
-            tr.insertBefore(existing, tdAcoes0);
-          }
-        } catch (e) { }
-        return;
-      }
-      const td = document.createElement('td');
-      td.dataset.atpCol = 'conflita';
-      td.textContent = '';
-      try {
-        const tds = Array.from(tr.children).filter(n => n && n.tagName === 'TD');
-        const tdAcoes = (function () {
-          try {
-            if (!tds.length) return null;
-            const byIcons = tds.find(x => x.querySelector && x.querySelector('i.material-icons, .material-icons, .custom-switch'));
-            if (byIcons) return byIcons;
-            return tds[tds.length - 1];
-          } catch (e) { return null; }
-        })();
-        if (tdAcoes) tr.insertBefore(td, tdAcoes);
-        else tr.appendChild(td);
-      } catch (e) { tr.appendChild(td); }
+          if (tdAcoes) tr.insertBefore(td, tdAcoes);
+          else tr.appendChild(td);
+        } catch (e) { tr.appendChild(td); }
+      });
     });
   } catch (e) { }
 }

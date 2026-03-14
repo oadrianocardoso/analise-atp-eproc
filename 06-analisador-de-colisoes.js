@@ -582,7 +582,16 @@ function render(table, rules, conflictsByRule) {
     for (const r of rules) {
       const tr = rowByNum.get(r.num);
       if (!tr) continue;
-      const confTd = tr.querySelector('td[data-atp-col="conflita"]');
+      let confTd = tr.querySelector('td[data-atp-col="conflita"]');
+      if (!confTd) {
+        confTd = document.createElement('td');
+        confTd.dataset.atpCol = 'conflita';
+        confTd.textContent = '';
+        const tds = Array.from(tr.querySelectorAll(':scope > td'));
+        const tdAcoes = tds.find(td => td.querySelector('i.material-icons, .material-icons, .custom-switch, input.custom-control-input')) || null;
+        if (tdAcoes && tdAcoes.parentNode === tr) tr.insertBefore(confTd, tdAcoes);
+        else tr.appendChild(confTd);
+      }
       if (!confTd) continue;
       const adj = conflictsByRule.get(r.num);
 

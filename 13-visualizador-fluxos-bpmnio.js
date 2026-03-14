@@ -309,6 +309,34 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const seeds = seedCandidates.length ? seedCandidates : (fallbackSeeds.length ? fallbackSeeds : (graph.nodeSet.size ? [Array.from(graph.nodeSet)[0]] : []));
     if (!seeds.length) throw new Error('Fluxo sem pontos de inicio.');
 
+    // Nivel do localizador no fluxo (quantidade de transicoes regra->saida a partir da entrada).
+    const locatorLevel = new Map();
+    const qLoc = [];
+    for (const s of seeds) {
+      const k = t(s || '');
+      if (!k || !graph.nodeSet.has(k) || locatorLevel.has(k)) continue;
+      locatorLevel.set(k, 0);
+      qLoc.push(k);
+    }
+    while (qLoc.length) {
+      const cur = qLoc.shift();
+      const base = Number(locatorLevel.get(cur) || 0);
+      const outs = graph.out.get(cur) || [];
+      for (const e of outs) {
+        const to = t(e && e.to || '');
+        if (!to || !graph.nodeSet.has(to)) continue;
+        const cand = base + 1;
+        const old = locatorLevel.get(to);
+        if (!Number.isFinite(old) || cand < old) {
+          locatorLevel.set(to, cand);
+          qLoc.push(to);
+        }
+      }
+    }
+    for (const k of graph.nodeSet) if (!locatorLevel.has(k)) locatorLevel.set(k, 0);
+    const locLevel = (k) => Number(locatorLevel.get(t(k || '')) || 0);
+    const locInCount = (k) => Number(graph.inD.get(t(k || '')) || 0);
+
     const startLane = lanePick(new Set(allPathIdx), 0);
     const startEl = { id: nextId('startEvent', startLane), type: 'startEvent', name: 'Inicio', doc: '', lane: startLane, stage: 0 };
     pushRef(startLane, startEl.id);
@@ -445,7 +473,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
 
     const flows = rawEdges.map((e) => ({ id: nextId('Flow', 0), a: e.a, b: e.b, nm: e.nm }));
 
-    // Compacta raias: remove lanes vazias e reindexa para evitar espaços verticais desnecessários.
+    // Compacta raias: remove lanes vazias e reindexa para evitar espacos verticais desnecessarios.
     const usedLaneIdx = Array.from(new Set(elements.map((e) => clamp(e.lane, 0, pathLaneCount - 1)))).sort((a, b) => a - b);
     const laneRemap = new Map();
     usedLaneIdx.forEach((oldIdx, newIdx) => laneRemap.set(oldIdx, newIdx));
@@ -469,66 +497,359 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const laneCount = Math.max(1, lanes.length);
 
     const laneX = 70, laneY0 = 70, laneH = 120, laneGap = 8, stageX0 = laneX + 170;
-    const stageStepBase = 250;
-    const stageStep = stageStepBase + 100;
-    const minNodeGap = 36;
+    const virtualColsPerFlow = 4;
+    const COL_ENTRY = 0, COL_DECISION = 1, COL_RULE = 2, COL_OUTPUT = 3;
+    const virtualColStep = 340; // Coluna larga o suficiente para task (280px) + respiro.
+    const columnIndexFor = (el) => {
+      if (!el || typeof el !== 'object') return 0;
+      if (el.type === 'startEvent') return -1;
+      if (el.type === 'exclusiveGateway') {
+        if (rootGw && el.id === rootGw.id) return 0.5;
+        return (locLevel(el.key) * virtualColsPerFlow) + COL_DECISION;
+      }
+      if (el.type === 'serviceTask') {
+        return (locLevel(el.from) * virtualColsPerFlow) + COL_RULE;
+      }
+      if (el.type === 'task' && t(el.key || '')) {
+        const k = t(el.key || '');
+        const lv = locLevel(k);
+        if ((locInCount(k) || 0) <= 0) return (lv * virtualColsPerFlow) + COL_ENTRY;
+        return (Math.max(0, lv - 1) * virtualColsPerFlow) + COL_OUTPUT;
+      }
+      if (el.type === 'endEvent') {
+        return (locLevel(el.key) * virtualColsPerFlow) + COL_OUTPUT + 0.65;
+      }
+      return Number(el.stage) || 0;
+    };
 
-    // Evita sobreposicao horizontal na mesma raia: se colidir, desloca para a direita.
-    const laneElements = new Map();
-    for (const e of elements) {
-      const li = clamp(e.lane, 0, laneCount - 1);
-      if (!laneElements.has(li)) laneElements.set(li, []);
-      laneElements.get(li).push(e);
+    // Mantem colunas fixas: resolve colisao movendo de raia (vertical), nao de coluna (horizontal).
+    const colById = new Map();
+    for (const e of elements) colById.set(e.id, Number(columnIndexFor(e)));
+    const colKey = (v) => String(Math.round((Number(v) || 0) * 100));
+    const occ = new Map(); // lane -> Set(colKey)
+    const hasOcc = (lane, cKey) => {
+      const s = occ.get(lane);
+      return !!(s && s.has(cKey));
+    };
+    const addOcc = (lane, cKey) => {
+      if (!occ.has(lane)) occ.set(lane, new Set());
+      occ.get(lane).add(cKey);
+    };
+    const pickLaneForCol = (desiredLane, cKey) => {
+      const d = clamp(desiredLane, 0, laneCount - 1);
+      if (!hasOcc(d, cKey)) return d;
+      for (let step = 1; step < laneCount; step++) {
+        const up = d - step;
+        if (up >= 0 && !hasOcc(up, cKey)) return up;
+        const dn = d + step;
+        if (dn < laneCount && !hasOcc(dn, cKey)) return dn;
+      }
+      return d;
+    };
+    const ordered = elements.slice().sort((a, b) => {
+      const ac = Number(colById.get(a.id) || 0), bc = Number(colById.get(b.id) || 0);
+      if (ac !== bc) return ac - bc;
+      const al = clamp(a.lane, 0, laneCount - 1), bl = clamp(b.lane, 0, laneCount - 1);
+      if (al !== bl) return al - bl;
+      return t(a.id).localeCompare(t(b.id), 'pt-BR');
+    });
+    for (const e of ordered) {
+      const cKey = colKey(colById.get(e.id));
+      const desired = clamp(e.lane, 0, laneCount - 1);
+      const picked = pickLaneForCol(desired, cKey);
+      e.lane = picked;
+      addOcc(picked, cKey);
     }
+    for (const ln of lanes) ln.refs = [];
+    for (const e of elements) pushRef(clamp(e.lane, 0, laneCount - 1), e.id);
+
     const xById = new Map();
     let maxRight = stageX0;
-    for (const arr of laneElements.values()) {
-      arr.sort((a, b) => {
-        const as = Number(a && a.stage) || 0;
-        const bs = Number(b && b.stage) || 0;
-        if (as !== bs) return as - bs;
-        return t(a && a.id || '').localeCompare(t(b && b.id || ''), 'pt-BR');
-      });
-      let prevRight = Number.NEGATIVE_INFINITY;
-      for (const el of arr) {
-        const d = dims(el.type);
-        const baseCx = Math.round(stageX0 + (Number(el.stage) || 0) * stageStep);
-        let cx = baseCx;
-        if (Number.isFinite(prevRight)) {
-          const minCx = Math.round(prevRight + minNodeGap + (d.w / 2));
-          if (cx < minCx) cx = minCx;
-        }
-        xById.set(el.id, cx);
-        prevRight = cx + (d.w / 2);
-        if (prevRight > maxRight) maxRight = prevRight;
-      }
+    for (const e of elements) {
+      const col = Number(colById.get(e.id) || 0);
+      const cx = Math.round(stageX0 + (col + 1) * virtualColStep);
+      xById.set(e.id, cx);
+      const d = dims(e.type);
+      const right = cx + (d.w / 2);
+      if (right > maxRight) maxRight = right;
     }
 
-    const laneW = Math.max(1500, Math.round(maxRight + 120));
-    const laneBounds = new Map();
-    for (const ln of lanes) laneBounds.set(ln.laneId, { x: laneX, y: laneY0 + ln.idx * (laneH + laneGap), w: laneW, h: laneH });
     const cyLane = (idx) => Math.round((laneY0 + idx * (laneH + laneGap)) + laneH / 2);
 
     const bounds = new Map();
     for (const e of elements) {
       const d = dims(e.type);
-      const cx = Math.round(Number(xById.get(e.id)) || (stageX0 + (Number(e.stage) || 0) * stageStep));
+      const cx = Math.round(Number(xById.get(e.id)) || stageX0);
       const cy = cyLane(clamp(e.lane, 0, laneCount - 1));
       bounds.set(e.id, { x: Math.round(cx - d.w / 2), y: Math.round(cy - d.h / 2), w: d.w, h: d.h });
     }
+    const obstaclePad = 10;
+    const allObstacles = Array.from(bounds.entries()).map(([id, b]) => ({
+      id,
+      x: b.x - obstaclePad,
+      y: b.y - obstaclePad,
+      w: b.w + obstaclePad * 2,
+      h: b.h + obstaclePad * 2
+    }));
+    const hasRectHit = (p1, p2, r) => {
+      const x1 = Number(p1 && p1.x) || 0;
+      const y1 = Number(p1 && p1.y) || 0;
+      const x2 = Number(p2 && p2.x) || 0;
+      const y2 = Number(p2 && p2.y) || 0;
+      if (x1 === x2) {
+        const x = x1, ya = Math.min(y1, y2), yb = Math.max(y1, y2);
+        return x >= r.x && x <= (r.x + r.w) && yb >= r.y && ya <= (r.y + r.h);
+      }
+      if (y1 === y2) {
+        const y = y1, xa = Math.min(x1, x2), xb = Math.max(x1, x2);
+        return y >= r.y && y <= (r.y + r.h) && xb >= r.x && xa <= (r.x + r.w);
+      }
+      const xa = Math.min(x1, x2), xb = Math.max(x1, x2), ya = Math.min(y1, y2), yb = Math.max(y1, y2);
+      return xb >= r.x && xa <= (r.x + r.w) && yb >= r.y && ya <= (r.y + r.h);
+    };
+    const isSegmentBlocked = (p1, p2, obstacles) => {
+      for (const r of obstacles) if (hasRectHit(p1, p2, r)) return true;
+      return false;
+    };
+    const normalizePts = (pts) => {
+      const out = [];
+      for (const p of pts || []) {
+        const np = { x: Math.round(Number(p && p.x) || 0), y: Math.round(Number(p && p.y) || 0) };
+        const last = out.length ? out[out.length - 1] : null;
+        if (!last || last.x !== np.x || last.y !== np.y) out.push(np);
+      }
+      return out;
+    };
+    const isPolylineClear = (pts, obstacles) => {
+      for (let i = 1; i < pts.length; i++) {
+        if (isSegmentBlocked(pts[i - 1], pts[i], obstacles)) return false;
+      }
+      return true;
+    };
+
     const way = new Map();
     for (const f of flows) {
       const sb = bounds.get(f.a), tb = bounds.get(f.b); if (!sb || !tb) continue;
-      const sx = Math.round(sb.x + sb.w), sy = Math.round(sb.y + sb.h / 2), tx = Math.round(tb.x), ty = Math.round(tb.y + tb.h / 2);
-      if (Math.abs(sy - ty) <= 2) way.set(f.id, [{ x: sx, y: sy }, { x: tx, y: ty }]);
-      else {
-        const mx = Math.round((sx + tx) / 2);
-        way.set(f.id, [{ x: sx, y: sy }, { x: mx, y: sy }, { x: mx, y: ty }, { x: tx, y: ty }]);
+      const obstacles = allObstacles.filter((o) => o.id !== f.a && o.id !== f.b);
+      const tryRoute = (pts) => {
+        const p = normalizePts(pts);
+        return isPolylineClear(p, obstacles) ? p : null;
+      };
+      const preferRight = tb.x >= sb.x;
+      const sourcePorts = preferRight
+        ? [
+            { x: sb.x + sb.w, y: sb.y + sb.h / 2, pen: 0 },
+            { x: sb.x + sb.w / 2, y: sb.y, pen: 35 },
+            { x: sb.x + sb.w / 2, y: sb.y + sb.h, pen: 35 },
+            { x: sb.x, y: sb.y + sb.h / 2, pen: 70 }
+          ]
+        : [
+            { x: sb.x, y: sb.y + sb.h / 2, pen: 0 },
+            { x: sb.x + sb.w / 2, y: sb.y, pen: 35 },
+            { x: sb.x + sb.w / 2, y: sb.y + sb.h, pen: 35 },
+            { x: sb.x + sb.w, y: sb.y + sb.h / 2, pen: 70 }
+          ];
+      const targetPorts = preferRight
+        ? [
+            { x: tb.x, y: tb.y + tb.h / 2, pen: 0 },
+            { x: tb.x + tb.w / 2, y: tb.y, pen: 35 },
+            { x: tb.x + tb.w / 2, y: tb.y + tb.h, pen: 35 },
+            { x: tb.x + tb.w, y: tb.y + tb.h / 2, pen: 70 }
+          ]
+        : [
+            { x: tb.x + tb.w, y: tb.y + tb.h / 2, pen: 0 },
+            { x: tb.x + tb.w / 2, y: tb.y, pen: 35 },
+            { x: tb.x + tb.w / 2, y: tb.y + tb.h, pen: 35 },
+            { x: tb.x, y: tb.y + tb.h / 2, pen: 70 }
+          ];
+
+      let best = null;
+      let bestScore = Number.POSITIVE_INFINITY;
+      const evalRoute = (pts, scoreBase) => {
+        const rt = tryRoute(pts);
+        if (!rt) return;
+        let len = 0;
+        for (let i = 1; i < rt.length; i++) {
+          len += Math.abs(rt[i].x - rt[i - 1].x) + Math.abs(rt[i].y - rt[i - 1].y);
+        }
+        const bends = Math.max(0, rt.length - 2);
+        const score = scoreBase + len + bends * 20;
+        if (score < bestScore) { bestScore = score; best = rt; }
+      };
+
+      for (const sp of sourcePorts) {
+        for (const tp of targetPorts) {
+          const S = { x: Math.round(sp.x), y: Math.round(sp.y) };
+          const T = { x: Math.round(tp.x), y: Math.round(tp.y) };
+          const base = (Number(sp.pen) || 0) + (Number(tp.pen) || 0);
+          if (S.x === T.x || S.y === T.y) {
+            evalRoute([S, T], base);
+          } else {
+            evalRoute([S, { x: T.x, y: S.y }, T], base);
+            evalRoute([S, { x: S.x, y: T.y }, T], base);
+          }
+        }
       }
+
+      if (!best) {
+        // Fallback: rota ortogonal simples caso nao haja L viavel sem colisao.
+        const sx = Math.round(sb.x + sb.w), sy = Math.round(sb.y + sb.h / 2);
+        const tx = Math.round(tb.x), ty = Math.round(tb.y + tb.h / 2);
+        best = (Math.abs(sy - ty) <= 2)
+          ? [{ x: sx, y: sy }, { x: tx, y: ty }]
+          : [{ x: sx, y: sy }, { x: tx, y: sy }, { x: tx, y: ty }];
+      }
+      way.set(f.id, normalizePts(best));
     }
 
+    // Delimita visualmente cada ramo apos um gateway de decisao usando Group (borda pontilhada).
+    // A montagem usa os caminhos enumerados para manter hierarquia: ramo interno fica dentro do ramo pai.
+    const addBranchId = (set, id) => {
+      const sid = t(id || '');
+      if (!sid) return;
+      set.add(sid);
+    };
+    const branchIdsByKey = new Map(); // `${from}>>>${ruleKey}` -> Set(elementId)
+    const ensureBranchSet = (k) => {
+      if (!branchIdsByKey.has(k)) branchIdsByKey.set(k, new Set());
+      return branchIdsByKey.get(k);
+    };
+    for (const path of paths) {
+      const toks = Array.isArray(path && path.tokens) ? path.tokens : [];
+      for (let i = 0; i < toks.length; i++) {
+        const tk = toks[i];
+        if (!tk || tk.type !== 'rule') continue;
+        const fromKey = t(tk.from || '');
+        const outsFrom = graph.out.get(fromKey) || [];
+        if (outsFrom.length <= 1) continue; // nao eh bifurcacao real
+        const branchKey = `${fromKey}>>>${ruleTokKey(tk)}`;
+        const ids = ensureBranchSet(branchKey);
+        for (let j = i; j < toks.length; j++) {
+          const tj = toks[j];
+          if (!tj || typeof tj !== 'object') continue;
+          if (tj.type === 'rule') {
+            const rn = ruleNodes.get(ruleTokKey(tj));
+            if (rn && rn.id) addBranchId(ids, rn.id);
+            continue;
+          }
+          if (tj.type === 'locator') {
+            const lk = t(tj.key || '');
+            const ln = locNodes.get(lk);
+            if (ln && ln.id) addBranchId(ids, ln.id);
+            const innerGw = gwNodes.get(lk);
+            if (innerGw && innerGw.id) addBranchId(ids, innerGw.id);
+          }
+        }
+        const lastTok = toks.length ? toks[toks.length - 1] : null;
+        if (lastTok && lastTok.type === 'locator') {
+          const ek = t(lastTok.key || '');
+          const ee = endNodes.get(ek);
+          if (ee && ee.id) addBranchId(ids, ee.id);
+        }
+      }
+    }
+    // Mantem em cada ramo apenas a parte exclusiva em relacao aos ramos irmaos da mesma decisao.
+    const branchUniqueIdsByKey = new Map();
+    for (const [from] of gwNodes.entries()) {
+      const outs = graph.out.get(from) || [];
+      const keys = outs.map((e) => `${t(from)}>>>${ruleEdgeKey(e)}`);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        const base = branchIdsByKey.get(k) || new Set();
+        const others = new Set();
+        for (let j = 0; j < keys.length; j++) {
+          if (j === i) continue;
+          const o = branchIdsByKey.get(keys[j]);
+          if (!o) continue;
+          for (const id of o) others.add(id);
+        }
+        const uniq = new Set();
+        for (const id of base) if (!others.has(id)) uniq.add(id);
+        branchUniqueIdsByKey.set(k, uniq.size ? uniq : base);
+      }
+    }
+    const groupPadX = 26;
+    const groupPadY = 14;
+    const branchGroups = [];
+    const decisionGroups = [];
+    for (const [from, gw] of gwNodes.entries()) {
+      const outs = graph.out.get(from) || [];
+      const branchBoxesForDecision = [];
+      let branchIdx = 0;
+      for (const e of outs) {
+        const branchKey = `${t(from)}>>>${ruleEdgeKey(e)}`;
+        const ids = branchUniqueIdsByKey.get(branchKey) || branchIdsByKey.get(branchKey);
+        if (!ids || !ids.size) continue;
+        let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
+        for (const id of ids) {
+          const b = bounds.get(id);
+          if (!b) continue;
+          minX = Math.min(minX, Number(b.x) || 0);
+          minY = Math.min(minY, Number(b.y) || 0);
+          maxX = Math.max(maxX, (Number(b.x) || 0) + (Number(b.w) || 0));
+          maxY = Math.max(maxY, (Number(b.y) || 0) + (Number(b.h) || 0));
+        }
+        if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) continue;
+        branchIdx++;
+        const groupLane = clamp(gw && gw.lane, 0, laneCount - 1);
+        const groupId = nextId('Group', groupLane);
+        const catValId = nextId('CategoryValue', groupLane);
+        const catId = nextId('Category', groupLane);
+        const ruleLabel = t(ruleNum(e.rule || {}));
+        const label = ruleLabel ? (`Ramo Regra ${ruleLabel}`) : (`Ramo ${String(branchIdx)}`);
+        const gwB = bounds.get(gw && gw.id);
+        const startAfterGw = gwB ? Math.round((Number(gwB.x) || 0) + (Number(gwB.w) || 0) + 12) : Math.round(minX - groupPadX);
+        const x0 = Math.max(Math.round(minX - groupPadX), startAfterGw);
+        const x1 = Math.round(maxX + groupPadX);
+        const w0 = Math.max(80, x1 - x0);
+        const bnd = {
+          x: x0,
+          y: Math.round(minY - groupPadY),
+          w: w0,
+          h: Math.round((maxY - minY) + (groupPadY * 2))
+        };
+        branchGroups.push({
+          id: groupId,
+          catValId,
+          catId,
+          label,
+          bounds: bnd
+        });
+        branchBoxesForDecision.push(bnd);
+      }
+      if (branchBoxesForDecision.length) {
+        let dMinX = Number.POSITIVE_INFINITY, dMinY = Number.POSITIVE_INFINITY;
+        let dMaxX = Number.NEGATIVE_INFINITY, dMaxY = Number.NEGATIVE_INFINITY;
+        for (const b of branchBoxesForDecision) {
+          dMinX = Math.min(dMinX, Number(b.x) || 0);
+          dMinY = Math.min(dMinY, Number(b.y) || 0);
+          dMaxX = Math.max(dMaxX, (Number(b.x) || 0) + (Number(b.w) || 0));
+          dMaxY = Math.max(dMaxY, (Number(b.y) || 0) + (Number(b.h) || 0));
+        }
+        if (Number.isFinite(dMinX) && Number.isFinite(dMinY) && Number.isFinite(dMaxX) && Number.isFinite(dMaxY)) {
+          const groupLane = clamp(gw && gw.lane, 0, laneCount - 1);
+          const gId = nextId('Group', groupLane);
+          const gvId = nextId('CategoryValue', groupLane);
+          const gcId = nextId('Category', groupLane);
+          decisionGroups.push({
+            id: gId,
+            catValId: gvId,
+            catId: gcId,
+            label: `Ramos da Decisao ${t(from) || ''}`.trim(),
+            bounds: {
+              x: Math.round(dMinX - 10),
+              y: Math.round(dMinY - 10),
+              w: Math.round((dMaxX - dMinX) + 20),
+              h: Math.round((dMaxY - dMinY) + 20)
+            }
+          });
+        }
+      }
+    }
+    const allGroups = []; // grupos pontilhados desativados
+
     const processId = `Process_ATP_Fluxo_${String(flowIdx + 1).padStart(2, '0')}_${hash(JSON.stringify(flow || {}))}`;
-    const laneSetId = `LaneSet_${hash(processId)}`;
     const x = [];
     x.push('<?xml version="1.0" encoding="UTF-8"?>');
     x.push('<bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"');
@@ -539,13 +860,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     x.push(`  id="Defs_${hash(processId)}"`);
     x.push(`  targetNamespace="http://atp.eproc/fluxos/${hash(processId)}">`);
     x.push(`  <bpmn:process id="${processId}" isExecutable="false">`);
-    x.push(`    <bpmn:laneSet id="${laneSetId}">`);
-    for (const ln of lanes) {
-      x.push(`      <bpmn:lane id="${ln.laneId}" name="${esc(ln.laneName)}">`);
-      for (const r of ln.refs) x.push(`        <bpmn:flowNodeRef>${r}</bpmn:flowNodeRef>`);
-      x.push('      </bpmn:lane>');
-    }
-    x.push('    </bpmn:laneSet>');
     for (const e of elements) {
       if (e.type === 'startEvent') x.push(`    <bpmn:startEvent id="${e.id}" name="${esc(e.name)}" />`);
       else if (e.type === 'endEvent') x.push(`    <bpmn:endEvent id="${e.id}" name="${esc(e.name)}" />`);
@@ -556,16 +870,23 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       } else if (e.type === 'exclusiveGateway') x.push(`    <bpmn:exclusiveGateway id="${e.id}" name="${esc(e.name || 'Decisao')}" />`);
       else x.push(`    <bpmn:task id="${e.id}" name="${esc(e.name)}" />`);
     }
+    for (const g of allGroups) x.push(`    <bpmn:group id="${g.id}" categoryValueRef="${g.catValId}" />`);
     for (const f of flows) {
       const nm = f.nm ? ` name="${esc(f.nm)}"` : '';
       x.push(`    <bpmn:sequenceFlow id="${f.id}" sourceRef="${f.a}" targetRef="${f.b}"${nm} />`);
     }
     x.push('  </bpmn:process>');
+    for (const g of allGroups) {
+      x.push(`  <bpmn:category id="${g.catId}">`);
+      x.push(`    <bpmn:categoryValue id="${g.catValId}" value="${esc(g.label)}" />`);
+      x.push('  </bpmn:category>');
+    }
     x.push(`  <bpmndi:BPMNDiagram id="BPMNDiagram_${processId}">`);
     x.push(`    <bpmndi:BPMNPlane id="BPMNPlane_${processId}" bpmnElement="${processId}">`);
-    for (const ln of lanes) {
-      const b = laneBounds.get(ln.laneId); if (!b) continue;
-      x.push(`      <bpmndi:BPMNShape id="DI_${ln.laneId}" bpmnElement="${ln.laneId}" isHorizontal="true">`);
+    for (const g of allGroups) {
+      const b = g.bounds || null;
+      if (!b) continue;
+      x.push(`      <bpmndi:BPMNShape id="DI_${g.id}" bpmnElement="${g.id}">`);
       x.push(`        <dc:Bounds x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" />`);
       x.push('      </bpmndi:BPMNShape>');
     }
@@ -589,7 +910,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const safe = t(starts[0] || 'inicio').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'inicio';
     return {
       xml: x.join('\n'),
-      filename: `fluxo_${String(flowIdx + 1).padStart(2, '0')}_${safe}_arvore_pool_virtual.bpmn`,
+      filename: `fluxo_${String(flowIdx + 1).padStart(2, '0')}_${safe}_arvore_alinhada.bpmn`,
       pathsCount: paths.length
     };
   }
@@ -624,7 +945,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const top = document.createElement('div'); top.className = 'atp-map-top';
     const titleWrap = document.createElement('div');
     const title = document.createElement('div'); title.className = 'atp-map-title'; title.textContent = 'Visualizador de Fluxos (BPMN.io - Arvore de Decisao)';
-    const sub = document.createElement('div'); sub.className = 'atp-map-sub'; sub.textContent = 'Cada caminho vai para sua pool virtual (raia dedicada), sem mistura de nos entre caminhos. Clique em um item para destacar impacto de 1 nivel.';
+    const sub = document.createElement('div'); sub.className = 'atp-map-sub'; sub.textContent = 'Cada decisao cria caixas pontilhadas por ramo, com leitura da esquerda para direita e de cima para baixo. Clique em um item para destacar impacto de 1 nivel.';
     titleWrap.appendChild(title); titleWrap.appendChild(sub);
     const actions = document.createElement('div'); actions.className = 'atp-map-actions';
 
@@ -892,3 +1213,4 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
   try { console.log('[ATP][OK] 13-visualizador-fluxos-bpmnio.js inicializado'); } catch (e) {}
 })();
 ;
+

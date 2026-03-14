@@ -1202,9 +1202,7 @@ function recalc(table) {
       return;
     }
 
-    if (!(table.classList && table.classList.contains('dataTable')) && !table.closest('.dataTables_wrapper')) {
-      ensureColumns(table);
-    }
+    ensureColumns(table);
     const cols = mapColumns(table);
     updateAllRemoverLupasByTooltipText(table);
     replacePlainRemoverTextInTable(table, cols);
