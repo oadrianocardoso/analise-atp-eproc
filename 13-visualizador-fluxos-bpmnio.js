@@ -378,7 +378,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         } else {
           branchLaneIdx = clamp(ruleEl.lane, 0, Math.max(0, lanes.length - 1));
         }
-        pushEdge(gwEl.id, ruleEl.id, num ? `Regra ${num}` : '');
+        pushEdge(gwEl.id, ruleEl.id, '');
 
         if (!toKey || !graph.nodeSet.has(toKey)) {
           const endInvalid = createEl('endEvent', branchLaneIdx, startCol + 3, 'Fim', '');
@@ -413,12 +413,11 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       for (const seed of seeds) {
         const seedLane = createLane(`Pool Virtual Inicio ${seed}`);
         const branch = buildBranchFromLocator(seed, seedLane, 2, new Set(), 0);
-        pushEdge(rootGw.id, branch.entryId, seed);
+        pushEdge(rootGw.id, branch.entryId, '');
         maxCol = Math.max(maxCol, Number(branch.maxCol) || 2);
       }
     }
 
-    const laneX = 70;
     const laneY0 = 70;
     const laneH = 120;
     const laneGap = 8;
@@ -433,18 +432,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       const d = dims(e.type);
       maxRight = Math.max(maxRight, cx + (d.w / 2));
     }
-    const laneW = Math.max(1800, Math.round(maxRight + 120));
-
-    const laneBounds = new Map();
-    for (const ln of lanes) {
-      laneBounds.set(ln.laneId, {
-        x: laneX,
-        y: laneY0 + ln.idx * (laneH + laneGap),
-        w: laneW,
-        h: laneH
-      });
-    }
-
     const cyLane = (idx) => Math.round((laneY0 + idx * (laneH + laneGap)) + laneH / 2);
     const bounds = new Map();
     for (const e of elements) {
@@ -571,7 +558,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     }
 
     const processId = `Process_ATP_Fluxo_${String(flowIdx + 1).padStart(2, '0')}_${hash(JSON.stringify(flow || {}))}`;
-    const laneSetId = `LaneSet_${hash(processId)}`;
     const x = [];
     x.push('<?xml version="1.0" encoding="UTF-8"?>');
     x.push('<bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"');
@@ -582,13 +568,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     x.push(`  id="Defs_${hash(processId)}"`);
     x.push(`  targetNamespace="http://atp.eproc/fluxos/${hash(processId)}">`);
     x.push(`  <bpmn:process id="${processId}" isExecutable="false">`);
-    x.push(`    <bpmn:laneSet id="${laneSetId}">`);
-    for (const ln of lanes) {
-      x.push(`      <bpmn:lane id="${ln.laneId}" name="${esc(ln.laneName)}">`);
-      for (const r of ln.refs) x.push(`        <bpmn:flowNodeRef>${r}</bpmn:flowNodeRef>`);
-      x.push('      </bpmn:lane>');
-    }
-    x.push('    </bpmn:laneSet>');
 
     for (const e of elements) {
       if (e.type === 'startEvent') x.push(`    <bpmn:startEvent id="${e.id}" name="${esc(e.name)}" />`);
@@ -604,21 +583,11 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       }
     }
 
-    for (const f of flows) {
-      const nm = f.nm ? ` name="${esc(f.nm)}"` : '';
-      x.push(`    <bpmn:sequenceFlow id="${f.id}" sourceRef="${f.a}" targetRef="${f.b}"${nm} />`);
-    }
+    for (const f of flows) x.push(`    <bpmn:sequenceFlow id="${f.id}" sourceRef="${f.a}" targetRef="${f.b}" />`);
 
     x.push('  </bpmn:process>');
     x.push(`  <bpmndi:BPMNDiagram id="BPMNDiagram_${processId}">`);
     x.push(`    <bpmndi:BPMNPlane id="BPMNPlane_${processId}" bpmnElement="${processId}">`);
-
-    for (const ln of lanes) {
-      const b = laneBounds.get(ln.laneId); if (!b) continue;
-      x.push(`      <bpmndi:BPMNShape id="DI_${ln.laneId}" bpmnElement="${ln.laneId}" isHorizontal="true">`);
-      x.push(`        <dc:Bounds x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" />`);
-      x.push('      </bpmndi:BPMNShape>');
-    }
 
     for (const e of elements) {
       const b = bounds.get(e.id); if (!b) continue;
