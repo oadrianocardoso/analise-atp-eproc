@@ -552,33 +552,28 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         const p = normalizePts(pts);
         return (isPolylineClear(p, obstacles) && isPolylineFreeFromLines(p)) ? p : null;
       };
-      const preferRight = tb.x >= sb.x;
-      const sourcePorts = preferRight
-        ? [
-            { x: sb.x + sb.w, y: sb.y + sb.h / 2, pen: 0 },
-            { x: sb.x + sb.w / 2, y: sb.y, pen: 35 },
-            { x: sb.x + sb.w / 2, y: sb.y + sb.h, pen: 35 },
-            { x: sb.x, y: sb.y + sb.h / 2, pen: 70 }
-          ]
-        : [
-            { x: sb.x, y: sb.y + sb.h / 2, pen: 0 },
-            { x: sb.x + sb.w / 2, y: sb.y, pen: 35 },
-            { x: sb.x + sb.w / 2, y: sb.y + sb.h, pen: 35 },
-            { x: sb.x + sb.w, y: sb.y + sb.h / 2, pen: 70 }
-          ];
-      const targetPorts = preferRight
-        ? [
-            { x: tb.x, y: tb.y + tb.h / 2, pen: 0 },
-            { x: tb.x + tb.w / 2, y: tb.y, pen: 35 },
-            { x: tb.x + tb.w / 2, y: tb.y + tb.h, pen: 35 },
-            { x: tb.x + tb.w, y: tb.y + tb.h / 2, pen: 70 }
-          ]
-        : [
-            { x: tb.x + tb.w, y: tb.y + tb.h / 2, pen: 0 },
-            { x: tb.x + tb.w / 2, y: tb.y, pen: 35 },
-            { x: tb.x + tb.w / 2, y: tb.y + tb.h, pen: 35 },
-            { x: tb.x, y: tb.y + tb.h / 2, pen: 70 }
-          ];
+      const scx = sb.x + (sb.w / 2), scy = sb.y + (sb.h / 2);
+      const tcx = tb.x + (tb.w / 2), tcy = tb.y + (tb.h / 2);
+      const dxCT = tcx - scx, dyCT = tcy - scy;
+      const portPenalty = (side, isSource) => {
+        // Menor penalidade para o lado naturalmente "apontado" para o alvo.
+        if (side === 'right') return isSource ? (dxCT >= 0 ? 0 : 55) : (dxCT >= 0 ? 55 : 0);
+        if (side === 'left') return isSource ? (dxCT <= 0 ? 0 : 55) : (dxCT <= 0 ? 55 : 0);
+        if (side === 'bottom') return isSource ? (dyCT >= 0 ? 8 : 48) : (dyCT >= 0 ? 48 : 8);
+        return isSource ? (dyCT <= 0 ? 8 : 48) : (dyCT <= 0 ? 48 : 8); // top
+      };
+      const sourcePorts = [
+        { x: sb.x + sb.w, y: sb.y + sb.h / 2, side: 'right' },
+        { x: sb.x, y: sb.y + sb.h / 2, side: 'left' },
+        { x: sb.x + sb.w / 2, y: sb.y, side: 'top' },
+        { x: sb.x + sb.w / 2, y: sb.y + sb.h, side: 'bottom' }
+      ].map((p) => ({ ...p, pen: portPenalty(p.side, true) }));
+      const targetPorts = [
+        { x: tb.x, y: tb.y + tb.h / 2, side: 'left' },
+        { x: tb.x + tb.w, y: tb.y + tb.h / 2, side: 'right' },
+        { x: tb.x + tb.w / 2, y: tb.y, side: 'top' },
+        { x: tb.x + tb.w / 2, y: tb.y + tb.h, side: 'bottom' }
+      ].map((p) => ({ ...p, pen: portPenalty(p.side, false) }));
 
       let best = null;
       let bestScore = Number.POSITIVE_INFINITY;
@@ -608,6 +603,12 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
             }
             for (const dy of detours) {
               evalRoute([S, { x: S.x, y: S.y + dy }, { x: T.x, y: S.y + dy }, T], base + Math.abs(dy));
+            }
+            for (const dx of detours) {
+              evalRoute([S, { x: T.x + dx, y: S.y }, { x: T.x + dx, y: T.y }, T], base + Math.abs(dx) + 8);
+            }
+            for (const dy of detours) {
+              evalRoute([S, { x: S.x, y: T.y + dy }, { x: T.x, y: T.y + dy }, T], base + Math.abs(dy) + 8);
             }
           }
         }
