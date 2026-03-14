@@ -205,384 +205,202 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const fluxos = Array.isArray(data && data.fluxos) ? data.fluxos : [];
     const flow = fluxos[flowIdx];
     if (!flow) throw new Error('Fluxo selecionado nao existe.');
+
     const graph = buildGraph(flow, toMap(data && data.byFrom));
-    const paths = enumeratePaths(flow, graph);
-    if (!paths.length) throw new Error('Fluxo sem caminhos visualizaveis.');
+    if (!graph || !graph.nodeSet || !graph.nodeSet.size) throw new Error('Fluxo sem nos visualizaveis.');
+
+    const seedCandidates = (Array.isArray(flow.starts) ? flow.starts : []).map(t).filter((k) => graph.nodeSet.has(k));
+    const fallbackSeeds = Array.from(graph.nodeSet)
+      .filter((k) => (graph.inD.get(k) || 0) === 0)
+      .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    const seeds = seedCandidates.length
+      ? seedCandidates
+      : (fallbackSeeds.length ? fallbackSeeds : [Array.from(graph.nodeSet)[0]]);
+    if (!seeds.length) throw new Error('Fluxo sem pontos de inicio.');
 
     let seqId = 0;
     const nextId = (p, laneNo) => `${p}_${String(flowIdx + 1).padStart(2, '0')}_${String((laneNo | 0) + 1).padStart(2, '0')}_${++seqId}`;
-    const pathLaneCount = Math.max(1, paths.length);
-    let lanes = paths.map((path, i) => ({
-      idx: i,
-      laneId: nextId('Lane', i),
-      laneName: `Pool Virtual ${String(i + 1).padStart(2, '0')}`,
-      path,
-      refs: []
-    }));
 
-    const ensureSet = (m, k) => {
-      if (!m.has(k)) m.set(k, new Set());
-      return m.get(k);
-    };
-    const locPathSet = new Map();
-    const rulePathSet = new Map();
-    const edgeSig = (from, to, rule, implied, impliedLabel) =>
-      `${t(from)}>>>${t(to)}>>>${ruleNum(rule)}>>>${implied ? '1' : '0'}>>>${t(impliedLabel || '')}`;
-    const ruleTokKey = (tk) => {
-      const n = t(tk && tk.ruleNum || '');
-      if (n) return 'REGRA:' + n;
-      return 'EDGE:' + edgeSig(tk && tk.from, tk && tk.to, { num: tk && tk.ruleNum }, !!(tk && tk.implied), tk && tk.impliedLabel);
-    };
-    const ruleEdgeKey = (e) => {
-      const n = t(ruleNum(e && e.rule));
-      if (n) return 'REGRA:' + n;
-      return 'EDGE:' + edgeSig(e && e.from, e && e.to, e && e.rule, !!(e && e.implied), e && e.impliedLabel);
-    };
-    for (let p = 0; p < paths.length; p++) {
-      const tokens = Array.isArray(paths[p] && paths[p].tokens) ? paths[p].tokens : [];
-      for (const tk of tokens) {
-        if (!tk || typeof tk !== 'object') continue;
-        if (tk.type === 'locator') {
-          const k = t(tk.key || '');
-          if (k) ensureSet(locPathSet, k).add(p);
-        } else if (tk.type === 'rule') {
-          ensureSet(rulePathSet, ruleTokKey(tk)).add(p);
-        }
-      }
-    }
-
-    const allPathIdx = paths.map((_, i) => i);
-    const lanePick = (setLike, fb) => {
-      const arr = sortNums(Array.from(setLike || []));
-      return clamp(avg(arr, fb), 0, pathLaneCount - 1);
+    const lanes = [];
+    const createLane = (name) => {
+      const idx = lanes.length;
+      const ln = {
+        idx,
+        laneId: nextId('Lane', idx),
+        laneName: t(name || `Pool Virtual ${String(idx + 1).padStart(2, '0')}`),
+        refs: []
+      };
+      lanes.push(ln);
+      return idx;
     };
     const pushRef = (laneIdx, id) => {
       const lane = lanes[laneIdx];
-      if (!lane) return;
+      if (!lane || !id) return;
       if (!lane.refs.includes(id)) lane.refs.push(id);
     };
 
-    const locNodes = new Map();
-    for (const key of Array.from(graph.nodeSet).sort((a, b) => a.localeCompare(b, 'pt-BR'))) {
-      const lane = lanePick(locPathSet.get(key), 0);
-      const id = nextId('locator', lane);
-      const el = { id, type: 'task', name: `Localizador: ${key}`, doc: '', lane, stage: 1, key };
-      locNodes.set(key, el);
-      pushRef(lane, id);
-    }
+    const elements = [];
+    const flows = [];
+    const edgeSet = new Set();
+    const pushEdge = (a, b, nm) => {
+      const aa = t(a || '');
+      const bb = t(b || '');
+      if (!aa || !bb) return;
+      const nn = t(nm || '');
+      const sig = `${aa}>>>${bb}>>>${nn}`;
+      if (edgeSet.has(sig)) return;
+      edgeSet.add(sig);
+      flows.push({ id: nextId('Flow', 0), a: aa, b: bb, nm: nn });
+    };
 
-    const ruleNodes = new Map();
-    for (const from of graph.nodeSet) {
-      const outs = graph.out.get(from) || [];
+    const createEl = (type, lane, col, name, doc, extra) => {
+      const laneIdx = clamp(lane, 0, Math.max(0, lanes.length - 1));
+      const prefix = type === 'startEvent' ? 'startEvent'
+        : type === 'endEvent' ? 'endEvent'
+          : type === 'exclusiveGateway' ? 'exclusiveGateway'
+            : type === 'serviceTask' ? 'rule'
+              : 'locator';
+      const el = Object.assign({
+        id: nextId(prefix, laneIdx),
+        type,
+        name: t(name || ''),
+        doc: t(doc || ''),
+        lane: laneIdx,
+        col: Math.max(0, Number(col) || 0)
+      }, extra || {});
+      elements.push(el);
+      pushRef(laneIdx, el.id);
+      return el;
+    };
+
+    const branchMemoKey = (loc, trail) => `${t(loc || '')}::${Array.from(trail || []).join('>')}`;
+    const branchMemo = new Set();
+
+    const buildBranchFromLocator = (locKey, laneIdx, startCol, trail, depth) => {
+      const lk = t(locKey || '');
+      const safeTrail = trail instanceof Set ? trail : new Set();
+      const memoK = branchMemoKey(lk, safeTrail);
+      if (branchMemo.has(memoK) || depth > MAX_DEPTH) {
+        const cut = createEl('task', laneIdx, startCol, 'TRUNCADO (limite de profundidade)', 'Fluxo interrompido por seguranca de visualizacao.');
+        const endCut = createEl('endEvent', laneIdx, startCol + 1, 'Fim', '');
+        pushEdge(cut.id, endCut.id, '');
+        return { entryId: cut.id, maxCol: startCol + 1 };
+      }
+      branchMemo.add(memoK);
+
+      const locEl = createEl('task', laneIdx, startCol, `Localizador: ${lk}`, '', { key: lk });
+      const gwEl = createEl('exclusiveGateway', laneIdx, startCol + 1, 'Decisao', '', { key: lk });
+      pushEdge(locEl.id, gwEl.id, '');
+
+      const outs = (graph.out.get(lk) || []).slice();
+      if (!outs.length) {
+        const endEl = createEl('endEvent', laneIdx, startCol + 2, 'Fim', '', { key: lk });
+        pushEdge(gwEl.id, endEl.id, '');
+        return { entryId: locEl.id, maxCol: startCol + 2 };
+      }
+
+      let maxCol = startCol + 2;
+      const nextTrail = new Set(safeTrail);
+      nextTrail.add(lk);
+      let branchPos = 0;
+
       for (const e of outs) {
-        const sig = ruleEdgeKey(e);
-        if (ruleNodes.has(sig)) continue;
-        const lane = lanePick(rulePathSet.get(sig) || locPathSet.get(from), 0);
-        const num = ruleNum(e.rule);
-        const name = num ? `REGRA ${num}` : (t(e.impliedLabel || '') || 'Regra de Continuidade');
-        const doc = [
-          `REMOVER: ${t(e.from)}`,
-          `INCLUIR: ${t(e.to)}`,
-          e.rule ? (`SE: ${t(ruleCond(e.rule))}`) : '',
-          e.rule ? (`ACAO: ${t(ruleAction(e.rule))}`) : ''
+        branchPos++;
+        const toKey = t(e && e.to || '');
+        const num = t(ruleNum(e && e.rule));
+        const ruleName = num ? `REGRA ${num}` : (t(e && e.impliedLabel || '') || `RAMO ${branchPos}`);
+        const ruleDoc = [
+          e && e.from ? (`REMOVER: ${t(e.from)}`) : '',
+          e && e.to ? (`INCLUIR: ${t(e.to)}`) : '',
+          e && e.rule ? (`SE: ${t(ruleCond(e.rule))}`) : '',
+          e && e.rule ? (`ACAO: ${t(ruleAction(e.rule))}`) : ''
         ].filter(Boolean).join(' | ');
-        const id = nextId('rule', lane);
-        const el = { id, type: 'serviceTask', name, doc, lane, stage: 2, sig, from: e.from, to: e.to };
-        ruleNodes.set(sig, el);
-        pushRef(lane, id);
-      }
-    }
 
-    const gwNodes = new Map();
-    for (const from of graph.nodeSet) {
-      const outs = graph.out.get(from) || [];
-      if (outs.length <= 1) continue;
-      const lane = lanePick(locPathSet.get(from), 0);
-      const id = nextId('exclusiveGateway', lane);
-      const el = { id, type: 'exclusiveGateway', name: 'Decisao', doc: '', lane, stage: 2, key: from };
-      gwNodes.set(from, el);
-      pushRef(lane, id);
-    }
+        const branchLaneName = num ? `Pool Virtual Regra ${num}` : `Pool Virtual Ramo ${branchPos}`;
+        const branchLaneIdx = createLane(branchLaneName);
+        const ruleEl = createEl('serviceTask', branchLaneIdx, startCol + 2, ruleName, ruleDoc, { from: t(e && e.from), to: toKey, ruleNum: num });
+        pushEdge(gwEl.id, ruleEl.id, num ? `Regra ${num}` : '');
 
-    const seedCandidates = (Array.isArray(flow.starts) ? flow.starts : []).map(t).filter((k) => graph.nodeSet.has(k));
-    const fallbackSeeds = Array.from(graph.nodeSet).filter((k) => (graph.inD.get(k) || 0) === 0).sort((a, b) => a.localeCompare(b, 'pt-BR'));
-    const seeds = seedCandidates.length ? seedCandidates : (fallbackSeeds.length ? fallbackSeeds : (graph.nodeSet.size ? [Array.from(graph.nodeSet)[0]] : []));
-    if (!seeds.length) throw new Error('Fluxo sem pontos de inicio.');
-
-    // Nivel do localizador no fluxo (quantidade de transicoes regra->saida a partir da entrada).
-    const locatorLevel = new Map();
-    const qLoc = [];
-    for (const s of seeds) {
-      const k = t(s || '');
-      if (!k || !graph.nodeSet.has(k) || locatorLevel.has(k)) continue;
-      locatorLevel.set(k, 0);
-      qLoc.push(k);
-    }
-    while (qLoc.length) {
-      const cur = qLoc.shift();
-      const base = Number(locatorLevel.get(cur) || 0);
-      const outs = graph.out.get(cur) || [];
-      for (const e of outs) {
-        const to = t(e && e.to || '');
-        if (!to || !graph.nodeSet.has(to)) continue;
-        const cand = base + 1;
-        const old = locatorLevel.get(to);
-        if (!Number.isFinite(old) || cand < old) {
-          locatorLevel.set(to, cand);
-          qLoc.push(to);
+        if (!toKey || !graph.nodeSet.has(toKey)) {
+          const endInvalid = createEl('endEvent', branchLaneIdx, startCol + 3, 'Fim', '');
+          pushEdge(ruleEl.id, endInvalid.id, '');
+          maxCol = Math.max(maxCol, startCol + 3);
+          continue;
         }
+
+        if (nextTrail.has(toKey)) {
+          const cycleEl = createEl('task', branchLaneIdx, startCol + 3, `CICLO para: ${toKey}`, 'Fluxo interrompido para evitar repeticao infinita.');
+          const endCycle = createEl('endEvent', branchLaneIdx, startCol + 4, 'Fim', '');
+          pushEdge(ruleEl.id, cycleEl.id, '');
+          pushEdge(cycleEl.id, endCycle.id, '');
+          maxCol = Math.max(maxCol, startCol + 4);
+          continue;
+        }
+
+        const child = buildBranchFromLocator(toKey, branchLaneIdx, startCol + 3, nextTrail, depth + 1);
+        pushEdge(ruleEl.id, child.entryId, '');
+        maxCol = Math.max(maxCol, Number(child.maxCol) || (startCol + 3));
       }
-    }
-    for (const k of graph.nodeSet) if (!locatorLevel.has(k)) locatorLevel.set(k, 0);
-    const locLevel = (k) => Number(locatorLevel.get(t(k || '')) || 0);
-    const locInCount = (k) => Number(graph.inD.get(t(k || '')) || 0);
 
-    const startLane = lanePick(new Set(allPathIdx), 0);
-    const startEl = { id: nextId('startEvent', startLane), type: 'startEvent', name: 'Inicio', doc: '', lane: startLane, stage: 0 };
-    pushRef(startLane, startEl.id);
-
-    let rootGw = null;
-    if (seeds.length > 1) {
-      const id = nextId('exclusiveGateway', startLane);
-      rootGw = { id, type: 'exclusiveGateway', name: 'Decisao', doc: '', lane: startLane, stage: 1 };
-      pushRef(startLane, id);
-    }
-
-    const endNodes = new Map();
-    for (const k of graph.nodeSet) {
-      const outs = graph.out.get(k) || [];
-      if (outs.length) continue;
-      const lane = lanePick(locPathSet.get(k), 0);
-      const id = nextId('endEvent', lane);
-      const el = { id, type: 'endEvent', name: 'Fim', doc: '', lane, stage: null, key: k };
-      endNodes.set(k, el);
-      pushRef(lane, id);
-    }
-
-    const rawEdges = [];
-    const rawEdgeSet = new Set();
-    const pushRawEdge = (a, b, nm) => {
-      if (!a || !b) return;
-      const nmT = t(nm || '');
-      const sig = `${t(a)}>>>${t(b)}>>>${nmT}`;
-      if (rawEdgeSet.has(sig)) return;
-      rawEdgeSet.add(sig);
-      rawEdges.push({ a, b, nm: nmT });
+      return { entryId: locEl.id, maxCol };
     };
 
-    if (rootGw) {
-      pushRawEdge(startEl.id, rootGw.id, '');
-      for (const k of seeds) pushRawEdge(rootGw.id, locNodes.get(k).id, k);
+    const rootLane = createLane('Pool Virtual Base');
+    const startEl = createEl('startEvent', rootLane, 0, 'Inicio', '');
+
+    let maxCol = 0;
+    if (seeds.length === 1) {
+      const branch = buildBranchFromLocator(seeds[0], rootLane, 1, new Set(), 0);
+      pushEdge(startEl.id, branch.entryId, '');
+      maxCol = Math.max(maxCol, Number(branch.maxCol) || 1);
     } else {
-      pushRawEdge(startEl.id, locNodes.get(seeds[0]).id, '');
-    }
-
-    for (const from of graph.nodeSet) {
-      const fromLoc = locNodes.get(from);
-      const outs = graph.out.get(from) || [];
-      if (!outs.length) continue;
-
-      if (outs.length > 1) {
-        const gw = gwNodes.get(from);
-        pushRawEdge(fromLoc.id, gw.id, '');
-        for (const e of outs) {
-          const sig = ruleEdgeKey(e);
-          const rn = ruleNodes.get(sig);
-          pushRawEdge(gw.id, rn.id, ruleNum(e.rule) ? (`Regra ${ruleNum(e.rule)}`) : '');
-          pushRawEdge(rn.id, locNodes.get(e.to).id, '');
-        }
-      } else {
-        const e = outs[0];
-        const sig = ruleEdgeKey(e);
-        const rn = ruleNodes.get(sig);
-        pushRawEdge(fromLoc.id, rn.id, '');
-        pushRawEdge(rn.id, locNodes.get(e.to).id, '');
+      const rootGw = createEl('exclusiveGateway', rootLane, 1, 'Decisao', '', { key: '__ROOT__' });
+      pushEdge(startEl.id, rootGw.id, '');
+      maxCol = 1;
+      for (const seed of seeds) {
+        const seedLane = createLane(`Pool Virtual Inicio ${seed}`);
+        const branch = buildBranchFromLocator(seed, seedLane, 2, new Set(), 0);
+        pushEdge(rootGw.id, branch.entryId, seed);
+        maxCol = Math.max(maxCol, Number(branch.maxCol) || 2);
       }
     }
 
-    for (const [k, endEl] of endNodes.entries()) pushRawEdge(locNodes.get(k).id, endEl.id, '');
-
-    const adj = new Map();
-    const addAdj = (a, b) => {
-      if (!adj.has(a)) adj.set(a, []);
-      adj.get(a).push(b);
-    };
-    for (const e of rawEdges) addAdj(e.a, e.b);
-
-    const stageById = new Map();
-    const setInf = (id) => stageById.set(id, Number.POSITIVE_INFINITY);
-    setInf(startEl.id);
-    if (rootGw) setInf(rootGw.id);
-    for (const e of locNodes.values()) setInf(e.id);
-    for (const e of gwNodes.values()) setInf(e.id);
-    for (const e of ruleNodes.values()) setInf(e.id);
-    for (const e of endNodes.values()) setInf(e.id);
-
-    stageById.set(startEl.id, 0);
-    const q = [startEl.id];
-    while (q.length) {
-      const cur = q.shift();
-      const base = stageById.get(cur);
-      if (!Number.isFinite(base)) continue;
-      const outs = adj.get(cur) || [];
-      for (const nxt of outs) {
-        const cand = base + 1;
-        const old = stageById.get(nxt);
-        if (!Number.isFinite(old) || cand < old) {
-          stageById.set(nxt, cand);
-          q.push(nxt);
-        }
-      }
-    }
-
-    for (const e of locNodes.values()) if (!Number.isFinite(stageById.get(e.id))) stageById.set(e.id, 1);
-    for (const e of gwNodes.values()) if (!Number.isFinite(stageById.get(e.id))) stageById.set(e.id, 2);
-    for (const e of ruleNodes.values()) if (!Number.isFinite(stageById.get(e.id))) stageById.set(e.id, 2);
-    if (rootGw && !Number.isFinite(stageById.get(rootGw.id))) stageById.set(rootGw.id, 1);
-
-    const nonEndStageSet = new Set();
-    for (const [id, st] of stageById.entries()) {
-      if (!Number.isFinite(st)) continue;
-      let isEnd = false;
-      for (const e of endNodes.values()) { if (e.id === id) { isEnd = true; break; } }
-      if (!isEnd) nonEndStageSet.add(st);
-    }
-    const sortedStages = Array.from(nonEndStageSet).sort((a, b) => a - b);
-    const remap = new Map();
-    sortedStages.forEach((s, i) => remap.set(s, i));
-    for (const [id, st] of Array.from(stageById.entries())) {
-      if (!Number.isFinite(st)) continue;
-      if (remap.has(st)) stageById.set(id, remap.get(st));
-    }
-
-    let maxStage = 0;
-    for (const [id, v] of stageById.entries()) {
-      let isEnd = false;
-      for (const e of endNodes.values()) { if (e.id === id) { isEnd = true; break; } }
-      if (isEnd) continue;
-      maxStage = Math.max(maxStage, Number(v) || 0);
-    }
-    const endStage = maxStage + 1;
-
-    const elements = [startEl];
-    if (rootGw) elements.push(rootGw);
-    for (const e of locNodes.values()) { e.stage = stageById.get(e.id) || 1; elements.push(e); }
-    for (const e of gwNodes.values()) { e.stage = stageById.get(e.id) || 2; elements.push(e); }
-    for (const e of ruleNodes.values()) { e.stage = stageById.get(e.id) || 2; elements.push(e); }
-    for (const e of endNodes.values()) { e.stage = endStage; elements.push(e); }
-
-    const flows = rawEdges.map((e) => ({ id: nextId('Flow', 0), a: e.a, b: e.b, nm: e.nm }));
-
-    // Compacta raias: remove lanes vazias e reindexa para evitar espacos verticais desnecessarios.
-    const usedLaneIdx = Array.from(new Set(elements.map((e) => clamp(e.lane, 0, pathLaneCount - 1)))).sort((a, b) => a - b);
-    const laneRemap = new Map();
-    usedLaneIdx.forEach((oldIdx, newIdx) => laneRemap.set(oldIdx, newIdx));
-
-    for (const e of elements) {
-      const oldIdx = clamp(e.lane, 0, pathLaneCount - 1);
-      e.lane = laneRemap.has(oldIdx) ? laneRemap.get(oldIdx) : 0;
-    }
-
-    lanes = usedLaneIdx.map((oldIdx, newIdx) => ({
-      idx: newIdx,
-      laneId: nextId('Lane', newIdx),
-      laneName: `Pool Virtual ${String(oldIdx + 1).padStart(2, '0')}`,
-      refs: []
-    }));
-    for (const e of elements) {
-      const laneObj = lanes[e.lane];
-      if (!laneObj) continue;
-      if (!laneObj.refs.includes(e.id)) laneObj.refs.push(e.id);
-    }
-    const laneCount = Math.max(1, lanes.length);
-
-    const laneX = 70, laneY0 = 70, laneH = 120, laneGap = 8, stageX0 = laneX + 170;
-    const virtualColsPerFlow = 4;
-    const COL_ENTRY = 0, COL_DECISION = 1, COL_RULE = 2, COL_OUTPUT = 3;
-    const virtualColStep = 340; // Coluna larga o suficiente para task (280px) + respiro.
-    const columnIndexFor = (el) => {
-      if (!el || typeof el !== 'object') return 0;
-      if (el.type === 'startEvent') return -1;
-      if (el.type === 'exclusiveGateway') {
-        if (rootGw && el.id === rootGw.id) return 0.5;
-        return (locLevel(el.key) * virtualColsPerFlow) + COL_DECISION;
-      }
-      if (el.type === 'serviceTask') {
-        return (locLevel(el.from) * virtualColsPerFlow) + COL_RULE;
-      }
-      if (el.type === 'task' && t(el.key || '')) {
-        const k = t(el.key || '');
-        const lv = locLevel(k);
-        if ((locInCount(k) || 0) <= 0) return (lv * virtualColsPerFlow) + COL_ENTRY;
-        return (Math.max(0, lv - 1) * virtualColsPerFlow) + COL_OUTPUT;
-      }
-      if (el.type === 'endEvent') {
-        return (locLevel(el.key) * virtualColsPerFlow) + COL_OUTPUT + 0.65;
-      }
-      return Number(el.stage) || 0;
-    };
-
-    // Mantem colunas fixas: resolve colisao movendo de raia (vertical), nao de coluna (horizontal).
-    const colById = new Map();
-    for (const e of elements) colById.set(e.id, Number(columnIndexFor(e)));
-    const colKey = (v) => String(Math.round((Number(v) || 0) * 100));
-    const occ = new Map(); // lane -> Set(colKey)
-    const hasOcc = (lane, cKey) => {
-      const s = occ.get(lane);
-      return !!(s && s.has(cKey));
-    };
-    const addOcc = (lane, cKey) => {
-      if (!occ.has(lane)) occ.set(lane, new Set());
-      occ.get(lane).add(cKey);
-    };
-    const pickLaneForCol = (desiredLane, cKey) => {
-      const d = clamp(desiredLane, 0, laneCount - 1);
-      if (!hasOcc(d, cKey)) return d;
-      for (let step = 1; step < laneCount; step++) {
-        const up = d - step;
-        if (up >= 0 && !hasOcc(up, cKey)) return up;
-        const dn = d + step;
-        if (dn < laneCount && !hasOcc(dn, cKey)) return dn;
-      }
-      return d;
-    };
-    const ordered = elements.slice().sort((a, b) => {
-      const ac = Number(colById.get(a.id) || 0), bc = Number(colById.get(b.id) || 0);
-      if (ac !== bc) return ac - bc;
-      const al = clamp(a.lane, 0, laneCount - 1), bl = clamp(b.lane, 0, laneCount - 1);
-      if (al !== bl) return al - bl;
-      return t(a.id).localeCompare(t(b.id), 'pt-BR');
-    });
-    for (const e of ordered) {
-      const cKey = colKey(colById.get(e.id));
-      const desired = clamp(e.lane, 0, laneCount - 1);
-      const picked = pickLaneForCol(desired, cKey);
-      e.lane = picked;
-      addOcc(picked, cKey);
-    }
-    for (const ln of lanes) ln.refs = [];
-    for (const e of elements) pushRef(clamp(e.lane, 0, laneCount - 1), e.id);
+    const laneX = 70;
+    const laneY0 = 70;
+    const laneH = 120;
+    const laneGap = 8;
+    const stageX0 = 160;
+    const colStep = 340;
 
     const xById = new Map();
     let maxRight = stageX0;
     for (const e of elements) {
-      const col = Number(colById.get(e.id) || 0);
-      const cx = Math.round(stageX0 + (col + 1) * virtualColStep);
+      const cx = Math.round(stageX0 + (Math.max(0, Number(e.col) || 0) * colStep));
       xById.set(e.id, cx);
       const d = dims(e.type);
-      const right = cx + (d.w / 2);
-      if (right > maxRight) maxRight = right;
+      maxRight = Math.max(maxRight, cx + (d.w / 2));
+    }
+    const laneW = Math.max(1800, Math.round(maxRight + 120));
+
+    const laneBounds = new Map();
+    for (const ln of lanes) {
+      laneBounds.set(ln.laneId, {
+        x: laneX,
+        y: laneY0 + ln.idx * (laneH + laneGap),
+        w: laneW,
+        h: laneH
+      });
     }
 
     const cyLane = (idx) => Math.round((laneY0 + idx * (laneH + laneGap)) + laneH / 2);
-
     const bounds = new Map();
     for (const e of elements) {
       const d = dims(e.type);
       const cx = Math.round(Number(xById.get(e.id)) || stageX0);
-      const cy = cyLane(clamp(e.lane, 0, laneCount - 1));
+      const cy = cyLane(clamp(e.lane, 0, Math.max(0, lanes.length - 1)));
       bounds.set(e.id, { x: Math.round(cx - d.w / 2), y: Math.round(cy - d.h / 2), w: d.w, h: d.h });
     }
+
     const obstaclePad = 10;
     const allObstacles = Array.from(bounds.entries()).map(([id, b]) => ({
       id,
@@ -669,9 +487,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         const rt = tryRoute(pts);
         if (!rt) return;
         let len = 0;
-        for (let i = 1; i < rt.length; i++) {
-          len += Math.abs(rt[i].x - rt[i - 1].x) + Math.abs(rt[i].y - rt[i - 1].y);
-        }
+        for (let i = 1; i < rt.length; i++) len += Math.abs(rt[i].x - rt[i - 1].x) + Math.abs(rt[i].y - rt[i - 1].y);
         const bends = Math.max(0, rt.length - 2);
         const score = scoreBase + len + bends * 20;
         if (score < bestScore) { bestScore = score; best = rt; }
@@ -692,7 +508,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       }
 
       if (!best) {
-        // Fallback: rota ortogonal simples caso nao haja L viavel sem colisao.
         const sx = Math.round(sb.x + sb.w), sy = Math.round(sb.y + sb.h / 2);
         const tx = Math.round(tb.x), ty = Math.round(tb.y + tb.h / 2);
         best = (Math.abs(sy - ty) <= 2)
@@ -702,154 +517,8 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       way.set(f.id, normalizePts(best));
     }
 
-    // Delimita visualmente cada ramo apos um gateway de decisao usando Group (borda pontilhada).
-    // A montagem usa os caminhos enumerados para manter hierarquia: ramo interno fica dentro do ramo pai.
-    const addBranchId = (set, id) => {
-      const sid = t(id || '');
-      if (!sid) return;
-      set.add(sid);
-    };
-    const branchIdsByKey = new Map(); // `${from}>>>${ruleKey}` -> Set(elementId)
-    const ensureBranchSet = (k) => {
-      if (!branchIdsByKey.has(k)) branchIdsByKey.set(k, new Set());
-      return branchIdsByKey.get(k);
-    };
-    for (const path of paths) {
-      const toks = Array.isArray(path && path.tokens) ? path.tokens : [];
-      for (let i = 0; i < toks.length; i++) {
-        const tk = toks[i];
-        if (!tk || tk.type !== 'rule') continue;
-        const fromKey = t(tk.from || '');
-        const outsFrom = graph.out.get(fromKey) || [];
-        if (outsFrom.length <= 1) continue; // nao eh bifurcacao real
-        const branchKey = `${fromKey}>>>${ruleTokKey(tk)}`;
-        const ids = ensureBranchSet(branchKey);
-        for (let j = i; j < toks.length; j++) {
-          const tj = toks[j];
-          if (!tj || typeof tj !== 'object') continue;
-          if (tj.type === 'rule') {
-            const rn = ruleNodes.get(ruleTokKey(tj));
-            if (rn && rn.id) addBranchId(ids, rn.id);
-            continue;
-          }
-          if (tj.type === 'locator') {
-            const lk = t(tj.key || '');
-            const ln = locNodes.get(lk);
-            if (ln && ln.id) addBranchId(ids, ln.id);
-            const innerGw = gwNodes.get(lk);
-            if (innerGw && innerGw.id) addBranchId(ids, innerGw.id);
-          }
-        }
-        const lastTok = toks.length ? toks[toks.length - 1] : null;
-        if (lastTok && lastTok.type === 'locator') {
-          const ek = t(lastTok.key || '');
-          const ee = endNodes.get(ek);
-          if (ee && ee.id) addBranchId(ids, ee.id);
-        }
-      }
-    }
-    // Mantem em cada ramo apenas a parte exclusiva em relacao aos ramos irmaos da mesma decisao.
-    const branchUniqueIdsByKey = new Map();
-    for (const [from] of gwNodes.entries()) {
-      const outs = graph.out.get(from) || [];
-      const keys = outs.map((e) => `${t(from)}>>>${ruleEdgeKey(e)}`);
-      for (let i = 0; i < keys.length; i++) {
-        const k = keys[i];
-        const base = branchIdsByKey.get(k) || new Set();
-        const others = new Set();
-        for (let j = 0; j < keys.length; j++) {
-          if (j === i) continue;
-          const o = branchIdsByKey.get(keys[j]);
-          if (!o) continue;
-          for (const id of o) others.add(id);
-        }
-        const uniq = new Set();
-        for (const id of base) if (!others.has(id)) uniq.add(id);
-        branchUniqueIdsByKey.set(k, uniq.size ? uniq : base);
-      }
-    }
-    const groupPadX = 26;
-    const groupPadY = 14;
-    const branchGroups = [];
-    const decisionGroups = [];
-    for (const [from, gw] of gwNodes.entries()) {
-      const outs = graph.out.get(from) || [];
-      const branchBoxesForDecision = [];
-      let branchIdx = 0;
-      for (const e of outs) {
-        const branchKey = `${t(from)}>>>${ruleEdgeKey(e)}`;
-        const ids = branchUniqueIdsByKey.get(branchKey) || branchIdsByKey.get(branchKey);
-        if (!ids || !ids.size) continue;
-        let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY;
-        let maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
-        for (const id of ids) {
-          const b = bounds.get(id);
-          if (!b) continue;
-          minX = Math.min(minX, Number(b.x) || 0);
-          minY = Math.min(minY, Number(b.y) || 0);
-          maxX = Math.max(maxX, (Number(b.x) || 0) + (Number(b.w) || 0));
-          maxY = Math.max(maxY, (Number(b.y) || 0) + (Number(b.h) || 0));
-        }
-        if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) continue;
-        branchIdx++;
-        const groupLane = clamp(gw && gw.lane, 0, laneCount - 1);
-        const groupId = nextId('Group', groupLane);
-        const catValId = nextId('CategoryValue', groupLane);
-        const catId = nextId('Category', groupLane);
-        const ruleLabel = t(ruleNum(e.rule || {}));
-        const label = ruleLabel ? (`Ramo Regra ${ruleLabel}`) : (`Ramo ${String(branchIdx)}`);
-        const gwB = bounds.get(gw && gw.id);
-        const startAfterGw = gwB ? Math.round((Number(gwB.x) || 0) + (Number(gwB.w) || 0) + 12) : Math.round(minX - groupPadX);
-        const x0 = Math.max(Math.round(minX - groupPadX), startAfterGw);
-        const x1 = Math.round(maxX + groupPadX);
-        const w0 = Math.max(80, x1 - x0);
-        const bnd = {
-          x: x0,
-          y: Math.round(minY - groupPadY),
-          w: w0,
-          h: Math.round((maxY - minY) + (groupPadY * 2))
-        };
-        branchGroups.push({
-          id: groupId,
-          catValId,
-          catId,
-          label,
-          bounds: bnd
-        });
-        branchBoxesForDecision.push(bnd);
-      }
-      if (branchBoxesForDecision.length) {
-        let dMinX = Number.POSITIVE_INFINITY, dMinY = Number.POSITIVE_INFINITY;
-        let dMaxX = Number.NEGATIVE_INFINITY, dMaxY = Number.NEGATIVE_INFINITY;
-        for (const b of branchBoxesForDecision) {
-          dMinX = Math.min(dMinX, Number(b.x) || 0);
-          dMinY = Math.min(dMinY, Number(b.y) || 0);
-          dMaxX = Math.max(dMaxX, (Number(b.x) || 0) + (Number(b.w) || 0));
-          dMaxY = Math.max(dMaxY, (Number(b.y) || 0) + (Number(b.h) || 0));
-        }
-        if (Number.isFinite(dMinX) && Number.isFinite(dMinY) && Number.isFinite(dMaxX) && Number.isFinite(dMaxY)) {
-          const groupLane = clamp(gw && gw.lane, 0, laneCount - 1);
-          const gId = nextId('Group', groupLane);
-          const gvId = nextId('CategoryValue', groupLane);
-          const gcId = nextId('Category', groupLane);
-          decisionGroups.push({
-            id: gId,
-            catValId: gvId,
-            catId: gcId,
-            label: `Ramos da Decisao ${t(from) || ''}`.trim(),
-            bounds: {
-              x: Math.round(dMinX - 10),
-              y: Math.round(dMinY - 10),
-              w: Math.round((dMaxX - dMinX) + 20),
-              h: Math.round((dMaxY - dMinY) + 20)
-            }
-          });
-        }
-      }
-    }
-    const allGroups = []; // grupos pontilhados desativados
-
     const processId = `Process_ATP_Fluxo_${String(flowIdx + 1).padStart(2, '0')}_${hash(JSON.stringify(flow || {}))}`;
+    const laneSetId = `LaneSet_${hash(processId)}`;
     const x = [];
     x.push('<?xml version="1.0" encoding="UTF-8"?>');
     x.push('<bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"');
@@ -860,6 +529,14 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     x.push(`  id="Defs_${hash(processId)}"`);
     x.push(`  targetNamespace="http://atp.eproc/fluxos/${hash(processId)}">`);
     x.push(`  <bpmn:process id="${processId}" isExecutable="false">`);
+    x.push(`    <bpmn:laneSet id="${laneSetId}">`);
+    for (const ln of lanes) {
+      x.push(`      <bpmn:lane id="${ln.laneId}" name="${esc(ln.laneName)}">`);
+      for (const r of ln.refs) x.push(`        <bpmn:flowNodeRef>${r}</bpmn:flowNodeRef>`);
+      x.push('      </bpmn:lane>');
+    }
+    x.push('    </bpmn:laneSet>');
+
     for (const e of elements) {
       if (e.type === 'startEvent') x.push(`    <bpmn:startEvent id="${e.id}" name="${esc(e.name)}" />`);
       else if (e.type === 'endEvent') x.push(`    <bpmn:endEvent id="${e.id}" name="${esc(e.name)}" />`);
@@ -867,41 +544,43 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         x.push(`    <bpmn:serviceTask id="${e.id}" name="${esc(e.name)}">`);
         if (e.doc) x.push(`      <bpmn:documentation>${esc(e.doc)}</bpmn:documentation>`);
         x.push('    </bpmn:serviceTask>');
-      } else if (e.type === 'exclusiveGateway') x.push(`    <bpmn:exclusiveGateway id="${e.id}" name="${esc(e.name || 'Decisao')}" />`);
-      else x.push(`    <bpmn:task id="${e.id}" name="${esc(e.name)}" />`);
+      } else if (e.type === 'exclusiveGateway') {
+        x.push(`    <bpmn:exclusiveGateway id="${e.id}" name="${esc(e.name || 'Decisao')}" />`);
+      } else {
+        x.push(`    <bpmn:task id="${e.id}" name="${esc(e.name)}" />`);
+      }
     }
-    for (const g of allGroups) x.push(`    <bpmn:group id="${g.id}" categoryValueRef="${g.catValId}" />`);
+
     for (const f of flows) {
       const nm = f.nm ? ` name="${esc(f.nm)}"` : '';
       x.push(`    <bpmn:sequenceFlow id="${f.id}" sourceRef="${f.a}" targetRef="${f.b}"${nm} />`);
     }
+
     x.push('  </bpmn:process>');
-    for (const g of allGroups) {
-      x.push(`  <bpmn:category id="${g.catId}">`);
-      x.push(`    <bpmn:categoryValue id="${g.catValId}" value="${esc(g.label)}" />`);
-      x.push('  </bpmn:category>');
-    }
     x.push(`  <bpmndi:BPMNDiagram id="BPMNDiagram_${processId}">`);
     x.push(`    <bpmndi:BPMNPlane id="BPMNPlane_${processId}" bpmnElement="${processId}">`);
-    for (const g of allGroups) {
-      const b = g.bounds || null;
-      if (!b) continue;
-      x.push(`      <bpmndi:BPMNShape id="DI_${g.id}" bpmnElement="${g.id}">`);
+
+    for (const ln of lanes) {
+      const b = laneBounds.get(ln.laneId); if (!b) continue;
+      x.push(`      <bpmndi:BPMNShape id="DI_${ln.laneId}" bpmnElement="${ln.laneId}" isHorizontal="true">`);
       x.push(`        <dc:Bounds x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" />`);
       x.push('      </bpmndi:BPMNShape>');
     }
+
     for (const e of elements) {
       const b = bounds.get(e.id); if (!b) continue;
       x.push(`      <bpmndi:BPMNShape id="DI_${e.id}" bpmnElement="${e.id}">`);
       x.push(`        <dc:Bounds x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" />`);
       x.push('      </bpmndi:BPMNShape>');
     }
+
     for (const f of flows) {
       const wps = way.get(f.id) || [];
       x.push(`      <bpmndi:BPMNEdge id="DI_${f.id}" bpmnElement="${f.id}">`);
       for (const p of wps) x.push(`        <di:waypoint x="${Math.round(Number(p.x) || 0)}" y="${Math.round(Number(p.y) || 0)}" />`);
       x.push('      </bpmndi:BPMNEdge>');
     }
+
     x.push('    </bpmndi:BPMNPlane>');
     x.push('  </bpmndi:BPMNDiagram>');
     x.push('</bpmn:definitions>');
@@ -910,8 +589,8 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const safe = t(starts[0] || 'inicio').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'inicio';
     return {
       xml: x.join('\n'),
-      filename: `fluxo_${String(flowIdx + 1).padStart(2, '0')}_${safe}_arvore_alinhada.bpmn`,
-      pathsCount: paths.length
+      filename: `fluxo_${String(flowIdx + 1).padStart(2, '0')}_${safe}_arvore_pool_virtual.bpmn`,
+      pathsCount: flows.length
     };
   }
 
@@ -945,7 +624,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const top = document.createElement('div'); top.className = 'atp-map-top';
     const titleWrap = document.createElement('div');
     const title = document.createElement('div'); title.className = 'atp-map-title'; title.textContent = 'Visualizador de Fluxos (BPMN.io - Arvore de Decisao)';
-    const sub = document.createElement('div'); sub.className = 'atp-map-sub'; sub.textContent = 'Cada decisao cria caixas pontilhadas por ramo, com leitura da esquerda para direita e de cima para baixo. Clique em um item para destacar impacto de 1 nivel.';
+    const sub = document.createElement('div'); sub.className = 'atp-map-sub'; sub.textContent = 'Cada localizador gera uma decisao, cada decisao abre N regras e cada regra segue em sua pool virtual com o ramo completo.';
     titleWrap.appendChild(title); titleWrap.appendChild(sub);
     const actions = document.createElement('div'); actions.className = 'atp-map-actions';
 
@@ -1213,4 +892,5 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
   try { console.log('[ATP][OK] 13-visualizador-fluxos-bpmnio.js inicializado'); } catch (e) {}
 })();
 ;
+
 
