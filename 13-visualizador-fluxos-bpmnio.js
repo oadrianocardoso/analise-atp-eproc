@@ -273,29 +273,79 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       return el;
     };
 
-    const branchMemoKey = (loc, trail) => `${t(loc || '')}::${Array.from(trail || []).join('>')}`;
-    const branchMemo = new Set();
+    const locatorByKey = new Map();
+    const gatewayByKey = new Map();
+    const endByKey = new Map();
+    const ruleByKey = new Map();
+    const locatorMaxCol = new Map();
+    const buildingLocators = new Set();
+    const expandedLocators = new Set();
+
+    const ensureLocatorDecision = (locKey, laneIdx, startCol) => {
+      const lk = t(locKey || '');
+      let locEl = locatorByKey.get(lk) || null;
+      let gwEl = gatewayByKey.get(lk) || null;
+      let created = false;
+      if (!locEl) {
+        locEl = createEl('task', laneIdx, startCol, `Localizador: ${lk}`, '', { key: lk });
+        locatorByKey.set(lk, locEl);
+        created = true;
+      }
+      if (!gwEl) {
+        gwEl = createEl('exclusiveGateway', laneIdx, startCol + 1, 'Decisao', '', { key: lk });
+        gatewayByKey.set(lk, gwEl);
+        created = true;
+      }
+      pushEdge(locEl.id, gwEl.id, '');
+      return { locEl, gwEl, created };
+    };
+
+    const ensureEndFor = (locKey, laneIdx, col) => {
+      const lk = t(locKey || '');
+      let endEl = endByKey.get(lk) || null;
+      if (!endEl) {
+        endEl = createEl('endEvent', laneIdx, col, 'Fim', '', { key: lk });
+        endByKey.set(lk, endEl);
+      }
+      return endEl;
+    };
+    const ruleKeyOf = (edgeLike) => {
+      const n = t(ruleNum(edgeLike && edgeLike.rule));
+      if (n) return `REGRA:${n}`;
+      const from = t(edgeLike && edgeLike.from || '');
+      const to = t(edgeLike && edgeLike.to || '');
+      const lbl = t(edgeLike && edgeLike.impliedLabel || '');
+      return `EDGE:${from}>>>${to}>>>${lbl}`;
+    };
 
     const buildBranchFromLocator = (locKey, laneIdx, startCol, trail, depth) => {
       const lk = t(locKey || '');
       const safeTrail = trail instanceof Set ? trail : new Set();
-      const memoK = branchMemoKey(lk, safeTrail);
-      if (branchMemo.has(memoK) || depth > MAX_DEPTH) {
+      if (depth > MAX_DEPTH) {
         const cut = createEl('task', laneIdx, startCol, 'TRUNCADO (limite de profundidade)', 'Fluxo interrompido por seguranca de visualizacao.');
         const endCut = createEl('endEvent', laneIdx, startCol + 1, 'Fim', '');
         pushEdge(cut.id, endCut.id, '');
         return { entryId: cut.id, maxCol: startCol + 1 };
       }
-      branchMemo.add(memoK);
+      const pair = ensureLocatorDecision(lk, laneIdx, startCol);
+      const locEl = pair.locEl;
+      const gwEl = pair.gwEl;
 
-      const locEl = createEl('task', laneIdx, startCol, `Localizador: ${lk}`, '', { key: lk });
-      const gwEl = createEl('exclusiveGateway', laneIdx, startCol + 1, 'Decisao', '', { key: lk });
-      pushEdge(locEl.id, gwEl.id, '');
+      if (expandedLocators.has(lk)) {
+        return { entryId: locEl.id, maxCol: Number(locatorMaxCol.get(lk) || (gwEl.col || (startCol + 1))) };
+      }
+      if (buildingLocators.has(lk)) {
+        return { entryId: locEl.id, maxCol: Number(locatorMaxCol.get(lk) || (gwEl.col || (startCol + 1))) };
+      }
+      buildingLocators.add(lk);
 
       const outs = (graph.out.get(lk) || []).slice();
       if (!outs.length) {
-        const endEl = createEl('endEvent', laneIdx, startCol + 2, 'Fim', '', { key: lk });
+        const endEl = ensureEndFor(lk, laneIdx, startCol + 2);
         pushEdge(gwEl.id, endEl.id, '');
+        locatorMaxCol.set(lk, Math.max(startCol + 2, Number(endEl.col) || 0));
+        buildingLocators.delete(lk);
+        expandedLocators.add(lk);
         return { entryId: locEl.id, maxCol: startCol + 2 };
       }
 
@@ -317,8 +367,17 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         ].filter(Boolean).join(' | ');
 
         const branchLaneName = num ? `Pool Virtual Regra ${num}` : `Pool Virtual Ramo ${branchPos}`;
-        const branchLaneIdx = createLane(branchLaneName);
-        const ruleEl = createEl('serviceTask', branchLaneIdx, startCol + 2, ruleName, ruleDoc, { from: t(e && e.from), to: toKey, ruleNum: num });
+        const rKey = ruleKeyOf(e);
+        let ruleEl = ruleByKey.get(rKey) || null;
+        let branchLaneIdx = laneIdx;
+        if (!ruleEl) {
+          // Mantem a primeira regra alinhada horizontalmente com a decisao de origem.
+          branchLaneIdx = (branchPos === 1) ? laneIdx : createLane(branchLaneName);
+          ruleEl = createEl('serviceTask', branchLaneIdx, startCol + 2, ruleName, ruleDoc, { from: t(e && e.from), to: toKey, ruleNum: num, ruleKey: rKey });
+          ruleByKey.set(rKey, ruleEl);
+        } else {
+          branchLaneIdx = clamp(ruleEl.lane, 0, Math.max(0, lanes.length - 1));
+        }
         pushEdge(gwEl.id, ruleEl.id, num ? `Regra ${num}` : '');
 
         if (!toKey || !graph.nodeSet.has(toKey)) {
@@ -328,20 +387,14 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
           continue;
         }
 
-        if (nextTrail.has(toKey)) {
-          const cycleEl = createEl('task', branchLaneIdx, startCol + 3, `CICLO para: ${toKey}`, 'Fluxo interrompido para evitar repeticao infinita.');
-          const endCycle = createEl('endEvent', branchLaneIdx, startCol + 4, 'Fim', '');
-          pushEdge(ruleEl.id, cycleEl.id, '');
-          pushEdge(cycleEl.id, endCycle.id, '');
-          maxCol = Math.max(maxCol, startCol + 4);
-          continue;
-        }
-
         const child = buildBranchFromLocator(toKey, branchLaneIdx, startCol + 3, nextTrail, depth + 1);
         pushEdge(ruleEl.id, child.entryId, '');
         maxCol = Math.max(maxCol, Number(child.maxCol) || (startCol + 3));
       }
 
+      locatorMaxCol.set(lk, maxCol);
+      buildingLocators.delete(lk);
+      expandedLocators.add(lk);
       return { entryId: locEl.id, maxCol };
     };
 
