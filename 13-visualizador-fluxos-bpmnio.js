@@ -484,6 +484,65 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       }
       return true;
     };
+    const usedSegments = [];
+    const samePt = (a, b) => (Number(a && a.x) === Number(b && b.x)) && (Number(a && a.y) === Number(b && b.y));
+    const inRange = (v, a, b) => {
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      return v >= lo && v <= hi;
+    };
+    const segmentConflict = (a1, a2, b1, b2) => {
+      const aV = Number(a1.x) === Number(a2.x);
+      const bV = Number(b1.x) === Number(b2.x);
+      const aH = Number(a1.y) === Number(a2.y);
+      const bH = Number(b1.y) === Number(b2.y);
+      if ((!aV && !aH) || (!bV && !bH)) return true;
+      if (aV && bV) {
+        if (Number(a1.x) !== Number(b1.x)) return false;
+        const aLo = Math.min(Number(a1.y), Number(a2.y)), aHi = Math.max(Number(a1.y), Number(a2.y));
+        const bLo = Math.min(Number(b1.y), Number(b2.y)), bHi = Math.max(Number(b1.y), Number(b2.y));
+        const lo = Math.max(aLo, bLo), hi = Math.min(aHi, bHi);
+        if (hi < lo) return false;
+        if (hi === lo) {
+          const p = { x: Number(a1.x), y: lo };
+          const endpointTouch = (samePt(p, a1) || samePt(p, a2)) && (samePt(p, b1) || samePt(p, b2));
+          return !endpointTouch;
+        }
+        return true;
+      }
+      if (aH && bH) {
+        if (Number(a1.y) !== Number(b1.y)) return false;
+        const aLo = Math.min(Number(a1.x), Number(a2.x)), aHi = Math.max(Number(a1.x), Number(a2.x));
+        const bLo = Math.min(Number(b1.x), Number(b2.x)), bHi = Math.max(Number(b1.x), Number(b2.x));
+        const lo = Math.max(aLo, bLo), hi = Math.min(aHi, bHi);
+        if (hi < lo) return false;
+        if (hi === lo) {
+          const p = { x: lo, y: Number(a1.y) };
+          const endpointTouch = (samePt(p, a1) || samePt(p, a2)) && (samePt(p, b1) || samePt(p, b2));
+          return !endpointTouch;
+        }
+        return true;
+      }
+      const v1 = aV ? a1 : b1;
+      const v2 = aV ? a2 : b2;
+      const h1 = aV ? b1 : a1;
+      const h2 = aV ? b2 : a2;
+      const ip = { x: Number(v1.x), y: Number(h1.y) };
+      if (!inRange(ip.x, Number(h1.x), Number(h2.x)) || !inRange(ip.y, Number(v1.y), Number(v2.y))) return false;
+      const endpointTouch = (samePt(ip, a1) || samePt(ip, a2)) && (samePt(ip, b1) || samePt(ip, b2));
+      return !endpointTouch;
+    };
+    const isPolylineFreeFromLines = (pts) => {
+      for (let i = 1; i < pts.length; i++) {
+        const a1 = pts[i - 1], a2 = pts[i];
+        for (const s of usedSegments) {
+          if (segmentConflict(a1, a2, s.a, s.b)) return false;
+        }
+      }
+      return true;
+    };
+    const reservePolyline = (pts) => {
+      for (let i = 1; i < pts.length; i++) usedSegments.push({ a: pts[i - 1], b: pts[i] });
+    };
 
     const way = new Map();
     for (const f of flows) {
@@ -491,7 +550,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       const obstacles = allObstacles.filter((o) => o.id !== f.a && o.id !== f.b);
       const tryRoute = (pts) => {
         const p = normalizePts(pts);
-        return isPolylineClear(p, obstacles) ? p : null;
+        return (isPolylineClear(p, obstacles) && isPolylineFreeFromLines(p)) ? p : null;
       };
       const preferRight = tb.x >= sb.x;
       const sourcePorts = preferRight
@@ -543,6 +602,13 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
           } else {
             evalRoute([S, { x: T.x, y: S.y }, T], base);
             evalRoute([S, { x: S.x, y: T.y }, T], base);
+            const detours = [40, -40, 80, -80, 140, -140, 220, -220];
+            for (const dx of detours) {
+              evalRoute([S, { x: S.x + dx, y: S.y }, { x: S.x + dx, y: T.y }, T], base + Math.abs(dx));
+            }
+            for (const dy of detours) {
+              evalRoute([S, { x: S.x, y: S.y + dy }, { x: T.x, y: S.y + dy }, T], base + Math.abs(dy));
+            }
           }
         }
       }
@@ -550,11 +616,25 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       if (!best) {
         const sx = Math.round(sb.x + sb.w), sy = Math.round(sb.y + sb.h / 2);
         const tx = Math.round(tb.x), ty = Math.round(tb.y + tb.h / 2);
-        best = (Math.abs(sy - ty) <= 2)
-          ? [{ x: sx, y: sy }, { x: tx, y: ty }]
-          : [{ x: sx, y: sy }, { x: tx, y: sy }, { x: tx, y: ty }];
+        const fallbackCandidates = (Math.abs(sy - ty) <= 2)
+          ? [
+              [{ x: sx, y: sy }, { x: tx, y: ty }],
+              [{ x: sx, y: sy }, { x: sx, y: sy + 60 }, { x: tx, y: sy + 60 }, { x: tx, y: ty }],
+              [{ x: sx, y: sy }, { x: sx, y: sy - 60 }, { x: tx, y: sy - 60 }, { x: tx, y: ty }]
+            ]
+          : [
+              [{ x: sx, y: sy }, { x: tx, y: sy }, { x: tx, y: ty }],
+              [{ x: sx, y: sy }, { x: sx, y: ty }, { x: tx, y: ty }]
+            ];
+        for (const cand of fallbackCandidates) {
+          const rt = tryRoute(cand);
+          if (rt) { best = rt; break; }
+        }
+        if (!best) best = normalizePts(fallbackCandidates[0]);
       }
-      way.set(f.id, normalizePts(best));
+      const finalRoute = normalizePts(best);
+      way.set(f.id, finalRoute);
+      reservePolyline(finalRoute);
     }
 
     const processId = `Process_ATP_Fluxo_${String(flowIdx + 1).padStart(2, '0')}_${hash(JSON.stringify(flow || {}))}`;
