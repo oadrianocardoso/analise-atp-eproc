@@ -101,7 +101,13 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     return data;
   }
 
-  function ruleNum(r) { const n = Number(r && r.num); return Number.isFinite(n) ? String(n) : t(r && r.num || ''); }
+  function ruleNum(r) {
+    const raw = t(r && r.num || '');
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return String(Math.trunc(n));
+    // Mantem o valor bruto (incluindo expressoes com &&) sem refinamento intermediario.
+    return raw;
+  }
   function ruleCond(rule) {
     if (!rule || typeof rule !== 'object') return '';
     const parts = [];
@@ -194,21 +200,11 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     return { type: 'task', name: t(tok.type || 'Passo'), doc: '', branch: t(tok.type || '') };
   }
 
-  function dims(type, name) {
+  function dims(type) {
     if (type === 'startEvent' || type === 'endEvent') return { w: 36, h: 36 };
     if (type === 'exclusiveGateway') return { w: 60, h: 60 };
-    if (type === 'serviceTask') {
-      const txt = t(name || '');
-      const cpl = 34; // chars por linha aproximado para ~260px
-      const lines = Math.max(1, Math.ceil(txt.length / cpl));
-      const h = clamp(85 + Math.max(0, lines - 2) * 16, 85, 220);
-      return { w: 260, h };
-    }
-    const txt = t(name || '');
-    const cpl = 26; // chars por linha aproximado para ~200px
-    const lines = Math.max(1, Math.ceil(txt.length / cpl));
-    const h = clamp(70 + Math.max(0, lines - 2) * 16, 70, 260);
-    return { w: 200, h };
+    if (type === 'serviceTask') return { w: 280, h: 90 };
+    return { w: 220, h: 74 };
   }
 
   function buildBpmnFromFlow(data, flowIdx) {
@@ -429,113 +425,29 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     }
 
     const laneY0 = 70;
-    const laneH = 200;      // Espaço vertical muito expandido
-    const laneGap = 40;     // Gap grande entre lanes
+    const laneH = 120;
+    const laneGap = 8;
     const stageX0 = 160;
-    const colStep = 300;    // Separação horizontal muito expandida
+    const colStep = 340;
 
     const xById = new Map();
     let maxRight = stageX0;
     for (const e of elements) {
       const cx = Math.round(stageX0 + (Math.max(0, Number(e.col) || 0) * colStep));
       xById.set(e.id, cx);
-      const d = dims(e.type, e.name);
+      const d = dims(e.type);
       maxRight = Math.max(maxRight, cx + (d.w / 2));
     }
     const cyLane = (idx) => Math.round((laneY0 + idx * (laneH + laneGap)) + laneH / 2);
     const bounds = new Map();
     for (const e of elements) {
-      const d = dims(e.type, e.name);
+      const d = dims(e.type);
       const cx = Math.round(Number(xById.get(e.id)) || stageX0);
       const cy = cyLane(clamp(e.lane, 0, Math.max(0, lanes.length - 1)));
       bounds.set(e.id, { x: Math.round(cx - d.w / 2), y: Math.round(cy - d.h / 2), w: d.w, h: d.h });
     }
-    // Fluxos grandes: empacotamento por coluna para garantir respiracao vertical visivel.
-    const DENSE_MODE = elements.length > 100;
-    if (DENSE_MODE) {
-      const STACK_GAP = 34;
-      const byCol = new Map();
-      for (const e of elements) {
-        const c = Math.max(0, Number(e && e.col) || 0);
-        if (!byCol.has(c)) byCol.set(c, []);
-        byCol.get(c).push(e.id);
-      }
-      for (const ids of byCol.values()) {
-        ids.sort((aId, bId) => {
-          const a = bounds.get(aId), b = bounds.get(bId);
-          if (!a || !b) return 0;
-          if (a.y !== b.y) return a.y - b.y;
-          return t(aId).localeCompare(t(bId), 'pt-BR');
-        });
-        let cursorY = null;
-        for (const id of ids) {
-          const b = bounds.get(id);
-          if (!b) continue;
-          if (cursorY == null) {
-            cursorY = b.y + b.h + STACK_GAP;
-            continue;
-          }
-          if (b.y < cursorY) b.y = Math.round(cursorY);
-          cursorY = b.y + b.h + STACK_GAP;
-        }
-      }
-    }
-    // Pos-processamento para evitar sobreposicao de nos em fluxos muito densos.
-    const rectOverlap = (a, b) =>
-      !!(a && b &&
-        a.x < (b.x + b.w) &&
-        (a.x + a.w) > b.x &&
-        a.y < (b.y + b.h) &&
-        (a.y + a.h) > b.y);
-    const idsLayoutOrder = elements.map((e) => e.id).sort((ia, ib) => {
-      const a = bounds.get(ia), b = bounds.get(ib);
-      if (!a || !b) return 0;
-      if (a.x !== b.x) return a.x - b.x;
-      if (a.y !== b.y) return a.y - b.y;
-      return t(ia).localeCompare(t(ib), 'pt-BR');
-    });
-    const NODE_GAP = elements.length > 160 ? 56 : (elements.length > 90 ? 38 : 18);
-    for (let pass = 0; pass < 12; pass++) {
-      let changed = false;
-      for (let i = 0; i < idsLayoutOrder.length; i++) {
-        const a = bounds.get(idsLayoutOrder[i]);
-        if (!a) continue;
-        for (let j = i + 1; j < idsLayoutOrder.length; j++) {
-          const b = bounds.get(idsLayoutOrder[j]);
-          if (!b) continue;
-          if (!rectOverlap(a, b)) continue;
-          const push = Math.max(0, (a.y + a.h) - b.y) + NODE_GAP;
-          b.y = Math.round(b.y + push);
-          changed = true;
-        }
-      }
-      if (!changed) break;
-    }
-    // Mesmo sem sobreposicao direta, garante respiracao minima entre itens na mesma faixa vertical.
-    const MIN_V_GAP = elements.length > 160 ? 38 : (elements.length > 100 ? 24 : 14);
-    const xBandOverlap = (a, b) => {
-      const ax1 = a.x, ax2 = a.x + a.w, bx1 = b.x, bx2 = b.x + b.w;
-      return Math.min(ax2, bx2) - Math.max(ax1, bx1) > 24;
-    };
-    for (let pass = 0; pass < 8; pass++) {
-      let changed = false;
-      for (let i = 0; i < idsLayoutOrder.length; i++) {
-        const a = bounds.get(idsLayoutOrder[i]);
-        if (!a) continue;
-        for (let j = i + 1; j < idsLayoutOrder.length; j++) {
-          const b = bounds.get(idsLayoutOrder[j]);
-          if (!b) continue;
-          if (!xBandOverlap(a, b)) continue;
-          const neededTop = (a.y + a.h + MIN_V_GAP);
-          if (b.y < neededTop) {
-            b.y = Math.round(neededTop);
-            changed = true;
-          }
-        }
-      }
-      if (!changed) break;
-    }
-    const obstaclePad = 65; // Margem massiva ao redor de obstáculos
+
+    const obstaclePad = 10;
     const allObstacles = Array.from(bounds.entries()).map(([id, b]) => ({
       id,
       x: b.x - obstaclePad,
@@ -596,7 +508,6 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       const lo = Math.min(a, b), hi = Math.max(a, b);
       return v >= lo && v <= hi;
     };
-    const SEGMENT_MARGIN = 40; // Margem de segurança massiva entre segmentos
     const segmentConflict = (a1, a2, b1, b2) => {
       const aV = Number(a1.x) === Number(a2.x);
       const bV = Number(b1.x) === Number(b2.x);
@@ -604,11 +515,10 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       const bH = Number(b1.y) === Number(b2.y);
       if ((!aV && !aH) || (!bV && !bH)) return true;
       if (aV && bV) {
-        const aX = Number(a1.x), bX = Number(b1.x);
-        if (Math.abs(aX - bX) > SEGMENT_MARGIN) return false;
+        if (Number(a1.x) !== Number(b1.x)) return false;
         const aLo = Math.min(Number(a1.y), Number(a2.y)), aHi = Math.max(Number(a1.y), Number(a2.y));
         const bLo = Math.min(Number(b1.y), Number(b2.y)), bHi = Math.max(Number(b1.y), Number(b2.y));
-        const lo = Math.max(aLo - SEGMENT_MARGIN, bLo - SEGMENT_MARGIN), hi = Math.min(aHi + SEGMENT_MARGIN, bHi + SEGMENT_MARGIN);
+        const lo = Math.max(aLo, bLo), hi = Math.min(aHi, bHi);
         if (hi < lo) return false;
         if (hi === lo) {
           const p = { x: Number(a1.x), y: lo };
@@ -618,11 +528,10 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         return true;
       }
       if (aH && bH) {
-        const aY = Number(a1.y), bY = Number(b1.y);
-        if (Math.abs(aY - bY) > SEGMENT_MARGIN) return false;
+        if (Number(a1.y) !== Number(b1.y)) return false;
         const aLo = Math.min(Number(a1.x), Number(a2.x)), aHi = Math.max(Number(a1.x), Number(a2.x));
         const bLo = Math.min(Number(b1.x), Number(b2.x)), bHi = Math.max(Number(b1.x), Number(b2.x));
-        const lo = Math.max(aLo - SEGMENT_MARGIN, bLo - SEGMENT_MARGIN), hi = Math.min(aHi + SEGMENT_MARGIN, bHi + SEGMENT_MARGIN);
+        const lo = Math.max(aLo, bLo), hi = Math.min(aHi, bHi);
         if (hi < lo) return false;
         if (hi === lo) {
           const p = { x: lo, y: Number(a1.y) };
@@ -636,9 +545,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       const h1 = aV ? b1 : a1;
       const h2 = aV ? b2 : a2;
       const ip = { x: Number(v1.x), y: Number(h1.y) };
-      const vRangeY = inRange(ip.y, Number(v1.y) - SEGMENT_MARGIN, Number(v2.y) + SEGMENT_MARGIN);
-      const hRangeX = inRange(ip.x, Number(h1.x) - SEGMENT_MARGIN, Number(h2.x) + SEGMENT_MARGIN);
-      if (!hRangeX || !vRangeY) return false;
+      if (!inRange(ip.x, Number(h1.x), Number(h2.x)) || !inRange(ip.y, Number(v1.y), Number(v2.y))) return false;
       const endpointTouch = (samePt(ip, a1) || samePt(ip, a2)) && (samePt(ip, b1) || samePt(ip, b2));
       return !endpointTouch;
     };
@@ -654,18 +561,51 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const reservePolyline = (pts) => {
       for (let i = 1; i < pts.length; i++) usedSegments.push({ a: pts[i - 1], b: pts[i] });
     };
-    const elementById = new Map();
-    for (const e of elements) elementById.set(e.id, e);
     const outCountBySourceId = new Map();
-    for (const fl of flows) outCountBySourceId.set(fl.a, Number(outCountBySourceId.get(fl.a) || 0) + 1);
     const inCountByTargetId = new Map();
-    for (const fl of flows) inCountByTargetId.set(fl.b, Number(inCountByTargetId.get(fl.b) || 0) + 1);
     const outOrderByFlowId = new Map();
-    const outSeqBySource = new Map();
+    const inOrderByFlowId = new Map();
+    const sourceTrunkX = new Map();
+    const targetTrunkX = new Map();
     for (const fl of flows) {
-      const n = Number(outSeqBySource.get(fl.a) || 0) + 1;
-      outSeqBySource.set(fl.a, n);
-      outOrderByFlowId.set(fl.id, n);
+      outCountBySourceId.set(fl.a, Number(outCountBySourceId.get(fl.a) || 0) + 1);
+      inCountByTargetId.set(fl.b, Number(inCountByTargetId.get(fl.b) || 0) + 1);
+    }
+    const outGroupBySource = new Map();
+    const inGroupByTarget = new Map();
+    for (const fl of flows) {
+      if (!outGroupBySource.has(fl.a)) outGroupBySource.set(fl.a, []);
+      outGroupBySource.get(fl.a).push(fl);
+      if (!inGroupByTarget.has(fl.b)) inGroupByTarget.set(fl.b, []);
+      inGroupByTarget.get(fl.b).push(fl);
+    }
+    for (const [srcId, arr] of outGroupBySource.entries()) {
+      const sb = bounds.get(srcId);
+      const sy = sb ? (sb.y + sb.h / 2) : 0;
+      arr.sort((f1, f2) => {
+        const b1 = bounds.get(f1.b), b2 = bounds.get(f2.b);
+        const y1 = b1 ? (b1.y + b1.h / 2) : 0;
+        const y2 = b2 ? (b2.y + b2.h / 2) : 0;
+        const d1 = Math.abs(y1 - sy), d2 = Math.abs(y2 - sy);
+        if (d1 !== d2) return d1 - d2;
+        if (y1 !== y2) return y1 - y2;
+        return String(f1.b).localeCompare(String(f2.b), 'pt-BR');
+      });
+      for (let i = 0; i < arr.length; i++) outOrderByFlowId.set(arr[i].id, i + 1);
+    }
+    for (const [tgtId, arr] of inGroupByTarget.entries()) {
+      const tb = bounds.get(tgtId);
+      const ty = tb ? (tb.y + tb.h / 2) : 0;
+      arr.sort((f1, f2) => {
+        const b1 = bounds.get(f1.a), b2 = bounds.get(f2.a);
+        const y1 = b1 ? (b1.y + b1.h / 2) : 0;
+        const y2 = b2 ? (b2.y + b2.h / 2) : 0;
+        const d1 = Math.abs(y1 - ty), d2 = Math.abs(y2 - ty);
+        if (d1 !== d2) return d1 - d2;
+        if (y1 !== y2) return y1 - y2;
+        return String(f1.a).localeCompare(String(f2.a), 'pt-BR');
+      });
+      for (let i = 0; i < arr.length; i++) inOrderByFlowId.set(arr[i].id, i + 1);
     }
 
     const way = new Map();
@@ -676,106 +616,69 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         const p = orthogonalizePts(pts);
         return (isPolylineClear(p, obstacles) && isPolylineFreeFromLines(p)) ? p : null;
       };
-      const srcEl = elementById.get(f.a) || null;
       const scx = sb.x + (sb.w / 2), scy = sb.y + (sb.h / 2);
       const tcx = tb.x + (tb.w / 2), tcy = tb.y + (tb.h / 2);
       const dxCT = tcx - scx, dyCT = tcy - scy;
-
       const outCount = Number(outCountBySourceId.get(f.a) || 0);
-      const outOrder = Number(outOrderByFlowId.get(f.id) || 1);
-      const sequenceMultiplier = Math.max(1, outOrder);
-      // Conexao 1:1 saindo de decisao: sempre reta (sem L).
-      if (srcEl && srcEl.type === 'exclusiveGateway' && outCount === 1) {
-        const straightCandidates = [
-          normalizePts([{ x: Math.round(sb.x + sb.w), y: Math.round(sb.y + sb.h / 2) }, { x: Math.round(tb.x), y: Math.round(tb.y + tb.h / 2) }]),
-          normalizePts([{ x: Math.round(sb.x + sb.w / 2), y: Math.round(sb.y + sb.h) }, { x: Math.round(tb.x + tb.w / 2), y: Math.round(tb.y) }]),
-          normalizePts([{ x: Math.round(sb.x + sb.w / 2), y: Math.round(sb.y) }, { x: Math.round(tb.x + tb.w / 2), y: Math.round(tb.y + tb.h) }])
-        ];
-        let pickedStraight = null;
-        for (const cand of straightCandidates) {
-          if (cand.length !== 2) continue;
-          if (isPolylineClear(cand, obstacles) && isPolylineFreeFromLines(cand)) { pickedStraight = cand; break; }
-        }
-        const finalStraight = orthogonalizePts(pickedStraight || straightCandidates[0]);
-        way.set(f.id, finalStraight);
-        reservePolyline(finalStraight);
-        continue;
-      }
-      // Conexao 1a de decisao com multiplas saidas: reta para o primeiro elemento.
-      if (srcEl && srcEl.type === 'exclusiveGateway' && outCount > 1 && outOrder === 1) {
-        const straightFirst = orthogonalizePts([
-          { x: Math.round(sb.x + sb.w), y: Math.round(sb.y + sb.h / 2) },
-          { x: Math.round(tb.x), y: Math.round(tb.y + tb.h / 2) }
-        ]);
-        way.set(f.id, straightFirst);
-        reservePolyline(straightFirst);
-        continue;
-      }
-      // Conexoes que saem de decisao com mais de uma saida: forca formato em L para baixo.
-      if (srcEl && srcEl.type === 'exclusiveGateway' && outCount > 1 && outOrder > 1) {
-        const sx = Math.round(sb.x + sb.w);
-        const sy = Math.round(scy);
-        const tx = Math.round(tb.x);
-        const ty = Math.round(tb.y + (tb.h / 2));
-        const trunkX = Math.round(sb.x + sb.w + 22);
-        const forced = normalizePts([
-          { x: sx, y: sy },
-          { x: trunkX, y: sy },
-          { x: trunkX, y: ty },
-          { x: tx, y: ty }
-        ]);
-        if (isPolylineClear(forced, obstacles)) {
-          way.set(f.id, forced);
-          reservePolyline(forced);
-          continue;
-        }
-      }
-      // Convergencia de varias regras para o mesmo alvo: usa tronco vertical antes do alvo.
       const inCount = Number(inCountByTargetId.get(f.b) || 0);
-      if (srcEl && srcEl.type === 'serviceTask' && inCount > 1) {
+      const outOrder = Number(outOrderByFlowId.get(f.id) || 1);
+      const inOrder = Number(inOrderByFlowId.get(f.id) || 1);
+      const isOneToMany = outCount > 1;
+      const isManyToOne = inCount > 1;
+
+      // Em relacoes 1:N (split) e N:1 (merge), forca geometria ortogonal no padrao do print.
+      if (isOneToMany) {
         const sx = Math.round(sb.x + sb.w);
-        const sy = Math.round(sb.y + (sb.h / 2));
+        const sy = Math.round(sb.y + sb.h / 2);
         const tx = Math.round(tb.x);
-        const ty = Math.round(tb.y + (tb.h / 2));
-        if (Math.abs(sy - ty) <= 2) {
+        const ty = Math.round(tb.y + tb.h / 2);
+        const trunkX = sourceTrunkX.has(f.a) ? sourceTrunkX.get(f.a) : (sx + 24);
+        if (!sourceTrunkX.has(f.a)) sourceTrunkX.set(f.a, trunkX);
+        if (outOrder === 1) {
           const straight = orthogonalizePts([{ x: sx, y: sy }, { x: tx, y: ty }]);
-          if (isPolylineClear(straight, obstacles)) {
-            way.set(f.id, straight);
-            reservePolyline(straight);
-            continue;
-          }
+          way.set(f.id, straight);
+          reservePolyline(straight);
+          continue;
         }
-        const trunkX = Math.max(sx + 22, tx - 90);
-        const forced = normalizePts([
+        const forcedSplit = orthogonalizePts([
           { x: sx, y: sy },
           { x: trunkX, y: sy },
           { x: trunkX, y: ty },
           { x: tx, y: ty }
         ]);
-        if (isPolylineClear(forced, obstacles)) {
-          way.set(f.id, forced);
-          reservePolyline(forced);
+        way.set(f.id, forcedSplit);
+        reservePolyline(forcedSplit);
+        continue;
+      }
+      if (isManyToOne) {
+        const sx = Math.round(sb.x + sb.w);
+        const sy = Math.round(sb.y + sb.h / 2);
+        const tx = Math.round(tb.x);
+        const ty = Math.round(tb.y + tb.h / 2);
+        const trunkX = targetTrunkX.has(f.b) ? targetTrunkX.get(f.b) : Math.max(sx + 24, tx - 86);
+        if (!targetTrunkX.has(f.b)) targetTrunkX.set(f.b, trunkX);
+        if (inOrder === 1) {
+          const straight = orthogonalizePts([{ x: sx, y: sy }, { x: tx, y: ty }]);
+          way.set(f.id, straight);
+          reservePolyline(straight);
           continue;
         }
+        const forcedMerge = orthogonalizePts([
+          { x: sx, y: sy },
+          { x: trunkX, y: sy },
+          { x: trunkX, y: ty },
+          { x: tx, y: ty }
+        ]);
+        way.set(f.id, forcedMerge);
+        reservePolyline(forcedMerge);
+        continue;
       }
-
       const portPenalty = (side, isSource) => {
         // Menor penalidade para o lado naturalmente "apontado" para o alvo.
-        let basePenalty = 0;
-        if (side === 'right') basePenalty = isSource ? (dxCT >= 0 ? 0 : 55) : (dxCT >= 0 ? 55 : 0);
-        else if (side === 'left') basePenalty = isSource ? (dxCT <= 0 ? 0 : 55) : (dxCT <= 0 ? 55 : 0);
-        else if (side === 'bottom') basePenalty = isSource ? (dyCT >= 0 ? 8 : 48) : (dyCT >= 0 ? 48 : 8);
-        else basePenalty = isSource ? (dyCT <= 0 ? 8 : 48) : (dyCT <= 0 ? 48 : 8); // top
-        // Para conexoes 1:1, nunca aplicar penalidades agressivas
-        if (outCount === 1) return basePenalty;
-        // Penalidades agressivas apenas para múltiplas saídas
-        const seqPenalty = sequenceMultiplier * 100;
-        if (sequenceMultiplier === 1) return basePenalty; // Primeira linha: penalidade normal
-        if (sequenceMultiplier === 2 && side === 'right') return basePenalty + seqPenalty + 200; // 2ª força esquerda
-        if (sequenceMultiplier === 2 && side === 'left') return basePenalty - 80;
-        if (sequenceMultiplier >= 3 && side === 'right') return basePenalty + seqPenalty + 300; // 3ª+ força cima/baixo
-        if (sequenceMultiplier >= 3 && side === 'bottom') return basePenalty - 100;
-        return basePenalty;
+        if (side === 'right') return isSource ? (dxCT >= 0 ? 0 : 55) : (dxCT >= 0 ? 55 : 0);
+        if (side === 'left') return isSource ? (dxCT <= 0 ? 0 : 55) : (dxCT <= 0 ? 55 : 0);
+        if (side === 'bottom') return isSource ? (dyCT >= 0 ? 8 : 48) : (dyCT >= 0 ? 48 : 8);
+        return isSource ? (dyCT <= 0 ? 8 : 48) : (dyCT <= 0 ? 48 : 8); // top
       };
       const sourcePorts = [
         { x: sb.x + sb.w, y: sb.y + sb.h / 2, side: 'right' },
@@ -809,37 +712,21 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
           const base = (Number(sp.pen) || 0) + (Number(tp.pen) || 0);
           if (S.x === T.x || S.y === T.y) {
             evalRoute([S, T], base);
-          } else if (outCount === 1) {
-            // Para conexoes 1:1, usar estrategia simples sem sequencias agressivas
+          } else {
             evalRoute([S, { x: T.x, y: S.y }, T], base);
             evalRoute([S, { x: S.x, y: T.y }, T], base);
-          } else {
-            // Estratégias DIFERENTES por sequência para forçar caminhos distintos (apenas para múltiplas saídas)
-            const isEvenSeq = (sequenceMultiplier % 2) === 0;
-            if (isEvenSeq) {
-              // Sequência par: prefere desvio horizontal (X)
-              evalRoute([S, { x: T.x, y: S.y }, T], base);
-            } else {
-              // Sequência ímpar: prefere desvio vertical (Y)
-              evalRoute([S, { x: S.x, y: T.y }, T], base);
-            }
-            const detours = [50, -50, 100, -100, 150, -150, 250, -250, 350, -350, 450, -450, 550, -550, 700, -700, 850, -850];
-            const largeSeqOffset = sequenceMultiplier * 250; // Offset MUITO maior
+            const detours = [40, -40, 80, -80, 140, -140, 220, -220];
             for (const dx of detours) {
-              const adjustedDx = (sequenceMultiplier === 1) ? dx : (dx + largeSeqOffset);
-              evalRoute([S, { x: S.x + adjustedDx, y: S.y }, { x: S.x + adjustedDx, y: T.y }, T], base + Math.abs(adjustedDx) * 0.5);
+              evalRoute([S, { x: S.x + dx, y: S.y }, { x: S.x + dx, y: T.y }, T], base + Math.abs(dx));
             }
             for (const dy of detours) {
-              const adjustedDy = (sequenceMultiplier === 1) ? dy : (dy + largeSeqOffset);
-              evalRoute([S, { x: S.x, y: S.y + adjustedDy }, { x: T.x, y: S.y + adjustedDy }, T], base + Math.abs(adjustedDy) * 0.5);
+              evalRoute([S, { x: S.x, y: S.y + dy }, { x: T.x, y: S.y + dy }, T], base + Math.abs(dy));
             }
             for (const dx of detours) {
-              const adjustedDx = (sequenceMultiplier === 1) ? dx : (dx + largeSeqOffset);
-              evalRoute([S, { x: T.x + adjustedDx, y: S.y }, { x: T.x + adjustedDx, y: T.y }, T], base + Math.abs(adjustedDx) * 0.5 + 8);
+              evalRoute([S, { x: T.x + dx, y: S.y }, { x: T.x + dx, y: T.y }, T], base + Math.abs(dx) + 8);
             }
             for (const dy of detours) {
-              const adjustedDy = (sequenceMultiplier === 1) ? dy : (dy + largeSeqOffset);
-              evalRoute([S, { x: S.x, y: T.y + adjustedDy }, { x: T.x, y: T.y + adjustedDy }, T], base + Math.abs(adjustedDy) * 0.5 + 8);
+              evalRoute([S, { x: S.x, y: T.y + dy }, { x: T.x, y: T.y + dy }, T], base + Math.abs(dy) + 8);
             }
           }
         }
@@ -848,24 +735,15 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       if (!best) {
         const sx = Math.round(sb.x + sb.w), sy = Math.round(sb.y + sb.h / 2);
         const tx = Math.round(tb.x), ty = Math.round(tb.y + tb.h / 2);
-        const seqOffset = (outCount > 1) ? (sequenceMultiplier * 250) : 0; // Offset apenas para múltiplas saídas
         const fallbackCandidates = (Math.abs(sy - ty) <= 2)
           ? [
-              [{ x: sx, y: sy }, { x: tx, y: ty }],
+              [{ x: sx, y: sy }, { x: tx, y: sy }, { x: tx, y: ty }],
               [{ x: sx, y: sy }, { x: sx, y: sy + 60 }, { x: tx, y: sy + 60 }, { x: tx, y: ty }],
-              [{ x: sx, y: sy }, { x: sx, y: sy - 60 }, { x: tx, y: sy - 60 }, { x: tx, y: ty }],
-              ...(outCount > 1 ? [
-                [{ x: sx, y: sy }, { x: sx + seqOffset, y: sy }, { x: sx + seqOffset, y: ty }, { x: tx, y: ty }],
-                [{ x: sx, y: sy }, { x: sx - seqOffset, y: sy }, { x: sx - seqOffset, y: ty }, { x: tx, y: ty }]
-              ] : [])
+              [{ x: sx, y: sy }, { x: sx, y: sy - 60 }, { x: tx, y: sy - 60 }, { x: tx, y: ty }]
             ]
           : [
               [{ x: sx, y: sy }, { x: tx, y: sy }, { x: tx, y: ty }],
-              [{ x: sx, y: sy }, { x: sx, y: ty }, { x: tx, y: ty }],
-              ...(outCount > 1 ? [
-                [{ x: sx, y: sy }, { x: sx + seqOffset, y: sy }, { x: sx + seqOffset, y: ty }, { x: tx, y: ty }],
-                [{ x: sx, y: sy }, { x: sx - seqOffset, y: sy }, { x: sx - seqOffset, y: ty }, { x: tx, y: ty }]
-              ] : [])
+              [{ x: sx, y: sy }, { x: sx, y: ty }, { x: tx, y: ty }]
             ];
         for (const cand of fallbackCandidates) {
           const rt = tryRoute(cand);
@@ -1235,4 +1113,3 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
   try { console.log('[ATP][OK] 13-visualizador-fluxos-bpmnio.js inicializado'); } catch (e) {}
 })();
 ;
-
