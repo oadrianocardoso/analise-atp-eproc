@@ -1,9 +1,9 @@
 ﻿// ==UserScript==
-// @name         Análise de ATP eProc (bmpn)
+// @name         Análise de ATP eProc
 // @namespace    https://github.com/oadrianocardoso/analise-atp-eproc
 // @description  Script para análise avançada de regras de ATP no eProc, com detecção de colisões e geração de relatórios.
 // @author       ADRIANO AUGUSTO CARDOSO E SANTOS
-// @version      11.2
+// @version      11.3
 // @downloadURL  https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/analise-atp-eproc.user.js
 // @updateURL    https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/main/analise-atp-eproc.user.js
 // @homepageURL  https://github.com/oadrianocardoso/analise-atp-eproc
