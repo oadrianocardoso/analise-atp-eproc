@@ -70,7 +70,7 @@ function atpFriendlyActionName(acao) {
     clique_filtrar_regras_conflitantes: 'Filtrar Regras Conflitantes',
     clique_gerar_relatorio_colisoes: 'Gerar Relatorio de Conflitos',
     clique_gerar_extrato_fluxos: 'Gerar Extrato de Fluxos',
-    clique_visualizar_fluxo: 'Visualizar Fluxos (BPMN.io)',
+    clique_visualizar_fluxo: 'Visualizar Fluxos',
     clique_dashboard_utilizacao: 'Abrir Dashboard de Utilizacao',
     clique_comparar: 'Comparar Regras'
   };
@@ -1214,7 +1214,6 @@ function recalc(table) {
     const conflicts = analyze(rules);
     render(table, rules, conflicts);
     try { markATPRenderTick(); } catch (e) {}
-
   }
 
   function findTable() {
@@ -1595,9 +1594,17 @@ function disableAlterarPreferenciaNumRegistros() {
 }
 
   async function init() {
+    try {
+      if (typeof showATPLoading === 'function') showATPLoading();
+      if (typeof setATPLoadingMsg === 'function') setATPLoadingMsg('Aguardando carregamento completo do eProc…');
+    } catch (_) {}
     injectStyle();
     const table = await waitTable();
-    if (!table) return;
+    if (!table) {
+      try { if (typeof hideATPLoading === 'function') hideATPLoading(); } catch (_) {}
+      return;
+    }
+    try { if (typeof setATPLoadingMsg === 'function') setATPLoadingMsg('Carregamento completo. Analisando colisões…'); } catch (_) {}
     disableAlterarPreferenciaNumRegistros();
     removeSortOrderControls();
     forceTableLengthTo1000();
@@ -1634,6 +1641,28 @@ function disableAlterarPreferenciaNumRegistros() {
       xml = baseXml;
     }
     return Promise.resolve({ ...(fileObj || {}), filename, xml, viewMode: 'swimlanes' });
+  }
+
+  function atpBootstrapInitLoading() {
+    try {
+      const urlLooksLikeTarget = /automatizar_localizadores/i.test(String(location.href || ''));
+      if (!urlLooksLikeTarget) return;
+      if (typeof showATPLoading === 'function') showATPLoading();
+      window.__ATP_PAGE_LOADED__ = (document.readyState === 'complete');
+      if (window.__ATP_PAGE_LOADED__) {
+        if (typeof setATPLoadingMsg === 'function') setATPLoadingMsg('Carregamento completo. Analisando colisões…');
+        try { if (typeof scheduleHideATPLoading === 'function') scheduleHideATPLoading(1800); } catch (_) {}
+      } else {
+        if (typeof setATPLoadingMsg === 'function') setATPLoadingMsg('Aguardando carregamento completo do eProc…');
+        window.addEventListener('load', () => {
+          try {
+            window.__ATP_PAGE_LOADED__ = true;
+            if (typeof setATPLoadingMsg === 'function') setATPLoadingMsg('Carregamento completo. Analisando colisões…');
+            if (typeof scheduleHideATPLoading === 'function') scheduleHideATPLoading(1800);
+          } catch (_) {}
+        }, { once: true });
+      }
+    } catch (_) {}
   }
 
   function atpOpenSelectedFlowFromPicker(table, sel) {
@@ -2329,6 +2358,7 @@ function disableAlterarPreferenciaNumRegistros() {
   function bootATPInit() {
     if (bootATPInit._started) return;
     bootATPInit._started = true;
+    atpBootstrapInitLoading();
     schedule(() => { init(); }, 1200);
   }
 

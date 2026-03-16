@@ -16,14 +16,83 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
   ];
   const MAX_PATHS = 160;
   const MAX_DEPTH = 120;
+  const FB_LOADING_ID = 'atp-bpmnio-fallback-loading';
   let PROM = null;
+  let loadingDepth = 0;
 
   const t = (v) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+  const tKeepNl = (v) => String(v == null ? '' : v)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t\f\v]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .trim();
+  const cutKeepNl = (v, max) => {
+    const s = tKeepNl(v || '');
+    const lim = Math.max(1, Number(max) || 1);
+    return s.length > lim ? (s.slice(0, Math.max(1, lim - 3)).trim() + '...') : s;
+  };
   const esc = (v) => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
   const clamp = (v, a, b) => Math.max(a, Math.min(b, Math.round(Number(v) || 0)));
   const hash = (v) => { const s = String(v == null ? '' : v); let h = 0; for (let i = 0; i < s.length; i++) { h = ((h << 5) - h) + s.charCodeAt(i); h |= 0; } return Math.abs(h).toString(36); };
   const sortNums = (arr) => arr.map(Number).filter(Number.isFinite).sort((a, b) => a - b);
   const avg = (arr, fb) => arr.length ? (arr.reduce((x, y) => x + y, 0) / arr.length) : (Number(fb) || 0);
+  const hasGlobalLoading = () => (
+    typeof window.showATPLoading === 'function' &&
+    typeof window.hideATPLoading === 'function'
+  );
+  const ensureFallbackLoading = () => {
+    try {
+      let el = document.getElementById(FB_LOADING_ID);
+      if (el) return el;
+      el = document.createElement('div');
+      el.id = FB_LOADING_ID;
+      el.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(243,244,246,.78);display:none;align-items:center;justify-content:center;font-family:Arial,Helvetica,sans-serif;';
+      el.innerHTML = ''
+        + '<div style="background:#fff;border:1px solid #d1d5db;border-radius:8px;padding:16px 20px;box-shadow:0 10px 25px rgba(0,0,0,.15);text-align:center;min-width:260px;">'
+        + '<div style="width:32px;height:32px;margin:0 auto 10px;border:3px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:atpBpmnIoSpin .8s linear infinite;"></div>'
+        + '<div id="atpBpmnIoFallbackLoadingMsg" style="font-size:13px;color:#374151;">Carregando...</div>'
+        + '</div>';
+      if (!document.getElementById('atp-bpmnio-fallback-loading-style')) {
+        const st = document.createElement('style');
+        st.id = 'atp-bpmnio-fallback-loading-style';
+        st.textContent = '@keyframes atpBpmnIoSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}';
+        (document.head || document.documentElement).appendChild(st);
+      }
+      (document.documentElement || document.body).appendChild(el);
+      return el;
+    } catch (_) {
+      return null;
+    }
+  };
+  const setAnyLoadingMsg = (msg) => {
+    try { if (typeof window.setATPLoadingMsg === 'function') window.setATPLoadingMsg(String(msg || 'Carregando...')); } catch (_) {}
+    try {
+      const m = document.getElementById('atpBpmnIoFallbackLoadingMsg');
+      if (m) m.textContent = String(msg || 'Carregando...');
+    } catch (_) {}
+  };
+  const showAnyLoading = (msg) => {
+    loadingDepth = Math.max(0, Number(loadingDepth) || 0) + 1;
+    if (hasGlobalLoading()) {
+      try { window.showATPLoading(); } catch (_) {}
+      setAnyLoadingMsg(msg);
+      return;
+    }
+    const el = ensureFallbackLoading();
+    setAnyLoadingMsg(msg);
+    try { if (el) el.style.display = 'flex'; } catch (_) {}
+  };
+  const hideAnyLoading = () => {
+    loadingDepth = Math.max(0, (Number(loadingDepth) || 0) - 1);
+    if (loadingDepth > 0) return;
+    if (hasGlobalLoading()) {
+      try { window.hideATPLoading(); } catch (_) {}
+    }
+    try {
+      const el = document.getElementById(FB_LOADING_ID);
+      if (el) el.style.display = 'none';
+    } catch (_) {}
+  };
 
   function ensureCss() {
     for (const href of CSS) {
@@ -122,6 +191,24 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const arr = (rule && rule.localizadorIncluirAcao && rule.localizadorIncluirAcao.acoes) || [];
     return Array.isArray(arr) ? arr.map((a) => t(a && a.acao || '')).filter(Boolean).join(' | ') : '';
   }
+  function cutText(v, max) {
+    const s = t(v || '');
+    const lim = Math.max(1, Number(max) || 1);
+    return s.length > lim ? (s.slice(0, lim).trim() + '...') : s;
+  }
+  function ruleTipoCriterio(rule) {
+    if (!rule || typeof rule !== 'object') return '';
+    const base = t(rule.tipoControleCriterio && rule.tipoControleCriterio.canonical
+      ? rule.tipoControleCriterio.canonical
+      : (rule.tipoControleCriterio || rule.tipoControle || ''));
+    return t(base);
+  }
+  function ruleOutrosCriterios(rule) {
+    if (!rule || typeof rule !== 'object') return '';
+    let outros = '';
+    try { outros = (typeof atpHumanizeOutrosCriteriosExpr === 'function') ? t(atpHumanizeOutrosCriteriosExpr(rule.outrosCriterios)) : t(rule.outrosCriterios && rule.outrosCriterios.canonical || ''); } catch (_) {}
+    return t(outros);
+  }
 
   function buildGraph(flow, byFrom) {
     const nodes = Array.isArray(flow && flow.nodes) ? flow.nodes.map(t).filter(Boolean) : [];
@@ -165,7 +252,18 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       if (!outs.length) { push(tokens, { terminal: true }); return; }
       if (depth >= MAX_DEPTH) { push(tokens.concat([{ type: 'cutoff' }]), { cutoff: true }); return; }
       for (const e of outs) {
-        const rt = { type: 'rule', ruleNum: ruleNum(e.rule), from: e.from, to: e.to, implied: !!e.implied, impliedLabel: t(e.impliedLabel || ''), condText: ruleCond(e.rule), actionText: ruleAction(e.rule) };
+        const rt = {
+          type: 'rule',
+          ruleNum: ruleNum(e.rule),
+          from: e.from,
+          to: e.to,
+          implied: !!e.implied,
+          impliedLabel: t(e.impliedLabel || ''),
+          condText: ruleCond(e.rule),
+          actionText: ruleAction(e.rule),
+          tipoCrit: ruleTipoCriterio(e.rule),
+          outrosCrit: ruleOutrosCriterios(e.rule)
+        };
         if (visited.has(e.to)) { push(tokens.concat([rt, { type: 'cycle', target: e.to }]), { cycle: true }); continue; }
         const nv = new Set(visited); nv.add(e.to);
         dfs(e.to, tokens.concat([rt, { type: 'locator', key: e.to }]), nv, depth + 1);
@@ -188,10 +286,19 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
 
   function tokenSpec(tok) {
     if (!tok || typeof tok !== 'object') return { type: 'task', name: 'Passo', doc: '', branch: '' };
-    if (tok.type === 'locator') return { type: 'task', name: t(tok.key) ? ('Localizador: ' + t(tok.key)) : 'Localizador', doc: '', branch: t(tok.key || '') };
+    if (tok.type === 'locator') return { type: 'task', name: t(tok.key) || 'Localizador', doc: '', branch: t(tok.key || '') };
     if (tok.type === 'rule') {
       const n = t(tok.ruleNum || '');
-      const name = n ? ('REGRA ' + n) : (t(tok.impliedLabel || '') || 'Regra de Continuidade');
+      const baseName = 'Regra Nº ' + (n || '?');
+      const acoes = t(tok.actionText || '');
+      const tipoCrit = t(tok.tipoCrit || '');
+      const outrosCrit = t(tok.outrosCrit || '');
+      const name = [
+        baseName,
+        'Ações: ' + (acoes || '-'),
+        'Criérios: ' + (tipoCrit || '-'),
+        'Outros Critérios: ' + (outrosCrit || '-')
+      ].join('\n');
       const doc = [tok.from ? ('REMOVER: ' + t(tok.from)) : '', tok.to ? ('INCLUIR: ' + t(tok.to)) : '', tok.condText ? ('SE: ' + t(tok.condText)) : '', tok.actionText ? ('ACAO: ' + t(tok.actionText)) : ''].filter(Boolean).join(' | ');
       return { type: 'serviceTask', name, doc, branch: n ? ('Regra ' + n) : 'Regra' };
     }
@@ -203,8 +310,8 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
   function dims(type) {
     if (type === 'startEvent' || type === 'endEvent') return { w: 36, h: 36 };
     if (type === 'exclusiveGateway') return { w: 60, h: 60 };
-    if (type === 'serviceTask') return { w: 280, h: 90 };
-    return { w: 220, h: 74 };
+    if (type === 'serviceTask') return { w: 280, h: 120 };
+    return { w: 220, h: 120 };
   }
 
   function buildBpmnFromFlow(data, flowIdx) {
@@ -266,10 +373,12 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
           : type === 'exclusiveGateway' ? 'exclusiveGateway'
             : type === 'serviceTask' ? 'rule'
               : 'locator';
+      const fullName = cutKeepNl(name || '', 3000);
       const el = Object.assign({
         id: nextId(prefix, laneIdx),
         type,
-        name: t(name || ''),
+        name: cutKeepNl(name || '', 200),
+        tooltip: fullName,
         doc: t(doc || ''),
         lane: laneIdx,
         col: Math.max(0, Number(col) || 0)
@@ -293,7 +402,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
       let gwEl = gatewayByKey.get(lk) || null;
       let created = false;
       if (!locEl) {
-        locEl = createEl('task', laneIdx, startCol, `Localizador: ${lk}`, '', { key: lk });
+        locEl = createEl('task', laneIdx, startCol, lk, '', { key: lk });
         locatorByKey.set(lk, locEl);
         created = true;
       }
@@ -364,7 +473,16 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         branchPos++;
         const toKey = t(e && e.to || '');
         const num = t(ruleNum(e && e.rule));
-        const ruleName = num ? `REGRA ${num}` : (t(e && e.impliedLabel || '') || `RAMO ${branchPos}`);
+        const acoes = t(ruleAction(e && e.rule));
+        const tipoCrit = ruleTipoCriterio(e && e.rule);
+        const outrosCrit = ruleOutrosCriterios(e && e.rule);
+        const ruleBaseName = `Regra Nº ${num || '?'}`;
+        const ruleName = [
+          ruleBaseName,
+          `Ações: ${acoes || '-'}`,
+          `Criérios: ${tipoCrit || '-'}`,
+          `Outros Critérios: ${outrosCrit || '-'}`
+        ].join('\n');
         const ruleDoc = [
           e && e.from ? (`REMOVER: ${t(e.from)}`) : '',
           e && e.to ? (`INCLUIR: ${t(e.to)}`) : '',
@@ -632,6 +750,10 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         const sy = Math.round(sb.y + sb.h / 2);
         const tx = Math.round(tb.x);
         const ty = Math.round(tb.y + tb.h / 2);
+        const isLeftReturn = tx < sx;
+        if (isLeftReturn) {
+          // Para retorno a esquerda, usa roteamento geral com checagem de colisao.
+        } else {
         const trunkX = sourceTrunkX.has(f.a) ? sourceTrunkX.get(f.a) : (sx + 24);
         if (!sourceTrunkX.has(f.a)) sourceTrunkX.set(f.a, trunkX);
         if (outOrder === 1) {
@@ -649,12 +771,17 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         way.set(f.id, forcedSplit);
         reservePolyline(forcedSplit);
         continue;
+        }
       }
       if (isManyToOne) {
         const sx = Math.round(sb.x + sb.w);
         const sy = Math.round(sb.y + sb.h / 2);
         const tx = Math.round(tb.x);
         const ty = Math.round(tb.y + tb.h / 2);
+        const isLeftReturn = tx < sx;
+        if (isLeftReturn) {
+          // Para retorno a esquerda, usa roteamento geral com checagem de colisao.
+        } else {
         const trunkX = targetTrunkX.has(f.b) ? targetTrunkX.get(f.b) : Math.max(sx + 24, tx - 86);
         if (!targetTrunkX.has(f.b)) targetTrunkX.set(f.b, trunkX);
         if (inOrder === 1) {
@@ -672,6 +799,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         way.set(f.id, forcedMerge);
         reservePolyline(forcedMerge);
         continue;
+        }
       }
       const portPenalty = (side, isSource) => {
         // Menor penalidade para o lado naturalmente "apontado" para o alvo.
@@ -710,11 +838,11 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
           const S = { x: Math.round(sp.x), y: Math.round(sp.y) };
           const T = { x: Math.round(tp.x), y: Math.round(tp.y) };
           const base = (Number(sp.pen) || 0) + (Number(tp.pen) || 0);
-          if (S.x === T.x || S.y === T.y) {
-            evalRoute([S, T], base);
-          } else {
-            evalRoute([S, { x: T.x, y: S.y }, T], base);
-            evalRoute([S, { x: S.x, y: T.y }, T], base);
+	          if (S.x === T.x || S.y === T.y) {
+	            evalRoute([S, T], base);
+	          } else {
+	            evalRoute([S, { x: T.x, y: S.y }, T], base);
+	            evalRoute([S, { x: S.x, y: T.y }, T], base);
             const detours = [40, -40, 80, -80, 140, -140, 220, -220];
             for (const dx of detours) {
               evalRoute([S, { x: S.x + dx, y: S.y }, { x: S.x + dx, y: T.y }, T], base + Math.abs(dx));
@@ -725,30 +853,64 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
             for (const dx of detours) {
               evalRoute([S, { x: T.x + dx, y: S.y }, { x: T.x + dx, y: T.y }, T], base + Math.abs(dx) + 8);
             }
-            for (const dy of detours) {
-              evalRoute([S, { x: S.x, y: T.y + dy }, { x: T.x, y: T.y + dy }, T], base + Math.abs(dy) + 8);
-            }
-          }
-        }
-      }
+	            for (const dy of detours) {
+	              evalRoute([S, { x: S.x, y: T.y + dy }, { x: T.x, y: T.y + dy }, T], base + Math.abs(dy) + 8);
+	            }
+	            // Para conexoes que retornam para a esquerda, tenta um "corredor" externo
+	            // para reduzir sobreposicoes com shapes/linhas do miolo.
+	            if (dxCT < 0 && S.x > T.x) {
+	              const leftDetours = [40, 80, 120, 180, 260, 340];
+	              const minX = Math.min(S.x, T.x);
+                const minObsY = allObstacles.reduce((m, o) => Math.min(m, Number(o.y) || 0), Number.POSITIVE_INFINITY);
+                const maxObsY = allObstacles.reduce((m, o) => Math.max(m, (Number(o.y) || 0) + (Number(o.h) || 0)), Number.NEGATIVE_INFINITY);
+                const safeTopY = Math.round(minObsY - 70);
+                const safeBottomY = Math.round(maxObsY + 70);
+	              for (const off of leftDetours) {
+	                const corridorX = minX - off;
+	                evalRoute(
+	                  [S, { x: corridorX, y: S.y }, { x: corridorX, y: T.y }, T],
+	                  base + 16 + off
+	                );
+                  // Corredores externos (acima/abaixo) para fugir do miolo carregado.
+                  evalRoute(
+                    [S, { x: corridorX, y: S.y }, { x: corridorX, y: safeTopY }, { x: T.x - 24, y: safeTopY }, { x: T.x - 24, y: T.y }, T],
+                    base + 28 + off
+                  );
+                  evalRoute(
+                    [S, { x: corridorX, y: S.y }, { x: corridorX, y: safeBottomY }, { x: T.x - 24, y: safeBottomY }, { x: T.x - 24, y: T.y }, T],
+                    base + 28 + off
+                  );
+	              }
+	            }
+	          }
+	        }
+	      }
 
-      if (!best) {
-        const sx = Math.round(sb.x + sb.w), sy = Math.round(sb.y + sb.h / 2);
-        const tx = Math.round(tb.x), ty = Math.round(tb.y + tb.h / 2);
-        const fallbackCandidates = (Math.abs(sy - ty) <= 2)
-          ? [
-              [{ x: sx, y: sy }, { x: tx, y: sy }, { x: tx, y: ty }],
-              [{ x: sx, y: sy }, { x: sx, y: sy + 60 }, { x: tx, y: sy + 60 }, { x: tx, y: ty }],
-              [{ x: sx, y: sy }, { x: sx, y: sy - 60 }, { x: tx, y: sy - 60 }, { x: tx, y: ty }]
-            ]
-          : [
-              [{ x: sx, y: sy }, { x: tx, y: sy }, { x: tx, y: ty }],
-              [{ x: sx, y: sy }, { x: sx, y: ty }, { x: tx, y: ty }]
-            ];
-        for (const cand of fallbackCandidates) {
-          const rt = tryRoute(cand);
-          if (rt) { best = rt; break; }
-        }
+	      if (!best) {
+	        const sx = Math.round(sb.x + sb.w), sy = Math.round(sb.y + sb.h / 2);
+	        const tx = Math.round(tb.x), ty = Math.round(tb.y + tb.h / 2);
+	        const isLeftReturn = (tx < sx);
+	        const corridorLeft = Math.min(sx, tx) - 120;
+	        const fallbackCandidates = isLeftReturn
+	          ? [
+	              [{ x: sx, y: sy }, { x: corridorLeft, y: sy }, { x: corridorLeft, y: ty }, { x: tx, y: ty }],
+	              [{ x: sx, y: sy }, { x: corridorLeft - 80, y: sy }, { x: corridorLeft - 80, y: ty }, { x: tx, y: ty }],
+	              [{ x: sx, y: sy }, { x: sx, y: ty }, { x: tx, y: ty }]
+	            ]
+	          : (Math.abs(sy - ty) <= 2)
+	            ? [
+	                [{ x: sx, y: sy }, { x: tx, y: sy }, { x: tx, y: ty }],
+	                [{ x: sx, y: sy }, { x: sx, y: sy + 60 }, { x: tx, y: sy + 60 }, { x: tx, y: ty }],
+	                [{ x: sx, y: sy }, { x: sx, y: sy - 60 }, { x: tx, y: sy - 60 }, { x: tx, y: ty }]
+	              ]
+	            : [
+	                [{ x: sx, y: sy }, { x: tx, y: sy }, { x: tx, y: ty }],
+	                [{ x: sx, y: sy }, { x: sx, y: ty }, { x: tx, y: ty }]
+	              ];
+	        for (const cand of fallbackCandidates) {
+	          const rt = tryRoute(cand);
+	          if (rt) { best = rt; break; }
+	        }
         if (!best) best = orthogonalizePts(fallbackCandidates[0]);
       }
       const finalRoute = orthogonalizePts(best);
@@ -806,12 +968,16 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     x.push('  </bpmndi:BPMNDiagram>');
     x.push('</bpmn:definitions>');
 
+    const tooltipById = {};
+    for (const e of elements) tooltipById[e.id] = cutKeepNl(e && e.tooltip ? e.tooltip : e.name, 3000);
+
     const starts = Array.isArray(flow.starts) ? flow.starts.map(t).filter(Boolean) : [];
     const safe = t(starts[0] || 'inicio').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'inicio';
     return {
       xml: x.join('\n'),
       filename: `fluxo_${String(flowIdx + 1).padStart(2, '0')}_${safe}_arvore_pool_virtual.bpmn`,
-      pathsCount: flows.length
+      pathsCount: flows.length,
+      tooltipById
     };
   }
 
@@ -831,11 +997,14 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
   }
 
   function openModal() {
+    const startLoading = (msg) => showAnyLoading(msg || 'Carregando visualizador...');
+    const stopLoading = () => hideAnyLoading();
+
     const rules = getRules();
-    if (!rules.length) { alert('Nao foi possivel obter as regras da tabela para montar o fluxo.'); return; }
+    if (!rules.length) { stopLoading(); alert('Nao foi possivel obter as regras da tabela para montar o fluxo.'); return; }
     const data = getFluxosData(rules);
     const fluxos = Array.isArray(data.fluxos) ? data.fluxos : [];
-    if (!fluxos.length) { alert('Nenhum fluxo detectado para visualizar.'); return; }
+    if (!fluxos.length) { stopLoading(); alert('Nenhum fluxo detectado para visualizar.'); return; }
 
     closeModal();
     const overlay = document.createElement('div');
@@ -867,7 +1036,7 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
     const canvas = document.createElement('div'); canvas.className = 'atp-map-canvas'; body.appendChild(canvas);
     box.appendChild(top); box.appendChild(body); overlay.appendChild(box); document.body.appendChild(overlay);
 
-    const st = { data, viewer: null, xml: '', filename: '', zoom: 1, chainIds: new Set(), chainMarkerBackup: new Map(), impactBound: false, lastElementClickTs: 0 };
+    const st = { data, viewer: null, xml: '', filename: '', tooltipById: {}, zoom: 1, chainIds: new Set(), chainMarkerBackup: new Map(), impactBound: false, lastElementClickTs: 0 };
     const ATP_CHAIN_MARKER = 'atp-chain-selected';
     const setZoom = (v) => { const n = Number(v); if (!Number.isFinite(n)) return; st.zoom = n; zoomLab.textContent = Math.round(n * 100) + '%'; };
     const extractMarkerId = (markerUrl) => {
@@ -998,31 +1167,39 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         const bo = el.businessObject;
         const bType = String(bo.$type || '');
 
+        // Destaca apenas 1 grau para frente: no clicado -> linhas de saida -> nos de destino.
+        const elementRegistry = st.viewer.get('elementRegistry');
+        const resolveElementById = (id) => {
+          try { return elementRegistry && elementRegistry.get(String(id || '')); } catch (_) { return null; }
+        };
+        const highlightOneDegreeForward = (nodeEl) => {
+          if (!nodeEl || !nodeEl.id) return;
+          addChainMarker(String(nodeEl.id));
+          const outgoing = Array.from((nodeEl && nodeEl.outgoing) || []);
+          for (const conn of outgoing) {
+            const fid = String(conn && conn.id || '');
+            if (fid) addChainMarker(fid);
+            const targetEl = (conn && conn.target) ? conn.target : null;
+            const tid = String(targetEl && targetEl.id || '');
+            if (tid) addChainMarker(tid);
+          }
+        };
+
         if (bType === 'bpmn:SequenceFlow') {
           addChainMarker(el.id);
           if (bo.sourceRef && bo.sourceRef.id) addChainMarker(String(bo.sourceRef.id));
-          if (bo.targetRef && bo.targetRef.id) addChainMarker(String(bo.targetRef.id));
+          if (bo.targetRef && bo.targetRef.id) {
+            addChainMarker(String(bo.targetRef.id));
+            const targetEl = resolveElementById(String(bo.targetRef.id));
+            if (targetEl) highlightOneDegreeForward(targetEl);
+          }
           return;
         }
 
-        const incoming = Array.from((bo && bo.incoming) || []);
-        const outgoing = Array.from((bo && bo.outgoing) || []);
         const isFlowNode = !!(bo && typeof bo.$instanceOf === 'function' && bo.$instanceOf('bpmn:FlowNode'));
-        if (!isFlowNode && !incoming.length && !outgoing.length) return;
-
-        addChainMarker(el.id);
-        for (const f of incoming) {
-          const fid = String(f && f.id || '');
-          const sid = String(f && f.sourceRef && f.sourceRef.id || '');
-          if (fid) addChainMarker(fid);
-          if (sid) addChainMarker(sid);
-        }
-        for (const f of outgoing) {
-          const fid = String(f && f.id || '');
-          const tid = String(f && f.targetRef && f.targetRef.id || '');
-          if (fid) addChainMarker(fid);
-          if (tid) addChainMarker(tid);
-        }
+        const outgoing = Array.from((el && el.outgoing) || []);
+        if (!isFlowNode && !outgoing.length) return;
+        highlightOneDegreeForward(el);
       } catch (_) {}
     };
     const bindImpactHandlers = () => {
@@ -1045,6 +1222,21 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         });
       } catch (_) {}
     };
+    const setModalLoading = (on, msg) => {
+      try {
+        if (on) {
+          // Evita abrir duas vezes (clique no botao + render inicial).
+          if ((Number(loadingDepth) || 0) > 0) setAnyLoadingMsg(msg || 'Renderizando fluxo...');
+          else startLoading(msg || 'Renderizando fluxo...');
+        } else {
+          stopLoading();
+        }
+      } catch (_) {}
+      try {
+        btnRender.disabled = !!on;
+        sel.disabled = !!on;
+      } catch (_) {}
+    };
     const importXml = (xml) => ensureViewer().then((BpmnJS) => {
       if (!st.viewer) {
         st.viewer = new BpmnJS({ container: canvas, keyboard: { bindTo: overlay } });
@@ -1052,18 +1244,61 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
         bindImpactHandlers();
       }
       clearChainSelection();
-      return st.viewer.importXML(xml).then(() => { const cv = st.viewer.get('canvas'); cv.zoom('fit-viewport'); setZoom(cv.zoom()); });
+      return st.viewer.importXML(xml).then(() => {
+        const cv = st.viewer.get('canvas');
+        cv.zoom('fit-viewport');
+        setZoom(cv.zoom());
+        try {
+          const elementRegistry = st.viewer.get('elementRegistry');
+          const setTitle = (gfx, txt) => {
+            if (!gfx || !txt) return;
+            let tEl = gfx.querySelector('title');
+            if (!tEl) {
+              tEl = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+              gfx.insertBefore(tEl, gfx.firstChild || null);
+            }
+            tEl.textContent = cutKeepNl(txt, 3000);
+          };
+          Object.keys(st.tooltipById || {}).forEach((id) => {
+            try {
+              const el = elementRegistry && elementRegistry.get(String(id));
+              if (!el) return;
+              const gfx = elementRegistry.getGraphics(el);
+              setTitle(gfx, st.tooltipById[id]);
+              const lbl = elementRegistry.get(String(id) + '_label');
+              if (lbl) setTitle(elementRegistry.getGraphics(lbl), st.tooltipById[id]);
+            } catch (_) {}
+          });
+        } catch (_) {}
+      });
     });
+    let renderToken = 0;
     const render = () => {
+      const token = ++renderToken;
       const idx = parseInt(String(sel.value || '0'), 10);
       const i = Number.isFinite(idx) ? Math.max(0, Math.min(idx, fluxos.length - 1)) : 0;
-      sel.value = String(i); sub.textContent = 'Gerando BPMN...';
+      sel.value = String(i);
+      sub.textContent = 'Gerando BPMN...';
+      setModalLoading(true, 'Gerando BPMN...');
       try {
         const b = buildBpmnFromFlow(st.data, i);
-        st.xml = b.xml; st.filename = b.filename;
-        sub.textContent = `Fluxo ${String(i + 1).padStart(2, '0')} renderizado em arvore com ${b.pathsCount} caminho(s)/pool(s) virtual(is).`;
-        importXml(st.xml).catch((e) => { try { console.warn(LOG, 'Falha ao importar XML:', e); } catch (_) {} sub.textContent = 'Falha ao renderizar no bpmn.io (bloqueio de rede/CSP).'; });
-      } catch (e) { try { console.warn(LOG, 'Falha ao montar BPMN:', e); } catch (_) {} sub.textContent = 'Falha ao gerar BPMN do fluxo selecionado.'; }
+        st.xml = b.xml; st.filename = b.filename; st.tooltipById = b.tooltipById || {};
+        importXml(st.xml)
+          .then(() => {
+            if (token !== renderToken) return;
+            sub.textContent = `Fluxo ${String(i + 1).padStart(2, '0')} renderizado em arvore com ${b.pathsCount} caminho(s)/pool(s) virtual(is).`;
+          })
+          .catch((e) => {
+            try { console.warn(LOG, 'Falha ao importar XML:', e); } catch (_) {}
+            if (token !== renderToken) return;
+            sub.textContent = 'Falha ao renderizar no bpmn.io (bloqueio de rede/CSP).';
+          })
+          .finally(() => { if (token === renderToken) setModalLoading(false); });
+      } catch (e) {
+        try { console.warn(LOG, 'Falha ao montar BPMN:', e); } catch (_) {}
+        sub.textContent = 'Falha ao gerar BPMN do fluxo selecionado.';
+        setModalLoading(false);
+      }
     };
     btnRender.addEventListener('click', render); sel.addEventListener('change', render);
     btnDown.addEventListener('click', () => {
@@ -1090,15 +1325,47 @@ try { console.log('[ATP][LOAD] 13-visualizador-fluxos-bpmnio.js carregado com su
   function ensureButton() {
     const host = document.getElementById('dvFiltrosOpcionais');
     if (!host) return;
-    if (host.querySelector('#' + BTN_ID)) return;
+    const anchor = host.querySelector('#btnExtratoFluxosATP');
+    const existing = host.querySelector('#' + BTN_ID);
+    if (existing) {
+      // Reposiciona com segurança sem recriar handler/loading.
+      if (anchor && anchor.parentNode === host && existing.previousSibling !== anchor) {
+        anchor.insertAdjacentElement('afterend', existing);
+      }
+      return;
+    }
     const btn = document.createElement('button');
     btn.type = 'button'; btn.id = BTN_ID; btn.className = 'infraButton';
-    btn.textContent = 'Visualizar Fluxos (Arvore BPMN.io)'; btn.style.marginLeft = '8px';
-    btn.addEventListener('click', openModal);
-    const anchor = host.querySelector('#btnExtratoFluxosATP');
+    btn.textContent = 'Visualizar Fluxos'; btn.style.marginLeft = '8px';
+    btn.addEventListener('click', () => {
+      try {
+        if (btn.dataset.atpBusy === '1') return;
+        btn.dataset.atpBusy = '1';
+        btn.disabled = true;
+        showAnyLoading('Abrindo visualizador de fluxos...');
+        setTimeout(() => {
+          try { openModal(); } catch (_) { try { hideAnyLoading(); } catch (_) {} } finally {
+            btn.dataset.atpBusy = '0';
+            btn.disabled = false;
+          }
+        }, 0);
+      } catch (_) {
+        try {
+          btn.dataset.atpBusy = '0';
+          btn.disabled = false;
+          hideAnyLoading();
+        } catch (_) {}
+      }
+    });
     const dash = host.querySelector('#btnDashboardUsoATP');
-    if (anchor && anchor.parentNode === host) { host.insertBefore(btn, anchor.nextSibling); return; }
-    if (dash && dash.parentNode === host) { host.insertBefore(btn, dash); return; }
+    if (anchor && anchor.parentNode === host) {
+      anchor.insertAdjacentElement('afterend', btn);
+      return;
+    }
+    if (dash && dash.parentNode === host) {
+      host.insertBefore(btn, dash);
+      return;
+    }
     host.appendChild(btn);
   }
 
