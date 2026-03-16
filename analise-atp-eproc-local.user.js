@@ -23,7 +23,7 @@
 // @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/07-extratos-de-fluxos.js
 // @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/11-coordenador-de-fluxos.js
 // @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/10-ui-inicializacao.js
-// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/13-visualizador-fluxos-bpmnio.js?v=11.0
+// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/13-visualizador-fluxos-bpmnio.js
 // @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/12-monitor-de-acesso.js
 // ==/UserScript==
 
