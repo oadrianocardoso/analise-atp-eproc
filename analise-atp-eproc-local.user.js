@@ -1,11 +1,11 @@
 ﻿// ==UserScript==
-// @name         Análise de ATP eProc (bmpn)
+// @name         Análise de ATP eProc (LOCAL)
 // @namespace    https://github.com/oadrianocardoso/analise-atp-eproc
 // @description  Script para análise avançada de regras de ATP no eProc, com detecção de colisões e geração de relatórios.
 // @author       ADRIANO AUGUSTO CARDOSO E SANTOS
-// @version      10.88
-// @downloadURL  https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/analise-atp-eproc.user.js
-// @updateURL    https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/analise-atp-eproc.user.js
+// @version      11.1
+// @downloadURL  file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/analise-atp-eproc.user.js
+// @updateURL    file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/analise-atp-eproc.user.js
 // @homepageURL  https://github.com/oadrianocardoso/analise-atp-eproc
 // @supportURL   https://github.com/oadrianocardoso/analise-atp-eproc/issues
 // @run-at       document-start
@@ -14,17 +14,17 @@
 // @match        *://*/*/controlador.php?acao=automatizar_localizadores*
 // @match        *://*/*/*/controlador.php?acao=automatizar_localizadores*
 // @grant        none
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/01-config.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/02-utilitarios.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/03-logs.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/04-styles.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/05-extrator-de-dados.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/06-analisador-de-colisoes.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/07-extratos-de-fluxos.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/11-coordenador-de-fluxos.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/10-ui-inicializacao.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/13-visualizador-fluxos-bpmnio.js
-// @require      https://raw.githubusercontent.com/oadrianocardoso/analise-atp-eproc/bmpn/12-monitor-de-acesso.js
+// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/01-config.js
+// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/02-utilitarios.js
+// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/03-logs.js
+// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/04-styles.js
+// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/05-extrator-de-dados.js
+// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/06-analisador-de-colisoes.js
+// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/07-extratos-de-fluxos.js
+// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/11-coordenador-de-fluxos.js
+// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/10-ui-inicializacao.js
+// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/13-visualizador-fluxos-bpmnio.js?v=11.0
+// @require      file:///C:/Users/Adriano/Desktop/PROJETOS/analise-atp-eproc/12-monitor-de-acesso.js
 // ==/UserScript==
 
 /*

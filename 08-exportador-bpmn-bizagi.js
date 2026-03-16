@@ -245,6 +245,316 @@
     return pos;
   }
 
+  function layoutGrid(flow, opts) {
+    // Layout em GRID 2D: agrupa nós por profundidade (eixo X) 
+    // e distribui horizontalmente múltiplas colunas dentro de cada profundidade
+    opts = opts || {};
+    const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 240;     // Espaço entre profundidades (horizontal)
+    const COL_W = (opts.COL_W != null) ? opts.COL_W : 200;       // Largura entre colunas (no mesmo nível)
+    const Y_GAP = (opts.Y_GAP != null) ? opts.Y_GAP : 40;        // Espaço entre nós verticalmente
+    const PAD_X = (opts.PAD_X != null) ? opts.PAD_X : 60;
+    const PAD_Y = (opts.PAD_Y != null) ? opts.PAD_Y : 60;
+    const MAX_COLS_PER_DEPTH = (opts.MAX_COLS != null) ? opts.MAX_COLS : 4; // Máx nós por coluna
+
+    const nodes = flow.nodes || [];
+    const edges = flow.edges || [];
+    const byId = {};
+    for (const n of nodes) byId[n.id] = n;
+
+    const dims = (n) => {
+      if (n.type === 'gateway') return { w: 50, h: 50 };
+      if (n.type === 'start' || n.type === 'end') return { w: 36, h: 36 };
+      if (n.type === 'service') return { w: 150, h: 64 };
+      return { w: 170, h: 70 };
+    };
+
+    // Calcular profundidades (same as layoutDER)
+    const out = {}, inc = {};
+    for (const n of nodes) { out[n.id] = []; inc[n.id] = []; }
+    for (const e of edges) {
+      if (!out[e.from]) out[e.from] = [];
+      if (!inc[e.to]) inc[e.to] = [];
+      out[e.from].push(e.to);
+      inc[e.to].push(e.from);
+    }
+
+    let root = null;
+    for (const n of nodes) { if (n.type === 'start') { root = n.id; break; } }
+    if (!root) for (const n of nodes) { if ((inc[n.id] || []).length === 0) { root = n.id; break; } }
+    if (!root && nodes.length) root = nodes[0].id;
+    if (!root) return { __ATP_ALL_BOXES__: [], __ATP_GAP_Y_MIN__: Y_GAP };
+
+    const depth = {};
+    const q = [root];
+    depth[root] = 0;
+    while (q.length) {
+      const u = q.shift();
+      const du = depth[u] || 0;
+      const kids = out[u] || [];
+      for (const v of kids) {
+        const cand = du + 1;
+        if (depth[v] == null || cand < depth[v]) {
+          depth[v] = cand;
+          q.push(v);
+        }
+      }
+    }
+    const maxD = Math.max(...Object.values(depth).concat([0]));
+    for (const n of nodes) if (depth[n.id] == null) depth[n.id] = maxD + 1;
+
+    // Agrupar nós por profundidade
+    const byDepth = {};
+    for (const n of nodes) {
+      const d = depth[n.id] || 0;
+      (byDepth[d] = byDepth[d] || []).push(n.id);
+    }
+
+    // Distribuir nós em GRID: profundidade → coluna; dentro coluna → múltiplas linhas
+    const layout = {};
+    for (const depthStr of Object.keys(byDepth).sort((a, b) => parseInt(a) - parseInt(b))) {
+      const d = parseInt(depthStr);
+      const nodesAtDepth = byDepth[d].slice();
+      const x = PAD_X + d * X_STEP;
+
+      // Dividir nós em colunas (MAX_COLS_PER_DEPTH nós por coluna)
+      const cols = [];
+      for (let i = 0; i < nodesAtDepth.length; i += MAX_COLS_PER_DEPTH) {
+        cols.push(nodesAtDepth.slice(i, i + MAX_COLS_PER_DEPTH));
+      }
+
+      let maxY = PAD_Y;
+      // Espaço HORIZONTAL entre colunas (muito maior para distribuição em grid)
+      const colSpacing = colWidth * 1.3;  // Adiciona 30% extra de espaço
+
+      for (let colIdx = 0; colIdx < cols.length; colIdx++) {
+        const col = cols[colIdx];
+        // Distribui colunas muito mais para a DIREITA
+        const colX = x + colIdx * colSpacing;
+        let y = PAD_Y;
+
+        for (const nodeId of col) {
+          const n = byId[nodeId];
+          const d = dims(n);
+          layout[nodeId] = { x: colX, y, w: d.w, h: d.h };
+          y += d.h + Y_GAP;
+        }
+
+        maxY = Math.max(maxY, y);
+      }
+    }
+
+    layout.__ATP_ALL_BOXES__ = nodes.map(n => ({ id: n.id, ...layout[n.id] })).filter(b => b.x != null);
+    layout.__ATP_GAP_Y_MIN__ = Y_GAP;
+
+    return layout;
+  }
+
+  function layoutSwimlanes(flow, opts) {
+    // Layout Swimlanes com isolamento de caminhos:
+    // - split cria novas lanes por branch
+    // - merges não puxam ramos para a mesma lane antiga
+    // - cada caminho mantém faixa dedicada (L -> R)
+    opts = opts || {};
+    const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 300;
+    const LANE_HEIGHT = (opts.LANE_HEIGHT != null) ? opts.LANE_HEIGHT : 140;
+    const LANE_GAP = (opts.LANE_GAP != null) ? opts.LANE_GAP : 34;
+    const Y_GAP = (opts.Y_GAP != null) ? opts.Y_GAP : 25;
+    const PAD_X = (opts.PAD_X != null) ? opts.PAD_X : 60;
+    const PAD_Y = (opts.PAD_Y != null) ? opts.PAD_Y : 60;
+
+    const nodes = flow.nodes || [];
+    const edges = flow.edges || [];
+    const byId = {};
+    for (const n of nodes) byId[n.id] = n;
+
+    const dims = (n) => {
+      if (n.type === 'gateway') return { w: 50, h: 50 };
+      if (n.type === 'start' || n.type === 'end') return { w: 36, h: 36 };
+      if (n.type === 'service') return { w: 150, h: 64 };
+      return { w: 170, h: 70 };
+    };
+
+    const out = {}, inc = {};
+    for (const n of nodes) { out[n.id] = []; inc[n.id] = []; }
+    for (const e of edges) {
+      if (!out[e.from]) out[e.from] = [];
+      if (!inc[e.to]) inc[e.to] = [];
+      out[e.from].push(e.to);
+      inc[e.to].push(e.from);
+    }
+    for (const id of Object.keys(out)) out[id].sort((a, b) => String(a).localeCompare(String(b)));
+    for (const id of Object.keys(inc)) inc[id].sort((a, b) => String(a).localeCompare(String(b)));
+
+    // Profundidade por BFS multi-root (mantém estrutura L -> R)
+    const depth = {};
+    const roots = nodes
+      .filter(n => n.type === 'start' || (inc[n.id] || []).length === 0)
+      .map(n => n.id);
+    if (!roots.length && nodes.length) roots.push(nodes[0].id);
+
+    const q = roots.slice();
+    for (const r of roots) depth[r] = 0;
+    while (q.length) {
+      const u = q.shift();
+      const du = Number(depth[u] || 0);
+      for (const v of (out[u] || [])) {
+        const cand = du + 1;
+        if (depth[v] == null || cand < depth[v]) {
+          depth[v] = cand;
+          q.push(v);
+        }
+      }
+    }
+    const maxD = Math.max(...Object.values(depth).concat([0]));
+    for (const n of nodes) if (depth[n.id] == null) depth[n.id] = maxD + 1;
+
+    const ordered = nodes.slice().sort((a, b) =>
+      Number(depth[a.id] || 0) - Number(depth[b.id] || 0)
+      || String(a.id).localeCompare(String(b.id))
+    );
+
+    const laneTokenByNode = {};
+    const laneAnchorByToken = {};
+    let laneSeq = 0;
+    const allocToken = (anchor) => {
+      const t = 'L' + (++laneSeq);
+      laneAnchorByToken[t] = Number.isFinite(Number(anchor)) ? Number(anchor) : laneSeq;
+      return t;
+    };
+    const uniq = (arr) => Array.from(new Set((arr || []).filter(Boolean)));
+    const rootsSorted = roots.slice().sort((a, b) => String(a).localeCompare(String(b)));
+
+    for (let i = 0; i < rootsSorted.length; i++) {
+      const r = rootsSorted[i];
+      if (!laneTokenByNode[r]) laneTokenByNode[r] = allocToken(i);
+    }
+
+    for (const n of ordered) {
+      const id = n.id;
+      const parents = (inc[id] || [])
+        .filter(pid => Number(depth[pid] || 0) < Number(depth[id] || 0))
+        .sort((a, b) => String(a).localeCompare(String(b)));
+
+      if (!laneTokenByNode[id]) {
+        const parentTokens = uniq(parents.map(p => laneTokenByNode[p]));
+        if (!parentTokens.length) {
+          laneTokenByNode[id] = allocToken(laneSeq + 1);
+        } else if (parentTokens.length === 1) {
+          laneTokenByNode[id] = parentTokens[0];
+        } else {
+          const avg = parentTokens.reduce((s, t) => s + Number(laneAnchorByToken[t] || 0), 0) / parentTokens.length;
+          laneTokenByNode[id] = allocToken(avg + 0.001);
+        }
+      }
+
+      const kids = (out[id] || [])
+        .filter(k => Number(depth[k] || 0) > Number(depth[id] || 0))
+        .sort((a, b) => (Number(depth[a] || 0) - Number(depth[b] || 0)) || String(a).localeCompare(String(b)));
+      if (!kids.length) continue;
+
+      if (kids.length === 1) {
+        const k = kids[0];
+        if (!laneTokenByNode[k]) laneTokenByNode[k] = laneTokenByNode[id];
+        continue;
+      }
+
+      const baseToken = laneTokenByNode[id];
+      const baseAnchor = Number(laneAnchorByToken[baseToken] || 0);
+      const half = (kids.length - 1) / 2;
+      for (let i = 0; i < kids.length; i++) {
+        const k = kids[i];
+        if (laneTokenByNode[k]) continue;
+        const childAnchor = baseAnchor + (i - half);
+        laneTokenByNode[k] = allocToken(childAnchor);
+      }
+    }
+
+    const usedTokens = uniq(nodes.map(n => laneTokenByNode[n.id]))
+      .sort((a, b) => {
+        const da = Number(laneAnchorByToken[a] || 0);
+        const db = Number(laneAnchorByToken[b] || 0);
+        if (da !== db) return da - db;
+        return String(a).localeCompare(String(b));
+      });
+    const laneOrderByToken = {};
+    for (let i = 0; i < usedTokens.length; i++) laneOrderByToken[usedTokens[i]] = i;
+    const nodeLane = {};
+    for (const n of nodes) {
+      const t = laneTokenByNode[n.id] || usedTokens[0] || allocToken(0);
+      nodeLane[n.id] = Number(laneOrderByToken[t] || 0);
+    }
+
+    // Agrupa nós por profundidade e lane
+    const byDepth = {};
+    for (const n of nodes) {
+      const d = Number(depth[n.id] || 0);
+      if (!byDepth[d]) byDepth[d] = {};
+      const ln = Number(nodeLane[n.id] || 0);
+      (byDepth[d][ln] = byDepth[d][ln] || []).push(n.id);
+    }
+    for (const d of Object.keys(byDepth)) {
+      for (const ln of Object.keys(byDepth[d])) {
+        byDepth[d][ln].sort((a, b) => String(a).localeCompare(String(b)));
+      }
+    }
+
+    // Altura por lane baseada no maior bloco da lane entre todas as profundidades
+    const laneHeight = {};
+    for (const ln of Object.values(nodeLane)) if (laneHeight[ln] == null) laneHeight[ln] = LANE_HEIGHT;
+    for (const d of Object.keys(byDepth)) {
+      for (const lnStr of Object.keys(byDepth[d])) {
+        const ln = Number(lnStr);
+        const ids = byDepth[d][ln] || [];
+        if (!ids.length) continue;
+        let blockH = 0;
+        for (let i = 0; i < ids.length; i++) {
+          const dd = dims(byId[ids[i]]);
+          blockH += dd.h;
+          if (i < ids.length - 1) blockH += Y_GAP;
+        }
+        laneHeight[ln] = Math.max(Number(laneHeight[ln] || LANE_HEIGHT), blockH + 18);
+      }
+    }
+
+    const orderedLanes = Object.keys(laneHeight).map(Number).sort((a, b) => a - b);
+    const laneTop = {};
+    let cursor = PAD_Y;
+    for (const ln of orderedLanes) {
+      laneTop[ln] = cursor;
+      cursor += Number(laneHeight[ln] || LANE_HEIGHT) + LANE_GAP;
+    }
+
+    const layout = {};
+    const orderedDepths = Object.keys(byDepth).map(Number).sort((a, b) => a - b);
+    for (const d of orderedDepths) {
+      const x = PAD_X + d * X_STEP;
+      const lanesAtDepth = Object.keys(byDepth[d]).map(Number).sort((a, b) => a - b);
+      for (const ln of lanesAtDepth) {
+        const ids = byDepth[d][ln] || [];
+        if (!ids.length) continue;
+        let blockH = 0;
+        for (let i = 0; i < ids.length; i++) {
+          const dd = dims(byId[ids[i]]);
+          blockH += dd.h;
+          if (i < ids.length - 1) blockH += Y_GAP;
+        }
+        const laneH = Number(laneHeight[ln] || LANE_HEIGHT);
+        let y = Number(laneTop[ln] || PAD_Y) + Math.max(0, Math.round((laneH - blockH) / 2));
+        for (const nodeId of ids) {
+          const dd = dims(byId[nodeId]);
+          layout[nodeId] = { x, y, w: dd.w, h: dd.h };
+          y += dd.h + Y_GAP;
+        }
+      }
+    }
+
+    layout.__ATP_ALL_BOXES__ = nodes.map(n => ({ id: n.id, ...layout[n.id] })).filter(b => b.x != null);
+    layout.__ATP_GAP_Y_MIN__ = Y_GAP;
+    layout.__ATP_LANE_TOP__ = laneTop;
+    layout.__ATP_LANE_HEIGHT__ = laneHeight;
+    return layout;
+  }
+
   function layoutDER(flow, opts) {
     opts = opts || {};
     const X_STEP = (opts.X_STEP != null) ? opts.X_STEP : 340;
@@ -498,6 +808,7 @@
 
   function rewriteDiagramDI(doc, layout) {
     const NS = {
+      bpmn: 'http://www.omg.org/spec/BPMN/20100524/MODEL',
       bpmndi: 'http://www.omg.org/spec/BPMN/20100524/DI',
       dc: 'http://www.omg.org/spec/DD/20100524/DC',
       di: 'http://www.omg.org/spec/DD/20100524/DI'
@@ -525,13 +836,14 @@
 
       let sf = null;
       try {
-
-        const esc = (window.CSS && CSS.escape) ? CSS.escape(flowId) : flowId.replace(/"/g, '\\"');
-        sf = doc.querySelector('sequenceFlow[id="' + esc + '"]');
-      } catch (e) {
-        // fallback manual
-        const sfs = Array.from(doc.getElementsByTagName('sequenceFlow'));
-        sf = sfs.find(x => x.getAttribute('id') === flowId) || null;
+        const sfsNs = Array.from(doc.getElementsByTagNameNS(NS.bpmn, 'sequenceFlow'));
+        sf = sfsNs.find(x => x.getAttribute('id') === flowId) || null;
+      } catch (_) { }
+      if (!sf) {
+        try {
+          const sfsAny = Array.from(doc.getElementsByTagName('sequenceFlow'));
+          sf = sfsAny.find(x => x.getAttribute('id') === flowId) || null;
+        } catch (_) { }
       }
       if (!sf) continue;
 
@@ -540,104 +852,12 @@
       const srcB = src ? getB(src) : null;
       const tgtB = tgt ? getB(tgt) : null;
       if (!srcB || !tgtB) continue;
-
-      // Roteamento via Hubs Virtuais + Anti-sobreposição de linhas (layout-only)
-      const nodeCat = layout.__ATP_NODE_CAT__ || null;
-      const hubs = layout.__ATP_HUBS__ || null;
-      const channelX = (layout.__ATP_CHANNEL_X__ != null) ? layout.__ATP_CHANNEL_X__ : null;
-      const boxes = layout.__ATP_ALL_BOXES__ || [];
-      const GAP = layout.__ATP_GAP_Y_MIN__ || 50;
-
-      const segIntersectsBox = (x1, y1, x2, y2, b) => {
-        // segmentos ortogonais (h/v) com margem
-        const left = b.x - 10, right = b.x + b.w + 10, top = b.y - 10, bottom = b.y + b.h + 10;
-        if (x1 === x2) { // vertical
-          const x = x1;
-          const yMin = Math.min(y1, y2), yMax = Math.max(y1, y2);
-          if (x >= left && x <= right && yMax >= top && yMin <= bottom) return true;
-        } else if (y1 === y2) { // horizontal
-          const y = y1;
-          const xMin = Math.min(x1, x2), xMax = Math.max(x1, x2);
-          if (y >= top && y <= bottom && xMax >= left && xMin <= right) return true;
-        }
-        return false;
-      };
-
-      const pathHitsAnyBox = (pts, ignoreIds) => {
-        const ignore = new Set(ignoreIds || []);
-        for (let i = 0; i < pts.length - 1; i++) {
-          const a = pts[i], c = pts[i + 1];
-          for (const b of boxes) {
-            if (ignore.has(b.id)) continue;
-            if (segIntersectsBox(a.x, a.y, c.x, c.y, b)) return true;
-          }
-        }
-        return false;
-      };
-
-      const s = { x: srcB.x + srcB.w, y: srcB.y + srcB.h / 2 };
-      const t = { x: tgtB.x, y: tgtB.y + tgtB.h / 2 };
-
-      let wps;
-
-      const cat = (nodeCat && nodeCat[tgt]) ? nodeCat[tgt] : '';
-      const hub = (cat && hubs) ? hubs[cat] : null;
-
-      const buildRoute = (midX, viaHub, forcedChannelX) => {
-        if (viaHub && hub && (forcedChannelX != null)) {
-          return [
-            { x: s.x, y: s.y },
-            { x: forcedChannelX, y: s.y },
-            { x: forcedChannelX, y: hub.y },
-            { x: hub.x, y: hub.y },
-            { x: t.x, y: hub.y },
-            { x: t.x, y: t.y }
-          ];
-        }
-        return [
-          { x: s.x, y: s.y },
-          { x: midX, y: s.y },
-          { x: midX, y: t.y },
-          { x: t.x, y: t.y }
-        ];
-      };
-
-      let midX = Math.round((s.x + t.x) / 2);
-      midX = Math.max(midX, s.x + 30);
-      midX = Math.min(midX, t.x - 30);
-
-      // tenta com hub primeiro
-      if (hub && channelX != null) {
-        wps = buildRoute(midX, true, channelX);
-        if (pathHitsAnyBox(wps, [src, tgt])) {
-          let ok = false;
-          for (let k = 1; k <= 20; k++) {
-            const tryChannel = channelX - 40 * k;
-            const alt = buildRoute(midX, true, tryChannel);
-            if (!pathHitsAnyBox(alt, [src, tgt])) { wps = alt; ok = true; break; }
-          }
-          if (!ok) wps = buildRoute(midX, false, null);
-        }
-      } else {
-        wps = buildRoute(midX, false, null);
-      }
-
-      // se ainda colidir, empurra midX para fora até limpar
-      if (pathHitsAnyBox(wps, [src, tgt])) {
-        let ok = false;
-        for (let step = 1; step <= 30; step++) {
-          const tryX = midX + 40 * step;
-          const alt = buildRoute(tryX, false, null);
-          if (!pathHitsAnyBox(alt, [src, tgt])) { wps = alt; ok = true; break; }
-        }
-        if (!ok) {
-          for (let step = 1; step <= 30; step++) {
-            const tryX = midX - 40 * step;
-            const alt = buildRoute(tryX, false, null);
-            if (!pathHitsAnyBox(alt, [src, tgt])) { wps = alt; ok = true; break; }
-          }
-        }
-      }
+      const wps = routeOrthogonalAvoidBoxes(
+        srcB,
+        tgtB,
+        layout.__ATP_ALL_BOXES__ || [],
+        [src, tgt]
+      );
 
       const old = Array.from(ed.getElementsByTagNameNS(NS.di, 'waypoint'));
       old.forEach(n => n.parentNode.removeChild(n));
@@ -658,7 +878,14 @@
       if (doc.getElementsByTagName('parsererror').length) return xml;
 
       const flow = parseBpmnToFlowModel(doc);
-      const layout = layoutDER(flow, { X_STEP: 340, Y_GAP_MIN: 50 });
+      const layout = layoutSwimlanes(flow, {
+        X_STEP: 300,
+        LANE_HEIGHT: 140,
+        LANE_GAP: 34,
+        Y_GAP: 25,
+        PAD_X: 60,
+        PAD_Y: 60
+      });
 
       rewriteDiagramDI(doc, layout);
 
@@ -673,6 +900,7 @@
   // expõe para o builder
   window.__ATP_UNIQUE_LAYOUT__ = window.__ATP_UNIQUE_LAYOUT__ || {};
   window.__ATP_UNIQUE_LAYOUT__.apply = applyUniqueLayout;
+  window.__ATP_UNIQUE_LAYOUT__.applySwimlanes = applyUniqueLayout;
 
   try { console.log('[ATP][LAYOUT] Layout único (Opção A) pronto'); } catch (e) { }
 })();
@@ -814,8 +1042,8 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
         const list = (data && Array.isArray(data.fluxos)) ? data.fluxos : [];
         fluxos = list.map((fl) => ({
           starts: Array.isArray(fl && fl.starts) ? fl.starts.slice() : [],
-          nodes: Array.isArray(fl && fl.nodes) ? fl.nodes.slice() : Array.from(fl && fl.nodes || [])
-        }));
+          nodes: Array.isArray(fl && fl.nodes) ? fl.nodes.slice() : Array.from((fl && fl.nodes) || [])
+        })).filter(fl => Array.isArray(fl.nodes) && fl.nodes.length);
       }
     } catch (_) {
       fluxos = [];
@@ -858,18 +1086,14 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
       }
     }
 
-    for (const fl of fluxos) {
-      const full = new Set(fl.nodes);
-      for (const u of fl.nodes) {
-        const outs = outGlobal.get(u);
-        if (!outs) continue;
-        for (const v of outs) {
-          if (!v) continue;
-          if (!full.has(v) && !allFrom.has(v)) full.add(v);
-        }
-      }
-      fl.nodes = Array.from(full);
-    }
+    fluxos = fluxos
+      .map((fl) => {
+        const nodes = Array.from(new Set((fl && fl.nodes ? fl.nodes : []).filter(Boolean)));
+        if (!nodes.length) return null;
+        const starts = Array.from(new Set((fl && fl.starts ? fl.starts : []).filter(k => nodes.includes(k))));
+        return { starts: starts.length ? starts : [nodes[0]], nodes };
+      })
+      .filter(Boolean);
 
     const flowSigs = new Set();
 
@@ -896,17 +1120,7 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
         const nodes = Array.from((fluxo && fluxo.nodes) ? fluxo.nodes : []);
 
         const nodeSet = new Set(nodes);
-
-        const terminalSet = new Set();
-        for (const n of nodes) {
-          const outs = outGlobal.get(n);
-          if (!outs) continue;
-          for (const t of outs) {
-            if (!t) continue;
-            if (!nodeSet.has(t)) terminalSet.add(t);
-          }
-        }
-        const nodesAll = nodes.concat(Array.from(terminalSet));
+        const nodesAll = nodes.slice();
         const nodeSetAll = new Set(nodesAll);
         const startId = 'Start_' + procId;
         x += '    <bpmn:startEvent id="' + startId + '" name="Início"/>\n';
@@ -1625,31 +1839,36 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
         x += '  </bpmndi:BPMNDiagram>\n';
         x += '</bpmn:definitions>\n';
 
+        const rawXml = x;
+        let finalXml = rawXml;
         try {
           if (!opts || !opts.__skipUniqueLayout) {
-            x = (window.__ATP_UNIQUE_LAYOUT__ && window.__ATP_UNIQUE_LAYOUT__.apply) ? window.__ATP_UNIQUE_LAYOUT__.apply(x) : x;
+            finalXml = (window.__ATP_UNIQUE_LAYOUT__ && window.__ATP_UNIQUE_LAYOUT__.apply)
+              ? window.__ATP_UNIQUE_LAYOUT__.apply(rawXml)
+              : rawXml;
           }
         } catch (e) {
           try { console.warn('[ATP][LAYOUT] Falha ao aplicar layout único no XML final do fluxo:', e); } catch (_) { }
         }
 
-        return x;
+        return {
+          rawXml,
+          xml: finalXml
+        };
       };
 
       for (let i = 0; i < fluxos.length; i++) {
         const fluxo = fluxos[i];
-        const nodes = Array.from(fluxo.nodes || []);
-        const sig = nodes.slice().sort().join('||');
-        if (flowSigs.has(sig)) continue;
-        flowSigs.add(sig);
-
         fileIndex++;
-        const xmlOne = buildOne(fluxo, fileIndex);
+        const built = buildOne(fluxo, fileIndex);
         const startK = (fluxo.starts && fluxo.starts[0]) ? norm(String(fluxo.starts[0])) : ('fluxo_' + fileIndex);
         const safe = (startK || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80);
         files.push({
           filename: ('fluxo_' + String(fileIndex).padStart(2, '0') + '_' + (safe || 'inicio') + '.bpmn'),
-          xml: xmlOne
+          xml: String((built && built.xml) || ''),
+          rawXml: String((built && built.rawXml) || ''),
+          layoutApplied: String((built && built.xml) || '') !== String((built && built.rawXml) || ''),
+          layoutMode: 'swimlanes'
         });
       }
 
@@ -1696,8 +1915,6 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
       const nodesSet = new Set((fl && fl.nodes) ? Array.from(fl.nodes) : []);
       if (!nodesSet.size) continue;
 
-      if (!nodesSet.size) continue;
-
       const nodes = Array.from(nodesSet);
       const nodeSet = new Set(nodes);
 
@@ -1707,7 +1924,7 @@ function atpBuildFluxosBPMN(rules, opts) { // Constrói fluxos bpmn.
         const outs = outGlobal.get(u);
         if (!outs) continue;
         for (const v of outs) {
-          if (!__nodeSet.has(v)) continue;
+          if (!nodeSet.has(v)) continue;
           edges.push([u, v]);
           if (!out.has(u)) out.set(u, []);
           out.get(u).push(v);

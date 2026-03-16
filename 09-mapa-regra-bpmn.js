@@ -39,10 +39,16 @@ function atpFindBpmnFileByRuleNum(files, ruleNum) {
   return null;
 }
 
+const ATP_BPMNJS_SRC = 'https://unpkg.com/bpmn-js@18.1.1/dist/bpmn-modeler.development.js';
+const ATP_BPMNJS_GLOBAL_PROMISE_KEY = '__ATP_BPMNJS_PROMISE__';
 let ATP_BPMNJS_PROMISE = null;
 function atpEnsureBpmnJsLoaded() {
 
   if (window.BpmnJS && window.BpmnJS.prototype && window.BpmnJS.prototype.__ATP_IS_MODELER__) return Promise.resolve(window.BpmnJS);
+  try {
+    const globalPromise = window[ATP_BPMNJS_GLOBAL_PROMISE_KEY];
+    if (globalPromise && typeof globalPromise.then === 'function') return globalPromise;
+  } catch (_) { }
   if (ATP_BPMNJS_PROMISE) return ATP_BPMNJS_PROMISE;
 
   const CSS_URLS = [
@@ -52,27 +58,63 @@ function atpEnsureBpmnJsLoaded() {
   ];
 
   ATP_BPMNJS_PROMISE = new Promise((resolve, reject) => {
+    const finishResolve = () => {
+      try {
+        if (!window.BpmnJS) throw new Error('BpmnJS não carregou');
+        try { window.BpmnJS.prototype.__ATP_IS_MODELER__ = true; } catch (e) { }
+        resolve(window.BpmnJS);
+      } catch (e) { reject(e); }
+    };
+
     try {
       ensureCss(CSS_URLS);
 
-      const s = document.createElement('script');
+      const existing = document.querySelector('script[data-atp-bpmnjs="1"]')
+        || document.querySelector('script[src*="bpmn-modeler.development.js"]');
+      if (existing) {
+        if (window.BpmnJS) {
+          finishResolve();
+          return;
+        }
+        existing.addEventListener('load', () => finishResolve(), { once: true });
+        existing.addEventListener('error', (e) => reject(e || new Error('Falha ao carregar bpmn-js.')), { once: true });
 
-      s.src = 'https://unpkg.com/bpmn-js@18.1.1/dist/bpmn-modeler.development.js';
+        let tries = 0;
+        const timer = setInterval(() => {
+          tries += 1;
+          if (window.BpmnJS) {
+            clearInterval(timer);
+            finishResolve();
+            return;
+          }
+          if (tries > 80) {
+            clearInterval(timer);
+            reject(new Error('Timeout aguardando bpmn-js existente.'));
+          }
+        }, 100);
+        return;
+      }
+
+      const s = document.createElement('script');
+      s.src = ATP_BPMNJS_SRC;
       s.async = true;
       s.setAttribute('data-atp-bpmnjs', '1');
-      s.onload = () => {
-        try {
-          if (!window.BpmnJS) throw new Error('BpmnJS não carregou');
-          try { window.BpmnJS.prototype.__ATP_IS_MODELER__ = true; } catch (e) { }
-          resolve(window.BpmnJS);
-        } catch (e) { reject(e); }
-      };
-      s.onerror = (e) => reject(e);
+      s.onload = () => finishResolve();
+      s.onerror = (e) => reject(e || new Error('Falha ao carregar bpmn-js.'));
       document.head.appendChild(s);
     } catch (e) {
       reject(e);
     }
+  }).catch((e) => {
+    const failedPromise = ATP_BPMNJS_PROMISE;
+    ATP_BPMNJS_PROMISE = null;
+    try {
+      if (window[ATP_BPMNJS_GLOBAL_PROMISE_KEY] === failedPromise) delete window[ATP_BPMNJS_GLOBAL_PROMISE_KEY];
+    } catch (_) { }
+    throw e;
   });
+
+  try { window[ATP_BPMNJS_GLOBAL_PROMISE_KEY] = ATP_BPMNJS_PROMISE; } catch (_) { }
 
   return ATP_BPMNJS_PROMISE;
 }

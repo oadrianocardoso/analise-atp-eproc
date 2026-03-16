@@ -5,7 +5,7 @@
 const LOG_PREFIX = '[ATP]';
 const TABLE_ID = 'tableAutomatizacaoLocalizadores';
 let onlyConflicts = false;
-const ATP_VERSION = '10.14';
+const ATP_VERSION = '10.65';
 
 const tipoRank = {
   'Colisão Total': 5,
@@ -44,5 +44,11 @@ function isDesativarResultPage() {
     return false;
   }
 }
+
+try {
+  window.isDesativarResultPage = window.isDesativarResultPage || isDesativarResultPage;
+  window.isDesactiveResultPage = window.isDesactiveResultPage || isDesativarResultPage;
+  window.isDeactivateResultPage = window.isDeactivateResultPage || isDesativarResultPage;
+} catch (_) { }
 
 try { console.log('[ATP][OK] config.js inicializado'); } catch (e) { }

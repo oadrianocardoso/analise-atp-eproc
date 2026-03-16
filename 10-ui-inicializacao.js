@@ -70,10 +70,9 @@ function atpFriendlyActionName(acao) {
     clique_filtrar_regras_conflitantes: 'Filtrar Regras Conflitantes',
     clique_gerar_relatorio_colisoes: 'Gerar Relatorio de Conflitos',
     clique_gerar_extrato_fluxos: 'Gerar Extrato de Fluxos',
-    clique_exportar_fluxos_bizagi: 'Exportar Fluxos para Bizagi',
+    clique_visualizar_fluxo: 'Visualizar Fluxos',
     clique_dashboard_utilizacao: 'Abrir Dashboard de Utilizacao',
-    clique_comparar: 'Comparar Regras',
-    clique_visualizar_fluxo: 'Visualizar Fluxo'
+    clique_comparar: 'Comparar Regras'
   };
   const key = String(acao || '').trim();
   return map[key] || (key || '(sem acao)');
@@ -1203,9 +1202,7 @@ function recalc(table) {
       return;
     }
 
-    if (!(table.classList && table.classList.contains('dataTable')) && !table.closest('.dataTables_wrapper')) {
-      ensureColumns(table);
-    }
+    ensureColumns(table);
     const cols = mapColumns(table);
     updateAllRemoverLupasByTooltipText(table);
     replacePlainRemoverTextInTable(table, cols);
@@ -1217,7 +1214,6 @@ function recalc(table) {
     const conflicts = analyze(rules);
     render(table, rules, conflicts);
     try { markATPRenderTick(); } catch (e) {}
-
   }
 
   function findTable() {
@@ -1260,7 +1256,7 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
   try {
     if (!host) return;
     if (host.querySelector('#btnGerarRelatorioColisoes')) {
-      atpEnsureDashboardIcon(host, host.querySelector('#btnExtratoFluxosBPMNGrid_ATP'));
+      atpEnsureDashboardIcon(host, host.querySelector('#btnExtratoFluxosATP'));
       return;
     }
 
@@ -1488,64 +1484,6 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
       }
     });
 
-    const btnBPMNGrid = document.createElement('button');
-    btnBPMNGrid.type = 'button';
-    btnBPMNGrid.className = 'infraButton';
-    btnBPMNGrid.id = 'btnExtratoFluxosBPMNGrid_ATP';
-    btnBPMNGrid.textContent = '🗂️ Exportar Fluxos Para Bizagi';
-    btnBPMNGrid.style.marginLeft = '8px';
-
-    btnBPMNGrid.addEventListener('mouseenter', () => { btnBPMNGrid.style.background = '#e5e7eb'; });
-    btnBPMNGrid.addEventListener('mouseleave', () => { btnBPMNGrid.style.background = '#f3f4f6'; });
-
-    btnBPMNGrid.addEventListener('click', function () {
-      try {
-        var table = tableRef || findTable();
-        if (!table) return;
-
-        try { ensureColumns(table); } catch (e) { }
-        var cols = null;
-        try { cols = mapColumns(table); } catch (e) { cols = null; }
-        if (!cols) cols = {};
-
-        const rules = parseRules(table, cols);
-        atpSetRulesState(rules);
-
-        atpEnsureJSZip().then(function (JSZip) {
-          try {
-            const files = atpBuildFluxosBPMN(rules, { layout: 'grid', splitFiles: true });
-            if (!files || !files.length) {
-              console.warn(LOG_PREFIX, '[ATP][Fluxos/BPMN] ZIP vazio: nenhum BPMN foi gerado.');
-              return;
-            }
-
-            var zip = new JSZip();
-            files.forEach(function (f) {
-              zip.file(f.filename, f.xml);
-            });
-
-            zip.generateAsync({ type: 'blob' }).then(function (blob) {
-              var url = URL.createObjectURL(blob);
-              var a = document.createElement('a');
-              a.href = url;
-              a.download = 'extrato_fluxos_ATP_grid.zip';
-              document.body.appendChild(a);
-              a.click();
-              setTimeout(function () { URL.revokeObjectURL(url); try { a.remove(); } catch (e) { } }, 0);
-            }).catch(function (e) {
-              console.warn(LOG_PREFIX, '[ATP][Fluxos/BPMN] Falha ao gerar ZIP', e);
-            });
-          } catch (e) {
-            console.warn(LOG_PREFIX, '[ATP][Fluxos/BPMN] Falha ao montar BPMNs', e);
-          }
-        }).catch(function (e) {
-          console.warn(LOG_PREFIX, '[ATP][Fluxos/BPMN] Não foi possível carregar JSZip', e);
-        });
-      } catch (e) {
-        console.warn(LOG_PREFIX, 'Falha ao exportar BPMN (Grid)', e);
-      }
-    });
-
     const btnDashboard = document.createElement('button');
     btnDashboard.type = 'button';
     btnDashboard.id = 'btnDashboardUsoATP';
@@ -1557,13 +1495,11 @@ function atpEnsureReportButton(host, afterLabelEl, tableRef) {
     if (afterLabelEl && afterLabelEl.parentNode === host) {
       const anchor = afterLabelEl.nextSibling;
       host.insertBefore(btnFluxos, anchor);
-      host.insertBefore(btnBPMNGrid, anchor);
       host.insertBefore(btnDashboard, anchor);
       host.insertBefore(btn, btnFluxos);
     } else {
       host.appendChild(btn);
       host.appendChild(btnFluxos);
-      host.appendChild(btnBPMNGrid);
       host.appendChild(btnDashboard);
     }
   } catch (e) { }
@@ -1658,16 +1594,23 @@ function disableAlterarPreferenciaNumRegistros() {
 }
 
   async function init() {
+    try {
+      if (typeof showATPLoading === 'function') showATPLoading();
+      if (typeof setATPLoadingMsg === 'function') setATPLoadingMsg('Aguardando carregamento completo do eProc…');
+    } catch (_) {}
     injectStyle();
     const table = await waitTable();
-    if (!table) return;
+    if (!table) {
+      try { if (typeof hideATPLoading === 'function') hideATPLoading(); } catch (_) {}
+      return;
+    }
+    try { if (typeof setATPLoadingMsg === 'function') setATPLoadingMsg('Carregamento completo. Analisando colisões…'); } catch (_) {}
     disableAlterarPreferenciaNumRegistros();
     removeSortOrderControls();
     forceTableLengthTo1000();
     ensureColumns(table);
     updateAllRemoverLupasByTooltipText(table);
     addOnlyConflictsCheckbox(table, () => schedule(() => applyFilter(table), 0));
-    try { atpEnsureFluxosPickerUI(table); } catch (e) {}
     recalc(table);
     table.addEventListener('change', () => schedule(() => recalc(table), 200), true);
     const root = table.parentElement || document.body;
@@ -1679,6 +1622,84 @@ function disableAlterarPreferenciaNumRegistros() {
       schedule(() => recalc(table), 250);
     });
     mo.observe(root, { childList: true, subtree: true });
+  }
+
+  function atpPrepareFlowBpmnForModal(fileObj, idx) {
+    const filename = String(fileObj && fileObj.filename || ('fluxo_' + String((idx | 0) + 1).padStart(2, '0') + '.bpmn'));
+    const baseXml = String((fileObj && (fileObj.rawXml || fileObj.xml)) || '');
+    if (!baseXml) return Promise.resolve({ ...(fileObj || {}), filename, xml: '' });
+
+    let xml = String(fileObj && fileObj.xml || baseXml);
+    try {
+      const applier = window.__ATP_UNIQUE_LAYOUT__ && window.__ATP_UNIQUE_LAYOUT__.apply;
+      if (typeof applier === 'function') {
+        const laid = applier(baseXml);
+        if (laid) xml = String(laid);
+      }
+    } catch (err) {
+      try { console.warn(LOG_PREFIX, '[Fluxos/UI] Layout swimlanes falhou; abrindo BPMN base:', err); } catch (_) {}
+      xml = baseXml;
+    }
+    return Promise.resolve({ ...(fileObj || {}), filename, xml, viewMode: 'swimlanes' });
+  }
+
+  function atpBootstrapInitLoading() {
+    try {
+      const urlLooksLikeTarget = /automatizar_localizadores/i.test(String(location.href || ''));
+      if (!urlLooksLikeTarget) return;
+      if (typeof showATPLoading === 'function') showATPLoading();
+      window.__ATP_PAGE_LOADED__ = (document.readyState === 'complete');
+      if (window.__ATP_PAGE_LOADED__) {
+        if (typeof setATPLoadingMsg === 'function') setATPLoadingMsg('Carregamento completo. Analisando colisões…');
+        try { if (typeof scheduleHideATPLoading === 'function') scheduleHideATPLoading(1800); } catch (_) {}
+      } else {
+        if (typeof setATPLoadingMsg === 'function') setATPLoadingMsg('Aguardando carregamento completo do eProc…');
+        window.addEventListener('load', () => {
+          try {
+            window.__ATP_PAGE_LOADED__ = true;
+            if (typeof setATPLoadingMsg === 'function') setATPLoadingMsg('Carregamento completo. Analisando colisões…');
+            if (typeof scheduleHideATPLoading === 'function') scheduleHideATPLoading(1800);
+          } catch (_) {}
+        }, { once: true });
+      }
+    } catch (_) {}
+  }
+
+  function atpOpenSelectedFlowFromPicker(table, sel) {
+    try {
+      atpRefreshFluxosPickerOptions(table);
+      const idx = parseInt(String(sel && sel.value || '-1'), 10);
+      if (!Number.isFinite(idx) || idx < 0) {
+        alert('Selecione um fluxo.');
+        return;
+      }
+      const rules = atpGetRulesState();
+      if (!rules.length) {
+        alert('Não foi possível obter as regras (tabela vazia ou não carregada).');
+        return;
+      }
+      const files = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getBpmnFilesForRules === 'function')
+        ? window.ATP.extract.getBpmnFilesForRules(rules)
+        : atpGetBpmnSplitFilesForRules(rules);
+      const f = files && files[idx];
+      if (!f || (!f.xml && !f.rawXml)) {
+        alert('Fluxo selecionado não possui BPMN gerado.');
+        return;
+      }
+
+      atpPrepareFlowBpmnForModal(f, idx)
+        .then((prepared) => atpOpenFlowBpmnModal(prepared, idx, { viewMode: 'swimlanes' }))
+        .catch((e) => {
+          try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao preparar visualização do fluxo:', e); } catch (_) {}
+          atpOpenFlowBpmnModal({
+            ...f,
+            xml: String((f && (f.rawXml || f.xml)) || ''),
+            filename: String(f && f.filename || ('fluxo_' + String(idx + 1).padStart(2, '0') + '.bpmn'))
+          }, idx, { viewMode: 'swimlanes' });
+        });
+    } catch (e) {
+      try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao visualizar fluxo:', e); } catch (_) {}
+    }
   }
 
   function atpEnsureFluxosPickerUI(table) {
@@ -1711,51 +1732,13 @@ function disableAlterarPreferenciaNumRegistros() {
         btn.type = 'button';
         btn.className = 'infraButton';
         btn.id = 'btnVisualizarFluxoATP';
-        btn.textContent = 'Visualizar Fluxo';
+        btn.textContent = 'Visualizar Fluxo BPMN';
 
         sel.addEventListener('mousedown', () => {
           try { atpRefreshFluxosPickerOptions(table); } catch (e) {}
         }, true);
 
-        btn.addEventListener('click', () => {
-          try {
-            atpRefreshFluxosPickerOptions(table);
-            const idx = parseInt(String(sel.value || '-1'), 10);
-            if (!Number.isFinite(idx) || idx < 0) {
-              alert('Selecione um fluxo.');
-              return;
-            }
-            const rules = atpGetRulesState();
-            if (!rules.length) {
-              alert('Não foi possível obter as regras (tabela vazia ou não carregada).');
-              return;
-            }
-            const files = (window.ATP && window.ATP.extract && typeof window.ATP.extract.getBpmnFilesForRules === 'function')
-              ? window.ATP.extract.getBpmnFilesForRules(rules)
-              : atpGetBpmnSplitFilesForRules(rules);
-            const f = files && files[idx];
-            if (!f || !f.xml) {
-              alert('Fluxo selecionado não possui BPMN gerado.');
-              return;
-            }
-
-            atpApplyElkLayoutToBpmnXml(String(f.xml || ''))
-              .then((xmlElk) => {
-                const fileObj = {
-                  ...f,
-                  xml: String(xmlElk || f.xml || ''),
-                  filename: String(f.filename || ('fluxo_' + String(idx + 1).padStart(2, '0') + '.bpmn'))
-                };
-                atpOpenFlowBpmnModal(fileObj, idx);
-              })
-              .catch((err) => {
-                try { console.warn(LOG_PREFIX, '[Fluxos/UI] ELK no BPMN falhou; abrindo BPMN original:', err); } catch (_) {}
-                atpOpenFlowBpmnModal(f, idx);
-              });
-          } catch (e) {
-            try { console.warn(LOG_PREFIX, '[Fluxos/UI] Falha ao visualizar fluxo (BPMN + ELK):', e); } catch (_) {}
-          }
-        });
+        btn.addEventListener('click', () => atpOpenSelectedFlowFromPicker(table, sel));
 
         wrap.appendChild(title);
         wrap.appendChild(sel);
@@ -1828,8 +1811,10 @@ function disableAlterarPreferenciaNumRegistros() {
     } catch (e) {}
   }
 
-  function atpOpenFlowBpmnModal(fileObj, flowIdx) {
+  function atpOpenFlowBpmnModal(fileObj, flowIdx, opts) {
     try {
+      const viewMode = String((opts && opts.viewMode) || (fileObj && fileObj.viewMode) || 'swimlanes').trim().toLowerCase();
+      const modeLabel = (viewMode === 'swimlanes') ? 'BPMN Swimlanes' : 'BPMN';
 
       atpCloseRuleMapModal();
 
@@ -1844,7 +1829,7 @@ function disableAlterarPreferenciaNumRegistros() {
       const top = document.createElement('div');
       top.className = 'atp-map-top';
 
-      const titleTxt = `🧭 Visualizar Fluxo ${String((flowIdx|0)+1).padStart(2,'0')} (BPMN)`;
+      const titleTxt = `🧭 Visualizar Fluxo ${String((flowIdx|0)+1).padStart(2,'0')} (${modeLabel})`;
       top.innerHTML = `<div><div class="atp-map-title">${titleTxt}</div><div class="atp-map-sub">Arquivo: ${String(fileObj && fileObj.filename || '')}</div></div>`;
 
       const actions = document.createElement('div');
@@ -2370,7 +2355,18 @@ function disableAlterarPreferenciaNumRegistros() {
     } catch (e) {}
   }
 
-  init();
+  function bootATPInit() {
+    if (bootATPInit._started) return;
+    bootATPInit._started = true;
+    atpBootstrapInitLoading();
+    schedule(() => { init(); }, 1200);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bootATPInit, { once: true });
+  } else {
+    bootATPInit();
+  }
 
 try { console.log('[ATP][OK] 10-ui-inicializacao.js inicializado'); } catch (e) {}
 

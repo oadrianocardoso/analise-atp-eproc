@@ -582,7 +582,16 @@ function render(table, rules, conflictsByRule) {
     for (const r of rules) {
       const tr = rowByNum.get(r.num);
       if (!tr) continue;
-      const confTd = tr.querySelector('td[data-atp-col="conflita"]');
+      let confTd = tr.querySelector('td[data-atp-col="conflita"]');
+      if (!confTd) {
+        confTd = document.createElement('td');
+        confTd.dataset.atpCol = 'conflita';
+        confTd.textContent = '';
+        const tds = Array.from(tr.querySelectorAll(':scope > td'));
+        const tdAcoes = tds.find(td => td.querySelector('i.material-icons, .material-icons, .custom-switch, input.custom-control-input')) || null;
+        if (tdAcoes && tdAcoes.parentNode === tr) tr.insertBefore(confTd, tdAcoes);
+        else tr.appendChild(confTd);
+      }
       if (!confTd) continue;
       const adj = conflictsByRule.get(r.num);
 
@@ -649,29 +658,6 @@ for (const n of others) {
       bindTipoConflitoTooltips(confTd);
       confTd.querySelector('.atp-compare-btn')?.remove();
       if (confTd.dataset.atpConfNums) confTd.appendChild(makeCompareButton(r.num, confTd));
-
-      try {
-        const tds = tr.querySelectorAll(':scope > td');
-        const tdNum = tds[cols.colNumPrior];
-        if (tdNum && !tdNum.querySelector('.atp-map-icon')) {
-          const ico = document.createElement('span');
-          ico.className = 'atp-map-icon';
-          ico.title = 'Localizar esta regra no fluxo (BPMN)';
-          ico.textContent = '🗺️';
-          ico.addEventListener('click', (ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            atpOpenRuleMapModal(r.num);
-          });
-
-          const wrap = document.createElement('div');
-          wrap.style.display = 'flex';
-          wrap.style.justifyContent = 'center';
-          wrap.style.width = '100%';
-          wrap.appendChild(ico);
-          tdNum.appendChild(wrap);
-        }
-      } catch (e) {}
 
       tr.classList.remove('atp-sev-2', 'atp-sev-3', 'atp-sev-4', 'atp-sev-5');
       if (maxSev >= 2) tr.classList.add(`atp-sev-${maxSev}`);

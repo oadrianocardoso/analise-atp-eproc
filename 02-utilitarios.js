@@ -294,6 +294,7 @@ const ATP_LOADING_ID = 'atp-loading-overlay';
 
 function showATPLoading() {
   try {
+    window.__ATP_LOADING_HIDDEN__ = false;
     if (document.getElementById(ATP_LOADING_ID)) return;
 
     const overlay = document.createElement('div');
